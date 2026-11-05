@@ -38,6 +38,7 @@
       "build-settings": {
         "ASSETCATALOG_COMPILER_APPICON_NAME": "AppIcon",
         "ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME": "AccentColor",
+        "CODE_SIGN_ENTITLEMENTS": "Indie Dev Buddy.entitlements",
         "CODE_SIGN_IDENTITY[sdk=macosx*]": "Apple Development",
         "CODE_SIGN_STYLE": "Automatic",
         "COMBINE_HIDPI_IMAGES": "YES",
@@ -72,7 +73,7 @@
         "SWIFT_DEFAULT_ACTOR_ISOLATION": "MainActor",
         "SWIFT_EMIT_LOC_STRINGS": "YES",
         "SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY": "YES",
-        "SWIFT_VERSION": "5.0",
+        "SWIFT_VERSION": "6.0",
       },
     }, {
       "name": "Indie Dev BuddyTests",
@@ -102,7 +103,7 @@
         "SWIFT_APPROACHABLE_CONCURRENCY": "YES",
         "SWIFT_EMIT_LOC_STRINGS": "NO",
         "SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY": "YES",
-        "SWIFT_VERSION": "5.0",
+        "SWIFT_VERSION": "6.0",
         "TEST_HOST": "$(BUILT_PRODUCTS_DIR)/Indie Dev Buddy.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/Indie Dev Buddy",
       },
     }, {
@@ -131,7 +132,7 @@
         "SWIFT_APPROACHABLE_CONCURRENCY": "YES",
         "SWIFT_EMIT_LOC_STRINGS": "NO",
         "SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY": "YES",
-        "SWIFT_VERSION": "5.0",
+        "SWIFT_VERSION": "6.0",
         "TEST_TARGET_NAME": "Indie Dev Buddy",
       },
     },
