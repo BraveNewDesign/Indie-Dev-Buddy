@@ -19,6 +19,9 @@ public struct WorkspaceFilesBrowser: View {
     @State private var skippedSymlinkCount = 0
     @State private var isCreatingFolder = false
     @State private var newFolderName = ""
+    @State private var renameItem: WorkspaceBrowserItem?
+    @State private var renamedItemName = ""
+    @State private var trashItem: WorkspaceBrowserItem?
     @State private var errorMessage: String?
 
     private var canonicalRoot: URL { root.standardizedFileURL.resolvingSymlinksInPath() }
@@ -41,6 +44,8 @@ public struct WorkspaceFilesBrowser: View {
                     Text(canonicalRoot.path).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
                 }
                 Spacer()
+                Button("Import Files", systemImage: "square.and.arrow.down") { importFiles() }
+                    .disabled(!isSafeDirectory(currentDirectoryURL))
                 Button("New Folder", systemImage: "folder.badge.plus") {
                     newFolderName = ""
                     isCreatingFolder = true
@@ -102,6 +107,11 @@ public struct WorkspaceFilesBrowser: View {
                             Button("Open") { open(item.url) }
                             Button("Reveal in Finder") { reveal(item.url) }
                         }
+                        if canManage(item) {
+                            Divider()
+                            Button("Rename…") { renamedItemName = item.name; renameItem = item }
+                            Button("Move to Trash…", role: .destructive) { trashItem = item }
+                        }
                     }
                 }
                 if items.isEmpty {
@@ -126,6 +136,19 @@ public struct WorkspaceFilesBrowser: View {
         } message: {
             Text(errorMessage ?? "")
         }
+        .alert("Rename Item", isPresented: Binding(get: { renameItem != nil }, set: { if !$0 { renameItem = nil } })) {
+            TextField("Name", text: $renamedItemName)
+            Button("Rename") { renameSelectedItem() }.disabled(!isValidFolderName(renamedItemName))
+            Button("Cancel", role: .cancel) { renameItem = nil }
+        } message: {
+            Text("References to this path are not updated. Check any content that uses this file after renaming it.")
+        }
+        .confirmationDialog("Move this item to the Trash?", isPresented: Binding(get: { trashItem != nil }, set: { if !$0 { trashItem = nil } }), titleVisibility: .visible) {
+            Button("Move to Trash", role: .destructive) { trashSelectedItem() }
+            Button("Cancel", role: .cancel) { trashItem = nil }
+        } message: {
+            Text("Content that refers to this path may no longer find it. You can restore the item from the Trash.")
+        }
     }
 
     private var breadcrumb: some View {
@@ -140,6 +163,8 @@ public struct WorkspaceFilesBrowser: View {
                 .buttonStyle(.link)
             }
             Spacer()
+            Button("Refresh", systemImage: "arrow.clockwise") { loadDirectory() }
+                .help("Refresh this folder")
             Text("\(items.count) items")
                 .font(.caption)
                 .foregroundStyle(.secondary)
@@ -210,6 +235,71 @@ public struct WorkspaceFilesBrowser: View {
         } catch {
             errorMessage = "Could not create folder: \(error.localizedDescription)"
         }
+    }
+
+    private func importFiles() {
+        guard isSafeDirectory(currentDirectoryURL) else { return }
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = true
+        panel.prompt = "Import"
+        guard panel.runModal() == .OK else { return }
+
+        var failures: [String] = []
+        for source in panel.urls {
+            let scoped = source.startAccessingSecurityScopedResource()
+            defer { if scoped { source.stopAccessingSecurityScopedResource() } }
+            let target = currentDirectoryURL.appendingPathComponent(source.lastPathComponent)
+            do {
+                guard isSafeDirectory(currentDirectoryURL), isInsideWorkspace(target) else {
+                    throw CocoaError(.fileWriteNoPermission)
+                }
+                guard !isSymbolicLink(source) else {
+                    failures.append("\(source.lastPathComponent): Symbolic links cannot be imported.")
+                    continue
+                }
+                // copyItem fails if the destination exists; never replace a workspace file.
+                try FileManager.default.copyItem(at: source, to: target)
+            } catch {
+                failures.append("\(source.lastPathComponent): \(error.localizedDescription)")
+            }
+        }
+        loadDirectory()
+        if !failures.isEmpty {
+            errorMessage = "Some files could not be imported. Existing files were not replaced:\n" + failures.joined(separator: "\n")
+        }
+    }
+
+    // Structured records and their assets are managed by their editors. Limit direct
+    // file operations to the workspace's general-purpose folders.
+    private func canManage(_ item: WorkspaceBrowserItem) -> Bool {
+        let parts = item.relativePath.split(separator: "/")
+        return parts.count > 1 && (parts.first == "Inbox" || parts.first == "Shared Files")
+    }
+
+    private func renameSelectedItem() {
+        guard let item = renameItem, canManage(item), isSafeDirectory(currentDirectoryURL),
+              isInsideWorkspace(item.url), !isSymbolicLink(item.url) else { return }
+        let name = renamedItemName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard isValidFolderName(name) else { return }
+        let target = currentDirectoryURL.appendingPathComponent(name)
+        do {
+            guard isInsideWorkspace(target) else { throw CocoaError(.fileWriteNoPermission) }
+            try FileManager.default.moveItem(at: item.url, to: target)
+            renameItem = nil
+            loadDirectory()
+        } catch { errorMessage = "Could not rename \(item.name): \(error.localizedDescription)" }
+    }
+
+    private func trashSelectedItem() {
+        guard let item = trashItem, canManage(item), isSafeDirectory(currentDirectoryURL),
+              isInsideWorkspace(item.url), !isSymbolicLink(item.url) else { return }
+        do {
+            try FileManager.default.trashItem(at: item.url, resultingItemURL: nil)
+            trashItem = nil
+            loadDirectory()
+        } catch { errorMessage = "Could not move \(item.name) to the Trash: \(error.localizedDescription)" }
     }
 
     private func isValidFolderName(_ name: String) -> Bool {

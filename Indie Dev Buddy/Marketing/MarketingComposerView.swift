@@ -50,6 +50,17 @@ struct ComposerArticleReference: Identifiable, Hashable {
     let publishedURL: URL?
 }
 
+struct ComposerReleaseReference: Identifiable, Hashable {
+    let id: String
+    let appID: String
+    let appName: String
+    let version: String
+    let status: String
+    let releaseDate: Date?
+
+    var displayName: String { "\(appName) · \(version) · \(status)" }
+}
+
 struct ComposerRelatedItem: Identifiable, Hashable {
     let id: String
     let title: String
@@ -62,6 +73,8 @@ struct MarketingComposerView: View {
     let apps: [AppRecord]
     let accounts: [ComposerSocialAccount]
     let article: ComposerArticleReference?
+    let hasUnavailableSource: Bool
+    let releases: [ComposerReleaseReference]
     let relatedItems: [ComposerRelatedItem]
     let unavailableDestinationIDs: Set<String>
     let characterGuidelines: [String: Int]
@@ -73,11 +86,14 @@ struct MarketingComposerView: View {
 
     @State private var title = ""
     @State private var selectedAppIDs = Set<String>()
+    @State private var selectedReleaseID: String?
     @State private var originalText = ""
     @State private var selectedAccountIDs = Set<String>()
     @State private var customizedText: [String: String] = [:]
     @State private var destinationStatuses: [String: String] = [:]
     @State private var destinationURLs: [String: String] = [:]
+    @State private var plannedDate: Date?
+    @State private var destinationPublicationDates: [String: Date] = [:]
     @State private var sharedMediaPaths: [String] = []
     @State private var destinationMediaOverrides: [String: [String]] = [:]
     @State private var customMediaAccountIDs = Set<String>()
@@ -91,6 +107,7 @@ struct MarketingComposerView: View {
     @State private var savedDraftSnapshot: ComposerDraft?
     @State private var isSaving = false
     @State private var showingGuidanceSettings = false
+    @State private var compactPreviewSelected = false
     @AppStorage("guidance.threads") private var threadsGuideline = 500
     @AppStorage("guidance.instagram") private var instagramGuideline = 2200
     @AppStorage("guidance.x") private var xGuideline = 280
@@ -135,9 +152,12 @@ struct MarketingComposerView: View {
     }
     private var currentDraft: ComposerDraft {
         ComposerDraft(title: title, originalText: originalText, selectedAccountIDs: selectedAccountIDs,
-                      appIDs: Array(selectedAppIDs).sorted(),
+                      appIDs: Array(selectedAppIDs).sorted(), releaseID: selectedReleaseID,
                       customizedText: customizedText, destinationStatuses: destinationStatuses,
-                      destinationURLs: destinationURLs, sharedMediaPaths: sharedMediaPaths,
+                      destinationURLs: destinationURLs,
+                      plannedDate: plannedDate,
+                      destinationPublicationDates: destinationPublicationDates,
+                      sharedMediaPaths: sharedMediaPaths,
                       destinationMediaOverrides: destinationMediaOverrides,
                       preservedDestinationIDs: unavailableDestinationIDs,
                       includeArticleLink: includeArticleLink, status: draftStatus)
@@ -145,30 +165,33 @@ struct MarketingComposerView: View {
     private var hasUnsavedChanges: Bool { currentDraft != savedDraftSnapshot }
 
     var body: some View {
-        HStack(spacing: 0) {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 20) {
-                    header
-                    metadataSection
-                    originalSection
-                    sharedMediaSection
-                    destinationsSection
-                    sourceSection
-                    relatedSection
+        GeometryReader { geometry in
+            if geometry.size.width >= 1040 {
+                HStack(spacing: 0) {
+                    editorPane
+                    Divider()
+                    previewPane
+                        .frame(minWidth: 310, idealWidth: 360, maxWidth: 430)
+                        .background(Color(nsColor: .windowBackgroundColor))
                 }
-                .padding(24)
-                .frame(maxWidth: 780, alignment: .leading)
-                .frame(maxWidth: .infinity, alignment: .leading)
+            } else {
+                VStack(spacing: 0) {
+                    Picker("Composer view", selection: $compactPreviewSelected) {
+                        Text("Edit").tag(false)
+                        Text("Preview").tag(true)
+                    }
+                    .pickerStyle(.segmented)
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 10)
+                    if compactPreviewSelected {
+                        ScrollView { previewPane.padding(16) }
+                    } else {
+                        editorPane
+                    }
+                }
             }
-            .background(Color(nsColor: .textBackgroundColor))
-
-            Divider()
-
-            previewPane
-                .frame(minWidth: 310, idealWidth: 360, maxWidth: 430)
-                .background(Color(nsColor: .windowBackgroundColor))
         }
-        .frame(minWidth: 900, minHeight: 620)
+        .frame(minWidth: 0, minHeight: 500)
         .confirmationDialog("Use the shared original?", isPresented: $showUseOriginalConfirmation, titleVisibility: .visible) {
             Button("Discard customization and use original", role: .destructive) {
                 if let id = selectedAccountID { customizedText.removeValue(forKey: id) }
@@ -212,6 +235,24 @@ struct MarketingComposerView: View {
             .padding(24)
             .frame(minWidth: 420, minHeight: 280)
         }
+    }
+
+    private var editorPane: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 20) {
+                header
+                metadataSection
+                originalSection
+                sharedMediaSection
+                destinationsSection
+                sourceSection
+                relatedSection
+            }
+            .padding(24)
+            .frame(maxWidth: 780, alignment: .leading)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .background(Color(nsColor: .textBackgroundColor))
     }
 
     private var header: some View {
@@ -261,6 +302,27 @@ struct MarketingComposerView: View {
                 .contentShape(Rectangle())
             }
             .menuStyle(.borderlessButton)
+            Picker("Related release", selection: $selectedReleaseID) {
+                Text("None").tag(String?.none)
+                ForEach(releases.filter { $0.id == selectedReleaseID || selectedAppIDs.isEmpty || selectedAppIDs.contains($0.appID) }) { release in
+                    Text(release.displayName).tag(Optional(release.id))
+                }
+            }
+            .help("Associate this content with a release. The link uses the release's stable ID.")
+            if let selectedReleaseID, !releases.contains(where: { $0.id == selectedReleaseID }) {
+                Label("The linked release is unavailable. Choose another release or clear this association.", systemImage: "exclamationmark.triangle.fill")
+                    .font(.caption).foregroundStyle(.orange)
+            } else if let selectedReleaseID,
+                      let selectedRelease = releases.first(where: { $0.id == selectedReleaseID }),
+                      !selectedAppIDs.isEmpty, !selectedAppIDs.contains(selectedRelease.appID) {
+                Label("This release belongs to an app not selected above. Keep the association or select its app.", systemImage: "exclamationmark.triangle.fill")
+                    .font(.caption).foregroundStyle(.orange)
+            }
+            Toggle("Planned date", isOn: plannedDatePresenceBinding)
+            if plannedDate != nil {
+                DatePicker("Planned", selection: plannedDateBinding, displayedComponents: .date)
+                    .datePickerStyle(.field)
+            }
         }
     }
 
@@ -346,6 +408,9 @@ struct MarketingComposerView: View {
                     Button("Open") { requestNavigation(to: article.id) }
                 }
                 Toggle("Include link to original article", isOn: $includeArticleLink)
+            } else if hasUnavailableSource {
+                Label("The linked source content is unavailable. Its reference is retained.", systemImage: "exclamationmark.triangle.fill")
+                    .font(.callout).foregroundStyle(.orange)
             } else {
                 Text("No source article or post is linked.").foregroundStyle(.secondary)
             }
@@ -459,6 +524,8 @@ struct MarketingComposerView: View {
                         copyMessage = copyCurrentText()
                     } label: { Label("Copy Text", systemImage: "doc.on.doc") }
                     .buttonStyle(.borderedProminent)
+                    .keyboardShortcut("c", modifiers: [.command, .shift])
+                    .help("Copy the selected account’s effective post text (⇧⌘C)")
                     Text(copyMessage ?? "").font(.caption).foregroundStyle(.secondary)
                     if let url = account.profileURL { Button("Open Social Account") { NSWorkspace.shared.open(url) } }
                 }
@@ -470,6 +537,11 @@ struct MarketingComposerView: View {
                     if destinationStatuses[account.id] == "Published" {
                         TextField("Published URL (optional)", text: destinationURLBinding(account.id))
                             .textFieldStyle(.roundedBorder)
+                        Toggle("Record publication date", isOn: destinationPublicationDatePresenceBinding(account.id))
+                        if destinationPublicationDates[account.id] != nil {
+                            DatePicker("Published on", selection: destinationPublicationDateBinding(account.id), displayedComponents: .date)
+                                .datePickerStyle(.field)
+                        }
                         Text("Marking Published records your work; it does not post to the account.")
                             .font(.caption).foregroundStyle(.secondary)
                     }
@@ -653,20 +725,27 @@ struct MarketingComposerView: View {
                 guard let type = UTType(filenameExtension: url.pathExtension) else { return false }
                 return type.conforms(to: .image)
             }
-        if let first = urls.first, let image = NSImage(contentsOf: first) {
-            if featured {
-                Image(nsImage: image).resizable().scaledToFill()
-                    .frame(maxWidth: .infinity).frame(height: 220).clipped()
-                    .clipShape(RoundedRectangle(cornerRadius: 6))
-            } else {
-                ScrollView(.horizontal) {
-                    HStack(spacing: 8) {
-                        ForEach(urls, id: \.path) { url in
-                            if let image = NSImage(contentsOf: url) {
-                                Image(nsImage: image).resizable().scaledToFill()
-                                    .frame(width: 100, height: 82).clipped()
-                                    .clipShape(RoundedRectangle(cornerRadius: 7))
-                            }
+        if featured {
+            ScrollView(.horizontal) {
+                HStack(spacing: 8) {
+                    ForEach(urls, id: \.path) { url in
+                        if let image = NSImage(contentsOf: url) {
+                            Image(nsImage: image).resizable().scaledToFill()
+                                .frame(width: 240, height: 220).clipped()
+                                .clipShape(RoundedRectangle(cornerRadius: 6))
+                        }
+                    }
+                }
+            }
+            .scrollIndicators(.hidden)
+        } else if !urls.isEmpty {
+            ScrollView(.horizontal) {
+                HStack(spacing: 8) {
+                    ForEach(urls, id: \.path) { url in
+                        if let image = NSImage(contentsOf: url) {
+                            Image(nsImage: image).resizable().scaledToFill()
+                                .frame(width: 100, height: 82).clipped()
+                                .clipShape(RoundedRectangle(cornerRadius: 7))
                         }
                     }
                 }
@@ -717,6 +796,27 @@ struct MarketingComposerView: View {
 
     private func destinationURLBinding(_ id: String) -> Binding<String> {
         Binding(get: { destinationURLs[id] ?? "" }, set: { destinationURLs[id] = $0 })
+    }
+
+    private var plannedDatePresenceBinding: Binding<Bool> {
+        Binding(get: { plannedDate != nil }, set: { isEnabled in
+            plannedDate = isEnabled ? (plannedDate ?? Date()) : nil
+        })
+    }
+
+    private var plannedDateBinding: Binding<Date> {
+        Binding(get: { plannedDate ?? Date() }, set: { plannedDate = $0 })
+    }
+
+    private func destinationPublicationDatePresenceBinding(_ id: String) -> Binding<Bool> {
+        Binding(get: { destinationPublicationDates[id] != nil }, set: { isEnabled in
+            if isEnabled { destinationPublicationDates[id] = destinationPublicationDates[id] ?? Date() }
+            else { destinationPublicationDates.removeValue(forKey: id) }
+        })
+    }
+
+    private func destinationPublicationDateBinding(_ id: String) -> Binding<Date> {
+        Binding(get: { destinationPublicationDates[id] ?? Date() }, set: { destinationPublicationDates[id] = $0 })
     }
 
     private func effectiveMediaPaths(for id: String) -> [String] {
@@ -771,9 +871,12 @@ struct ComposerDraft: Equatable {
     var originalText: String
     var selectedAccountIDs: Set<String>
     var appIDs: [String]
+    var releaseID: String?
     var customizedText: [String: String]
     var destinationStatuses: [String: String]
     var destinationURLs: [String: String]
+    var plannedDate: Date?
+    var destinationPublicationDates: [String: Date]
     var sharedMediaPaths: [String]
     var destinationMediaOverrides: [String: [String]]
     var preservedDestinationIDs: Set<String>
@@ -790,6 +893,7 @@ extension MarketingComposerView {
         originalText: String,
         customizedText: [String: String] = [:],
         article: ComposerArticleReference? = nil,
+        releases: [ComposerReleaseReference] = [],
         characterGuidelines: [String: Int] = [:],
         requestedNavigationID: Binding<String?>,
         onSave: @escaping (ComposerDraft, @escaping (Bool) -> Void) -> Void,
@@ -815,6 +919,8 @@ extension MarketingComposerView {
             apps: snapshot.apps,
             accounts: snapshot.socialAccounts.map { ComposerSocialAccount(record: $0, snapshot: snapshot) },
             article: article ?? Self.sourceArticle(for: content, snapshot: snapshot),
+            hasUnavailableSource: content.sourceContentId.map { snapshot.contentByID[$0] == nil } ?? false,
+            releases: releases,
             relatedItems: related.map {
                 ComposerRelatedItem(id: $0.id, title: $0.title, kind: $0.kind.rawValue.capitalized, status: $0.status.rawValue.capitalized)
             },
@@ -828,6 +934,7 @@ extension MarketingComposerView {
         )
         _title = State(initialValue: content.title)
         _selectedAppIDs = State(initialValue: Set(content.appIds))
+        _selectedReleaseID = State(initialValue: content.releaseId)
         _originalText = State(initialValue: originalText)
         _includeArticleLink = State(initialValue: content.includeSourceLink)
         _draftStatus = State(initialValue: content.status.rawValue.capitalized)
@@ -838,6 +945,10 @@ extension MarketingComposerView {
         _destinationURLs = State(initialValue: Dictionary(content.destinations.compactMap { destination in
             destination.publishedURL.map { (destination.accountId, $0.absoluteString) }
         }, uniquingKeysWith: { _, latest in latest }))
+        _plannedDate = State(initialValue: content.plannedDate)
+        _destinationPublicationDates = State(initialValue: Dictionary(content.destinations.compactMap { destination in
+            destination.publishedDate.map { (destination.accountId, $0) }
+        }, uniquingKeysWith: { _, latest in latest }))
         _sharedMediaPaths = State(initialValue: content.mediaPaths)
         _destinationMediaOverrides = State(initialValue: Dictionary(content.destinations.compactMap { destination in
             destination.mediaPaths.map { (destination.accountId, $0) }
@@ -845,9 +956,12 @@ extension MarketingComposerView {
         _customMediaAccountIDs = State(initialValue: Set(content.destinations.compactMap { $0.mediaPaths == nil ? nil : $0.accountId }))
         _savedDraftSnapshot = State(initialValue: ComposerDraft(
             title: content.title, originalText: originalText,
-            selectedAccountIDs: selectableIDs, appIDs: content.appIds, customizedText: customizedText,
+            selectedAccountIDs: selectableIDs, appIDs: content.appIds, releaseID: content.releaseId,
+            customizedText: customizedText,
             destinationStatuses: Dictionary(content.destinations.map { ($0.accountId, $0.status.rawValue.capitalized) }, uniquingKeysWith: { _, latest in latest }),
             destinationURLs: Dictionary(content.destinations.compactMap { destination in destination.publishedURL.map { (destination.accountId, $0.absoluteString) } }, uniquingKeysWith: { _, latest in latest }),
+            plannedDate: content.plannedDate,
+            destinationPublicationDates: Dictionary(content.destinations.compactMap { destination in destination.publishedDate.map { (destination.accountId, $0) } }, uniquingKeysWith: { _, latest in latest }),
             sharedMediaPaths: content.mediaPaths,
             destinationMediaOverrides: Dictionary(content.destinations.compactMap { destination in destination.mediaPaths.map { (destination.accountId, $0) } }, uniquingKeysWith: { _, latest in latest }),
             preservedDestinationIDs: unavailableIDs,
@@ -862,14 +976,7 @@ extension MarketingComposerView {
     }
 
     private static func relatedFamily(for content: ContentRecord, snapshot: WorkspaceSnapshot) -> [ContentRecord] {
-        let family = snapshot.content.filter { candidate in
-            guard candidate.id != content.id else { return false }
-            if candidate.id == content.sourceContentId || candidate.sourceContentId == content.id { return true }
-            if let sourceID = content.sourceContentId, candidate.sourceContentId == sourceID { return true }
-            if let groupID = content.relatedGroupId, candidate.relatedGroupId == groupID { return true }
-            return false
-        }
-        return family.sorted { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending }
+        snapshot.relatedFamily(to: content.id)
     }
 }
 

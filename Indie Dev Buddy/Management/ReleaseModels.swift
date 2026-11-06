@@ -18,6 +18,8 @@ nonisolated public struct ReleaseRecord: Codable, Identifiable, Equatable, Senda
     public var status: ReleaseStatus
     public var releaseDate: Date?
     public var notesPath: String
+    /// Optional workspace-relative file paths, stored relative to this release folder.
+    public var assetPaths: [String]?
     public var externalChangelogPath: String?
 
     public init(
@@ -28,6 +30,7 @@ nonisolated public struct ReleaseRecord: Codable, Identifiable, Equatable, Senda
         status: ReleaseStatus = .planned,
         releaseDate: Date? = nil,
         notesPath: String = "notes.md",
+        assetPaths: [String]? = nil,
         externalChangelogPath: String? = nil
     ) {
         self.schemaVersion = schemaVersion
@@ -37,6 +40,7 @@ nonisolated public struct ReleaseRecord: Codable, Identifiable, Equatable, Senda
         self.status = status
         self.releaseDate = releaseDate
         self.notesPath = notesPath
+        self.assetPaths = assetPaths
         self.externalChangelogPath = externalChangelogPath
     }
 }

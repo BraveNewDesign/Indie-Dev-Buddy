@@ -101,7 +101,7 @@ struct ContentMediaView: View {
                 .lineLimit(1)
                 .help(relativePath)
             if fileURL == nil {
-                Label("Invalid or outside content folder", systemImage: "exclamationmark.triangle")
+                Label("Invalid or outside record folder", systemImage: "exclamationmark.triangle")
                     .font(.caption2).foregroundStyle(.red)
             }
             HStack(spacing: 10) {

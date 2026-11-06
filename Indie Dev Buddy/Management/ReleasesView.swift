@@ -15,6 +15,7 @@ private struct ReleaseDraft: Equatable {
     var releaseDate: Date?
     var notes: String
     var externalChangelogPath: String
+    var assetPaths: [String]
 }
 
 private enum PendingReleaseAction {
@@ -30,6 +31,8 @@ public struct ReleasesView: View {
     public let appName: String
     public let appFolderRelativePath: String
     public let workspaceStore: WorkspaceStore
+    public let content: [ContentRecord]
+    private let onOpenContent: (String) -> Void
     private let onDirtyStateChange: (Bool) -> Void
 
     @State private var releases: [StoredRelease] = []
@@ -42,6 +45,7 @@ public struct ReleasesView: View {
     @State private var releaseDate = Date()
     @State private var hasReleaseDate = false
     @State private var notes = ""
+    @State private var assetPaths: [String] = []
     @State private var externalChangelogPath = ""
     @State private var draftReleaseID = UUID().uuidString.lowercased()
     @State private var pendingChangelogBookmark: Data?
@@ -64,7 +68,8 @@ public struct ReleasesView: View {
             status: status,
             releaseDate: hasReleaseDate ? releaseDate : nil,
             notes: notes,
-            externalChangelogPath: externalChangelogPath
+            externalChangelogPath: externalChangelogPath,
+            assetPaths: assetPaths
         )
     }
     private var hasUnsavedChanges: Bool { baselineDraft.map { $0 != currentDraft } ?? false }
@@ -74,12 +79,16 @@ public struct ReleasesView: View {
         appName: String,
         appFolderRelativePath: String,
         workspaceStore: WorkspaceStore,
+        content: [ContentRecord] = [],
+        onOpenContent: @escaping (String) -> Void = { _ in },
         onDirtyStateChange: @escaping (Bool) -> Void = { _ in }
     ) {
         self.appID = appID
         self.appName = appName
         self.appFolderRelativePath = appFolderRelativePath
         self.workspaceStore = workspaceStore
+        self.content = content
+        self.onOpenContent = onOpenContent
         self.onDirtyStateChange = onDirtyStateChange
     }
 
@@ -220,6 +229,40 @@ public struct ReleasesView: View {
                             .disabled(isSaving)
                     }
                 }
+
+                if let selectedRelease {
+                    Section("Release Assets") {
+                        ContentMediaView(contentFolderURL: releaseFolderURL(for: selectedRelease), assetPaths: $assetPaths)
+                    }
+
+                    Section("Related Marketing Content") {
+                        let related = content.filter { $0.releaseId == selectedRelease.id }
+                        if related.isEmpty {
+                            Text("No marketing content is linked to this release yet.")
+                                .foregroundStyle(.secondary)
+                        } else {
+                            ForEach(related) { item in
+                                Button { onOpenContent(item.id) } label: {
+                                    HStack {
+                                        Image(systemName: item.kind == .blog ? "doc.text" : item.kind == .social ? "bubble.left.and.bubble.right" : "lightbulb")
+                                            .foregroundStyle(.secondary)
+                                        VStack(alignment: .leading, spacing: 2) {
+                                            Text(item.title)
+                                            Text("\(item.kind.rawValue.capitalized) · \(item.status.rawValue.capitalized)")
+                                                .font(.caption).foregroundStyle(.secondary)
+                                        }
+                                        Spacer()
+                                        Image(systemName: "arrow.up.right").font(.caption).foregroundStyle(.tertiary)
+                                    }
+                                }
+                                .buttonStyle(.plain)
+                                .help("Open this marketing item")
+                            }
+                        }
+                        Text("Link content to this release from its marketing editor.")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                }
             }
             .formStyle(.grouped)
             .padding(20)
@@ -258,6 +301,7 @@ public struct ReleasesView: View {
         hasReleaseDate = false
         notes = ""
         externalChangelogPath = ""
+        assetPaths = []
         baselineDraft = currentDraft
         reportDirtyState()
     }
@@ -335,6 +379,7 @@ public struct ReleasesView: View {
         releaseDate = item.record.releaseDate ?? Date()
         hasReleaseDate = item.record.releaseDate != nil
         externalChangelogPath = item.record.externalChangelogPath ?? ""
+        assetPaths = item.record.assetPaths ?? []
         selectedRecordRevision = item.recordRevision
         let releaseFolder = String(item.relativeRecordPath.dropLast("/record.json".count))
         let notesPath = "\(releaseFolder)/\(item.record.notesPath)"
@@ -386,6 +431,7 @@ public struct ReleasesView: View {
             status: status,
             releaseDate: hasReleaseDate ? releaseDate : nil,
             notesPath: notesFileName,
+            assetPaths: assetPaths.isEmpty ? nil : assetPaths,
             externalChangelogPath: externalChangelogPath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : externalChangelogPath
         )
         let encoder = JSONEncoder()
@@ -401,18 +447,22 @@ public struct ReleasesView: View {
                 guard currentRecord.revision == selectedRecordRevision else {
                     throw WorkspaceStoreError.conflict(path: recordPath, currentRevision: currentRecord.revision)
                 }
-                _ = try await workspaceStore.write(notesData, relativePath: notesPath, expectedRevision: notesRevision)
-                notesRevision = WorkspaceStore.revision(notesData)
-                let revision = try await workspaceStore.save(record, relativePath: recordPath, expectedRevision: selectedRecordRevision)
-                selectedRecordRevision = revision
+                let revisions = try await workspaceStore.writeBatch([
+                    WorkspaceWriteOperation(data: notesData, relativePath: notesPath, expectedRevision: notesRevision),
+                    WorkspaceWriteOperation(data: try encoder.encode(record), relativePath: recordPath, expectedRevision: selectedRecordRevision)
+                ])
+                notesRevision = revisions[0]
+                selectedRecordRevision = revisions[1]
             } else {
                 guard !releases.contains(where: { $0.record.version.caseInsensitiveCompare(cleanVersion) == .orderedSame }) else {
                     throw WorkspaceStoreError.invalidRelativePath("A release for version \(cleanVersion) already exists.")
                 }
-                _ = try await workspaceStore.write(notesData, relativePath: notesPath)
-                notesRevision = WorkspaceStore.revision(notesData)
-                let revision = try await workspaceStore.save(record, relativePath: recordPath)
-                selectedRecordRevision = revision
+                let revisions = try await workspaceStore.writeBatch([
+                    WorkspaceWriteOperation(data: notesData, relativePath: notesPath),
+                    WorkspaceWriteOperation(data: try encoder.encode(record), relativePath: recordPath)
+                ])
+                notesRevision = revisions[0]
+                selectedRecordRevision = revisions[1]
             }
             if let pendingChangelogBookmark {
                 try saveChangelogBookmark(pendingChangelogBookmark, for: record.id)
@@ -520,6 +570,11 @@ public struct ReleasesView: View {
         let directory = support.appendingPathComponent("Indie Dev Buddy", isDirectory: true)
         if createDirectory { try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true) }
         return directory.appendingPathComponent("ReleaseChangelogBookmarks.plist")
+    }
+
+    private func releaseFolderURL(for release: StoredRelease) -> URL {
+        let folderPath = String(release.relativeRecordPath.dropLast("/record.json".count))
+        return workspaceStore.rootURL.appendingPathComponent(folderPath, isDirectory: true)
     }
 
     private func folderName(for version: String) -> String {

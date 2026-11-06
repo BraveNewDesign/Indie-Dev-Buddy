@@ -28,12 +28,6 @@ private final class TestChangeFlag: @unchecked Sendable {
 
 struct Indie_Dev_BuddyTests {
 
-    @Test func example() async throws {
-        // Write your test here and use APIs like `#expect(...)` to check expected conditions.
-        // Swift Testing Documentation
-        // https://developer.apple.com/documentation/testing
-    }
-
     @Test func workspaceCreationDoesNotOverwriteExistingWorkspace() async throws {
         let parent = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
         defer { try? FileManager.default.removeItem(at: parent) }
@@ -62,6 +56,77 @@ struct Indie_Dev_BuddyTests {
             _ = try await store.write(Data("{}".utf8), relativePath: path, expectedRevision: revision)
             Issue.record("Expected external edit to cause a conflict")
         } catch WorkspaceStoreError.conflict { }
+    }
+
+    @Test func batchWritePreflightPreventsEarlierFilesChangingOnLaterConflict() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let store = WorkspaceStore(rootURL: root)
+        _ = try await store.createWorkspace(at: root)
+        let firstPath = "Content/item/original.txt"
+        let secondPath = "Content/item/record.json"
+        let firstRevision = try await store.write(Data("draft".utf8), relativePath: firstPath)
+        _ = try await store.write(Data("before".utf8), relativePath: secondPath)
+        try Data("external edit".utf8).write(to: root.appendingPathComponent(secondPath), options: .atomic)
+
+        do {
+            _ = try await store.writeBatch([
+                WorkspaceWriteOperation(data: Data("replacement".utf8), relativePath: firstPath, expectedRevision: firstRevision),
+                WorkspaceWriteOperation(data: Data("record".utf8), relativePath: secondPath, expectedRevision: "stale-revision")
+            ])
+            Issue.record("Expected a later conflict to reject the whole batch before writes")
+        } catch WorkspaceStoreError.conflict { }
+
+        #expect(try Data(contentsOf: root.appendingPathComponent(firstPath)) == Data("draft".utf8))
+        #expect(try Data(contentsOf: root.appendingPathComponent(secondPath)) == Data("external edit".utf8))
+    }
+
+    @Test func batchWriteRollsBackEarlierWritesAfterLaterWriteFailure() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let store = WorkspaceStore(rootURL: root)
+        _ = try await store.createWorkspace(at: root)
+        let firstPath = "Content/item/original.txt"
+        let secondPath = "Content/item/record.json"
+        let firstRevision = try await store.write(Data("draft".utf8), relativePath: firstPath)
+        let secondRevision = try await store.write(Data("record".utf8), relativePath: secondPath)
+        await store.setWriteFailureInjectionForTesting(at: secondPath)
+
+        do {
+            _ = try await store.writeBatch([
+                WorkspaceWriteOperation(data: Data("replacement".utf8), relativePath: firstPath, expectedRevision: firstRevision),
+                WorkspaceWriteOperation(data: Data("replacement record".utf8), relativePath: secondPath, expectedRevision: secondRevision)
+            ])
+            Issue.record("Expected the injected later write failure")
+        } catch { }
+
+        #expect(try Data(contentsOf: root.appendingPathComponent(firstPath)) == Data("draft".utf8))
+        #expect(try Data(contentsOf: root.appendingPathComponent(secondPath)) == Data("record".utf8))
+    }
+
+    @Test func socialDestinationEligibilityRejectsWhitespaceOnlyHandle() {
+        let account = SocialAccountRecord(
+            id: "account", platform: "threads", owner: RecordOwner(type: .identity, id: "owner"),
+            handle: " \n\t ", enabled: true
+        )
+        #expect(!account.isEligibleDestination)
+    }
+
+    @Test func socialDestinationEligibilityRequiresEnabledAccountResolvedOwnerAndIdentity() {
+        let ready = SocialAccountRecord(
+            id: "ready", platform: "threads", owner: RecordOwner(type: .identity, id: "owner"),
+            profileURL: URL(string: "https://threads.net/@sample"), enabled: true
+        )
+        let disabled = SocialAccountRecord(id: "disabled", platform: "threads", owner: ready.owner, handle: "@sample", enabled: false)
+        let noOwner = SocialAccountRecord(id: "ownerless", platform: "threads", handle: "@sample")
+        let noPlatform = SocialAccountRecord(id: "platformless", platform: "  ", owner: ready.owner, handle: "@sample")
+
+        #expect(ready.isEligibleDestination)
+        #expect(!disabled.isEligibleDestination)
+        #expect(!noOwner.isEligibleDestination)
+        #expect(!noPlatform.isEligibleDestination)
     }
 
     @Test func workspacePathsCannotEscapeThroughSymlink() async throws {
@@ -112,6 +177,48 @@ struct Indie_Dev_BuddyTests {
         #expect(snapshot.relatedContent(to: "article").map(\.id) == ["social"])
         #expect(snapshot.relatedContent(to: "social").map(\.id) == ["followup"])
         #expect(snapshot.relatedContent(to: "missing").isEmpty)
+    }
+
+    @Test func relatedFamilyIncludesParentSiblingsChildrenAndGroupMembers() {
+        let article = ContentRecord(id: "article", kind: .blog, title: "Article")
+        let postA = ContentRecord(id: "post-a", kind: .social, title: "A post", sourceContentId: "article")
+        let postB = ContentRecord(id: "post-b", kind: .social, title: "B post", sourceContentId: "article")
+        let grouped = ContentRecord(id: "grouped", kind: .idea, title: "Related idea", relatedGroupId: "family")
+        let groupedSibling = ContentRecord(id: "grouped-sibling", kind: .social, title: "Another related item", relatedGroupId: "family")
+        let snapshot = WorkspaceSnapshot(
+            manifest: WorkspaceManifest(), identities: [], apps: [], websites: [], socialAccounts: [],
+            content: [article, postA, postB, grouped, groupedSibling], errors: [], opaqueRecords: []
+        )
+
+        #expect(snapshot.relatedFamily(to: "article").map(\.id) == ["post-a", "post-b"])
+        #expect(snapshot.relatedFamily(to: "post-a").map(\.id) == ["article", "post-b"])
+        #expect(snapshot.relatedFamily(to: "grouped").map(\.id) == ["grouped-sibling"])
+    }
+
+    @Test func generatedWorkspaceGuideDescribesCurrentPathBasesAndSchema() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = WorkspaceStore(rootURL: root)
+        _ = try await store.createWorkspace(at: root)
+
+        let guide = try String(contentsOf: root.appendingPathComponent("AGENTS.md"), encoding: .utf8)
+        #expect(guide.contains("Content body/media paths are relative to the content folder"))
+        #expect(guide.contains("iconPath` is relative to the app folder"))
+        #expect(guide.contains("release notes/assets are relative to that release folder"))
+        #expect(guide.contains("avatarPath` is relative to the workspace root"))
+        #expect(guide.contains("destination's `mediaPaths: null`"))
+        #expect(guide.contains("not crash recovery or a transaction"))
+    }
+
+    @Test func missingWorkspaceCategoryProducesActionableLoadError() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = WorkspaceStore(rootURL: root)
+        _ = try await store.createWorkspace(at: root)
+        try FileManager.default.removeItem(at: root.appendingPathComponent("Websites"))
+
+        let snapshot = try await store.load()
+        #expect(snapshot.errors.contains { $0.path.hasSuffix("/Websites") && $0.message.contains("Could not read workspace records") })
     }
 
     @Test func destinationsDistinguishLiveOriginalFromCustomizedBranch() {
@@ -168,6 +275,7 @@ struct Indie_Dev_BuddyTests {
         let release = ReleaseRecord(
             id: "release-1-2", appId: "app-demo", version: "1.2", status: .released,
             releaseDate: Date(timeIntervalSince1970: 1_800_000_000), notesPath: "notes.md",
+            assetPaths: ["Assets/build-banner.png"],
             externalChangelogPath: "/tmp/CHANGELOG.md"
         )
         let encoder = JSONEncoder()
@@ -186,6 +294,37 @@ struct Indie_Dev_BuddyTests {
         try await store.write(notes, relativePath: "Apps/demo/Releases/1.2/notes.md")
         let loadedNotes = try await store.read(relativePath: "Apps/demo/Releases/1.2/notes.md")
         #expect(loadedNotes.data == notes)
+    }
+
+    @Test func contentPlannedAndPublicationDatesRoundTripAndRemainOptionalForOlderRecords() throws {
+        let planned = Date(timeIntervalSince1970: 1_800_000_000)
+        let published = Date(timeIntervalSince1970: 1_800_086_400)
+        let record = ContentRecord(
+            id: "content-dated", kind: .social, title: "Dated post",
+            plannedDate: planned,
+            destinations: [ContentDestination(accountId: "account", status: .published, publishedDate: published)]
+        )
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+
+        let decoded = try decoder.decode(ContentRecord.self, from: encoder.encode(record))
+        #expect(decoded.plannedDate == planned)
+        #expect(decoded.destinations.first?.publishedDate == published)
+
+        let olderRecord = Data(#"{"schemaVersion":1,"id":"legacy","kind":"social","title":"Older post","appIds":[],"includeSourceLink":false,"status":"draft","destinations":[{"accountId":"legacy-account","status":"draft"}],"mediaPaths":[]}"#.utf8)
+        let legacy = try decoder.decode(ContentRecord.self, from: olderRecord)
+        #expect(legacy.plannedDate == nil)
+        #expect(legacy.destinations.first?.publishedDate == nil)
+    }
+
+    @Test func legacyReleaseRecordsDecodeWithoutAssetPaths() throws {
+        let data = Data("""
+        {"schemaVersion":1,"id":"old-release","appId":"app-demo","version":"1.0","status":"planned","notesPath":"notes.md"}
+        """.utf8)
+        let release = try JSONDecoder().decode(ReleaseRecord.self, from: data)
+        #expect(release.assetPaths == nil)
     }
 
 }

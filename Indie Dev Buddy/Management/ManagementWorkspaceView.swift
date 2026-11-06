@@ -1,9 +1,23 @@
 import SwiftUI
 import AppKit
+import UniformTypeIdentifiers
 
 enum ManagementInitialTab: Equatable {
     case apps
     case websitesAndSocialAccounts
+}
+
+enum ManagementRecordType: Equatable {
+    case app, identity, website, socialAccount
+}
+
+struct ManagementRecordSelection: Equatable {
+    let type: ManagementRecordType
+    let id: String
+}
+
+enum ManagementCreateRequest: Equatable {
+    case app, website, socialAccount
 }
 
 private enum ManagementSection: String, CaseIterable, Identifiable, Equatable {
@@ -23,9 +37,13 @@ struct ManagementWorkspaceView: View {
     let onSnapshotChanged: () -> Void
     let onUnsavedEditsChanged: (Bool) -> Void
     let onOpenMarketingContent: (String) -> Void
+    var selectionRequest: ManagementRecordSelection? = nil
+    var createRequest: ManagementCreateRequest? = nil
+    var onExternalRequestHandled: () -> Void = {}
 
     @State private var section: ManagementSection
     @State private var selectedID: String?
+    @State private var ownerFilterID = "all"
     @State private var creating = false
     @State private var editorIsDirty = false
     @State private var pendingNavigation: PendingManagementNavigation?
@@ -34,13 +52,16 @@ struct ManagementWorkspaceView: View {
     @State private var loadedRevision: String?
     @State private var revisionMismatch = false
 
-    init(initialTab: ManagementInitialTab, snapshot: WorkspaceSnapshot, store: WorkspaceStore, onSnapshotChanged: @escaping () -> Void, onUnsavedEditsChanged: @escaping (Bool) -> Void = { _ in }, onOpenMarketingContent: @escaping (String) -> Void) {
+    init(initialTab: ManagementInitialTab, snapshot: WorkspaceSnapshot, store: WorkspaceStore, onSnapshotChanged: @escaping () -> Void, onUnsavedEditsChanged: @escaping (Bool) -> Void = { _ in }, onOpenMarketingContent: @escaping (String) -> Void, selectionRequest: ManagementRecordSelection? = nil, createRequest: ManagementCreateRequest? = nil, onExternalRequestHandled: @escaping () -> Void = {}) {
         self.initialTab = initialTab
         self.snapshot = snapshot
         self.store = store
         self.onSnapshotChanged = onSnapshotChanged
         self.onUnsavedEditsChanged = onUnsavedEditsChanged
         self.onOpenMarketingContent = onOpenMarketingContent
+        self.selectionRequest = selectionRequest
+        self.createRequest = createRequest
+        self.onExternalRequestHandled = onExternalRequestHandled
         _section = State(initialValue: initialTab == .apps ? .apps : .websites)
     }
 
@@ -58,6 +79,19 @@ struct ManagementWorkspaceView: View {
                 .pickerStyle(.segmented)
                 .padding()
 
+                if section == .websites || section == .socialAccounts {
+                    Picker("Filter by owner", selection: Binding(get: { ownerFilterID }, set: requestOwnerFilter)) {
+                        Text("All owners").tag("all")
+                        ForEach(ownerChoices) { owner in
+                            Text("\(owner.title) · \(owner.detail)").tag(owner.id)
+                        }
+                        Text("Unassigned / missing").tag("unassigned")
+                    }
+                    .pickerStyle(.menu)
+                    .padding(.horizontal)
+                    .padding(.bottom, 8)
+                }
+
                 List(selection: Binding(get: { selectedID }, set: requestSelection)) {
                     ForEach(rows) { row in
                         Label {
@@ -68,7 +102,11 @@ struct ManagementWorkspaceView: View {
                                 }
                             }
                         } icon: {
-                            Image(systemName: row.symbol).foregroundStyle(.secondary)
+                            if let iconURL = row.iconURL, let image = NSImage(contentsOf: iconURL) {
+                                Image(nsImage: image).resizable().scaledToFit().frame(width: 24, height: 24)
+                            } else {
+                                Image(systemName: row.symbol).foregroundStyle(.secondary)
+                            }
                         }
                         .tag(Optional(row.id))
                     }
@@ -101,7 +139,20 @@ struct ManagementWorkspaceView: View {
             Button("Discard Changes", role: .destructive) { applyPendingNavigation() }
             Button("Keep Editing", role: .cancel) { pendingNavigation = nil }
         } message: { Text("Your changes haven’t been saved. Discard them and continue?") }
-        .onChange(of: section) { _, _ in selectedID = nil; creating = false }
+        .onChange(of: selectionRequest) { _, request in
+            guard let request else { return }
+            selectExternally(request)
+            onExternalRequestHandled()
+        }
+        .onChange(of: createRequest) { _, request in
+            guard let request else { return }
+            createExternally(request)
+            onExternalRequestHandled()
+        }
+        .onAppear {
+            if let selectionRequest { selectExternally(selectionRequest); onExternalRequestHandled() }
+            if let createRequest { createExternally(createRequest); onExternalRequestHandled() }
+        }
         .task(id: selectedID) { await loadSelectedRevision() }
     }
 
@@ -130,15 +181,25 @@ struct ManagementWorkspaceView: View {
     private var rows: [ManagementRow] {
         switch section {
         case .apps:
-            snapshot.apps.map { ManagementRow(id: $0.id, title: $0.name, subtitle: $0.platforms.joined(separator: ", "), symbol: "app.dashed") }
+            snapshot.apps.map { app in
+                let details = [
+                    app.platforms.joined(separator: ", "),
+                    (app.developmentStatus ?? .development).label,
+                    app.description?.trimmingCharacters(in: .whitespacesAndNewlines)
+                ].compactMap { $0 }.filter { !$0.isEmpty }
+                let recordPath = Self.findRecordPath(root: store.rootURL, category: "Apps", id: app.id)
+                let folderPath = recordPath.map { String($0.dropLast("/record.json".count)) }
+                let iconURL = folderPath.flatMap { Self.safeAppIconURL(root: store.rootURL, appFolderRelativePath: $0, iconPath: app.iconPath) }
+                return ManagementRow(id: app.id, title: app.name, subtitle: details.joined(separator: " · "), symbol: "app.dashed", iconURL: iconURL)
+            }
         case .identities:
             snapshot.identities.map { ManagementRow(id: $0.id, title: $0.name, subtitle: $0.kind ?? "", symbol: "person.crop.circle") }
         case .websites:
-            snapshot.websites.map { record in
+            snapshot.websites.filter { matchesOwnerFilter($0.owner) }.map { record in
                 ManagementRow(id: record.id, title: record.name, subtitle: "\(ownerName(record.owner)) · \(record.baseURL.absoluteString)", symbol: "globe")
             }
         case .socialAccounts:
-            snapshot.socialAccounts.map { record in
+            snapshot.socialAccounts.filter { matchesOwnerFilter($0.owner) }.map { record in
                 let account = [record.platform, record.handle].compactMap { $0 }.joined(separator: " · ")
                 return ManagementRow(id: record.id, title: account.isEmpty ? "Unconfigured account" : account, subtitle: record.owner.map(ownerName) ?? "Owner not set", symbol: "bubble.left.and.bubble.right")
             }
@@ -179,7 +240,7 @@ struct ManagementWorkspaceView: View {
         WebsiteRecordEditor(record: record, owners: ownerChoices, onDirtyChange: setDirty, onSave: { await save($0, category: "Websites", name: $0.name, expectedRevision: loadedRevision) }).id(record?.id ?? "new-website")
     }
     @ViewBuilder private func editor(for record: SocialAccountRecord?) -> some View {
-        SocialAccountRecordEditor(record: record, owners: ownerChoices, onDirtyChange: setDirty, onSave: { await save($0, category: "SocialAccounts", name: $0.platform, expectedRevision: loadedRevision) }).id(record?.id ?? "new-social-account")
+        SocialAccountRecordEditor(record: record, owners: ownerChoices, workspaceStore: store, onDirtyChange: setDirty, onSave: { await save($0, category: "SocialAccounts", name: $0.platform, expectedRevision: loadedRevision) }).id(record?.id ?? "new-social-account")
     }
 
     private var ownerChoices: [OwnerChoice] {
@@ -196,6 +257,31 @@ struct ManagementWorkspaceView: View {
 
     private func beginCreate() { requestNavigation(.create) }
 
+    private func selectExternally(_ request: ManagementRecordSelection) {
+        let target: ManagementSection
+        switch request.type {
+        case .app: target = .apps
+        case .identity: target = .identities
+        case .website: target = .websites
+        case .socialAccount: target = .socialAccounts
+        }
+        requestNavigation(.record(target, request.id))
+    }
+
+    private func createExternally(_ request: ManagementCreateRequest) {
+        switch request {
+        case .app:
+            guard initialTab == .apps else { return }
+            requestNavigation(.createInSection(.apps))
+        case .website:
+            guard initialTab == .websitesAndSocialAccounts else { return }
+            requestNavigation(.createInSection(.websites))
+        case .socialAccount:
+            guard initialTab == .websitesAndSocialAccounts else { return }
+            requestNavigation(.createInSection(.socialAccounts))
+        }
+    }
+
     private func requestSection(_ value: ManagementSection) {
         guard value != section else { return }
         requestNavigation(.section(value))
@@ -204,6 +290,11 @@ struct ManagementWorkspaceView: View {
     private func requestSelection(_ value: String?) {
         guard value != selectedID else { return }
         requestNavigation(.selection(value))
+    }
+
+    private func requestOwnerFilter(_ value: String) {
+        guard value != ownerFilterID else { return }
+        requestNavigation(.ownerFilter(value))
     }
 
     private func requestNavigation(_ value: PendingManagementNavigation) {
@@ -221,9 +312,28 @@ struct ManagementWorkspaceView: View {
         switch value {
         case .section(let next): section = next; selectedID = nil; creating = false
         case .selection(let next): selectedID = next; creating = false
+        case .record(let target, let id):
+            section = target
+            selectedID = id
+            creating = false
+            if target == .websites || target == .socialAccounts { ownerFilterID = "all" }
+        case .createInSection(let target): section = target; selectedID = nil; creating = true
         case .create: selectedID = nil; creating = true
+        case .ownerFilter(let value): ownerFilterID = value; selectedID = nil; creating = false
         }
         setDirty(false)
+    }
+
+    private func matchesOwnerFilter(_ owner: RecordOwner?) -> Bool {
+        switch ownerFilterID {
+        case "all": return true
+        case "unassigned":
+            guard let owner else { return true }
+            return !ownerChoices.contains { $0.owner == owner }
+        default:
+            guard let owner else { return false }
+            return "\(owner.type.rawValue):\(owner.id)" == ownerFilterID
+        }
     }
 
     private func setDirty(_ value: Bool) {
@@ -339,6 +449,19 @@ struct ManagementWorkspaceView: View {
         return nil
     }
 
+    private static func safeAppIconURL(root: URL, appFolderRelativePath: String, iconPath: String?) -> URL? {
+        guard let iconPath, !iconPath.isEmpty, !iconPath.hasPrefix("/"),
+              !iconPath.split(separator: "/").contains("..") else { return nil }
+        let resolvedRoot = root.standardizedFileURL.resolvingSymlinksInPath()
+        let folder = root.appendingPathComponent(appFolderRelativePath, isDirectory: true).standardizedFileURL.resolvingSymlinksInPath()
+        let resolved = folder.appendingPathComponent(iconPath).standardizedFileURL.resolvingSymlinksInPath()
+        let folderPrefix = folder.path.hasSuffix("/") ? folder.path : folder.path + "/"
+        let workspacePrefix = resolvedRoot.path.hasSuffix("/") ? resolvedRoot.path : resolvedRoot.path + "/"
+        guard folder.path.hasPrefix(workspacePrefix), resolved.path.hasPrefix(folderPrefix),
+              FileManager.default.fileExists(atPath: resolved.path) else { return nil }
+        return resolved
+    }
+
     private static func slug(_ text: String) -> String {
         let pieces = text.lowercased().split(whereSeparator: { !$0.isLetter && !$0.isNumber })
         let value = pieces.prefix(8).joined(separator: "-")
@@ -349,7 +472,10 @@ struct ManagementWorkspaceView: View {
 private enum PendingManagementNavigation {
     case section(ManagementSection)
     case selection(String?)
+    case record(ManagementSection, String)
+    case createInSection(ManagementSection)
     case create
+    case ownerFilter(String)
 }
 
 private struct ManagementRow: Identifiable {
@@ -357,6 +483,7 @@ private struct ManagementRow: Identifiable {
     let title: String
     let subtitle: String
     let symbol: String
+    var iconURL: URL? = nil
 }
 
 private struct OwnerChoice: Identifiable, Hashable {
@@ -379,6 +506,9 @@ private struct AppRecordEditor: View {
     let onDirtyChange: (Bool) -> Void
     let onSave: (AppRecord) async -> Bool
     @State private var name = ""
+    @State private var appDescription = ""
+    @State private var bundleIDs = ""
+    @State private var developmentStatus = AppDevelopmentStatus.development.rawValue
     @State private var developerID = ""
     @State private var platforms = ""
     @State private var projectPath = ""
@@ -388,6 +518,14 @@ private struct AppRecordEditor: View {
     @State private var draftID = UUID().uuidString.lowercased()
     @State private var repositoryURL = ""
     @State private var appStoreURL = ""
+    @State private var testFlightURL = ""
+    @State private var iconPath: String?
+    @State private var iconPreview: NSImage?
+    @State private var pendingIconData: Data?
+    @State private var pendingIconRevision: String?
+    @State private var pendingIconWrittenPath: String?
+    @State private var iconError: String?
+    @State private var showingIconPicker = false
     @State private var links: [AppWebsiteLink] = []
     @State private var saving = false
     @State private var detailTab = "Overview"
@@ -413,7 +551,7 @@ private struct AppRecordEditor: View {
                     .allowsHitTesting(detailTab == "Overview")
                     .accessibilityHidden(detailTab != "Overview")
                 if let appFolderRelativePath {
-                    ReleasesView(appID: record?.id ?? draftID, appName: name.isEmpty ? "App" : name, appFolderRelativePath: appFolderRelativePath, workspaceStore: workspaceStore, onDirtyStateChange: reportReleaseDirty)
+                    ReleasesView(appID: record?.id ?? draftID, appName: name.isEmpty ? "App" : name, appFolderRelativePath: appFolderRelativePath, workspaceStore: workspaceStore, content: snapshot.content, onOpenContent: onOpenMarketingContent, onDirtyStateChange: reportReleaseDirty)
                         .id(record?.id ?? draftID)
                         .opacity(detailTab == "Releases" ? 1 : 0)
                         .allowsHitTesting(detailTab == "Releases")
@@ -516,12 +654,41 @@ private struct AppRecordEditor: View {
     private var overviewForm: some View {
         Form {
             Section("App") {
+                HStack(spacing: 14) {
+                    Group {
+                        if let iconPreview { Image(nsImage: iconPreview).resizable().scaledToFit() }
+                        else { Image(systemName: "app.dashed").resizable().scaledToFit().foregroundStyle(.secondary) }
+                    }
+                    .frame(width: 64, height: 64)
+                    .clipShape(RoundedRectangle(cornerRadius: 12))
+                    .accessibilityLabel(iconPreview == nil ? "No app icon selected" : "App icon preview")
+                    VStack(alignment: .leading, spacing: 8) {
+                        Button(iconPath == nil ? "Choose App Icon…" : "Replace App Icon…") { showingIconPicker = true }
+                        if iconPath != nil {
+                            Button("Clear App Icon", role: .destructive) {
+                                iconPath = nil
+                                iconPreview = nil
+                                pendingIconData = nil
+                                pendingIconRevision = nil
+                                pendingIconWrittenPath = nil
+                                iconError = nil
+                            }
+                        }
+                        if let iconError { Text(iconError).font(.caption).foregroundStyle(.red) }
+                        else if let iconPath { Text(URL(fileURLWithPath: iconPath).lastPathComponent).font(.caption).foregroundStyle(.secondary).lineLimit(1) }
+                        else { Text("Optional artwork copied into this app’s workspace Assets folder.").font(.caption).foregroundStyle(.secondary) }
+                    }
+                }
                 TextField("Name", text: $name)
                 Picker("Developer identity", selection: $developerID) {
                     Text("None").tag("")
                     ForEach(identities) { Text($0.name).tag($0.id) }
                 }
                 TextField("Platforms (comma separated)", text: $platforms, prompt: Text("macOS, iOS"))
+                Picker("Development state", selection: $developmentStatus) {
+                    ForEach(AppDevelopmentStatus.allCases) { status in Text(status.label).tag(status.rawValue) }
+                }
+                TextField("Bundle IDs (comma separated, optional)", text: $bundleIDs, prompt: Text("com.example.app"))
                 VStack(alignment: .leading, spacing: 8) {
                     HStack {
                         Text("Xcode project location")
@@ -542,10 +709,29 @@ private struct AppRecordEditor: View {
                     }
                     if let projectMessage { Text(projectMessage).font(.caption).foregroundStyle(.red) }
                 }
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Description")
+                        .font(.headline)
+                    TextEditor(text: $appDescription)
+                        .font(.body)
+                        .frame(minHeight: 80)
+                        .accessibilityLabel("App description")
+                    Text("A short summary shown with this app in the workspace.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
             }
             Section("Links") {
                 TextField("Repository URL", text: $repositoryURL)
                 TextField("App Store URL", text: $appStoreURL)
+                TextField("TestFlight URL", text: $testFlightURL)
+                HStack {
+                    if let url = optionalWebURL(appStoreURL) {
+                        Button("Open App Store", systemImage: "arrow.up.right.square") { NSWorkspace.shared.open(url) }
+                    }
+                    if let url = optionalWebURL(testFlightURL) {
+                        Button("Open TestFlight", systemImage: "arrow.up.right.square") { NSWorkspace.shared.open(url) }
+                    }
+                }
             }
             Section("Website pages") {
                 if links.isEmpty { Text("No website pages linked.").foregroundStyle(.secondary) }
@@ -571,6 +757,14 @@ private struct AppRecordEditor: View {
             saveBar
         }
         .formStyle(.grouped)
+        .fileImporter(isPresented: $showingIconPicker, allowedContentTypes: [.image], allowsMultipleSelection: false) { result in
+            switch result {
+            case .success(let urls):
+                guard let url = urls.first else { return }
+                Task { await importAppIcon(from: url) }
+            case .failure(let error): iconError = error.localizedDescription
+            }
+        }
     }
 
     /// Resolve by stable record ID so renaming the app folder or title does not strand releases.
@@ -600,23 +794,129 @@ private struct AppRecordEditor: View {
     }
     private func load() {
         guard let record else { return }
-        name = record.name; developerID = record.developerIdentityId ?? ""; platforms = record.platforms.joined(separator: ", ")
+        name = record.name; appDescription = record.description ?? ""; bundleIDs = record.bundleIDs?.joined(separator: ", ") ?? ""
+        developmentStatus = (record.developmentStatus ?? .development).rawValue
+        developerID = record.developerIdentityId ?? ""; platforms = record.platforms.joined(separator: ", ")
         draftID = record.id
-        projectPath = record.projectPath ?? ""; repositoryURL = record.repositoryURL?.absoluteString ?? ""; appStoreURL = record.appStoreURL?.absoluteString ?? ""; links = record.websiteLinks
+        projectPath = record.projectPath ?? ""; repositoryURL = record.repositoryURL?.absoluteString ?? ""; appStoreURL = record.appStoreURL?.absoluteString ?? ""; testFlightURL = record.testFlightURL?.absoluteString ?? ""; links = record.websiteLinks
+        iconPath = record.iconPath
+        if iconPath != nil { Task { await loadAppIconPreview() } }
         resolveProjectLocation()
     }
     private func save() async {
-        saving = true; defer { saving = false }
-        if await onSave(draftRecord) { reportOverviewDirty(false) }
+        saving = true
+        defer { saving = false }
+        do {
+            if let pendingIconData, let iconPath {
+                guard let appFolder = targetAppFolderRelativePath else { throw CocoaError(.fileNoSuchFile) }
+                let destination = "\(appFolder)/\(iconPath)"
+                pendingIconRevision = try await workspaceStore.write(
+                    pendingIconData,
+                    relativePath: destination,
+                    expectedRevision: pendingIconWrittenPath == destination ? pendingIconRevision : nil
+                )
+                pendingIconWrittenPath = destination
+            }
+            if await onSave(draftRecord) {
+                pendingIconData = nil
+                pendingIconRevision = nil
+                pendingIconWrittenPath = nil
+                iconError = nil
+                reportOverviewDirty(false)
+            }
+        } catch {
+            iconError = "Could not save the app icon: \(error.localizedDescription)"
+        }
+    }
+
+    private var targetAppFolderRelativePath: String? {
+        if let appFolderRelativePath { return appFolderRelativePath }
+        guard !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+        return "Apps/\(Self.folderSlug(name))-\((record?.id ?? draftID).prefix(8))"
+    }
+
+    private static func folderSlug(_ text: String) -> String {
+        let pieces = text.lowercased().split(whereSeparator: { !$0.isLetter && !$0.isNumber })
+        let value = pieces.prefix(8).joined(separator: "-")
+        return value.isEmpty ? "record" : value
+    }
+
+    private func importAppIcon(from sourceURL: URL) async {
+        let access = sourceURL.startAccessingSecurityScopedResource()
+        defer { if access { sourceURL.stopAccessingSecurityScopedResource() } }
+        do {
+            let data = try Data(contentsOf: sourceURL)
+            guard !data.isEmpty, data.count <= 20 * 1_024 * 1_024,
+                  let image = NSImage(data: data),
+                  let type = UTType(filenameExtension: sourceURL.pathExtension), type.conforms(to: .image) else {
+                throw CocoaError(.fileReadCorruptFile)
+            }
+            let ext = type.preferredFilenameExtension ?? sourceURL.pathExtension.lowercased()
+            guard !ext.isEmpty, ext.unicodeScalars.allSatisfy({ CharacterSet.alphanumerics.contains($0) }) else {
+                throw CocoaError(.fileReadInvalidFileName)
+            }
+            iconPath = "Assets/app-icon-\(UUID().uuidString.lowercased()).\(ext)"
+            pendingIconData = data
+            pendingIconRevision = nil
+            pendingIconWrittenPath = nil
+            iconPreview = image
+            iconError = nil
+        } catch {
+            iconError = "Could not import this app icon: \(error.localizedDescription)"
+        }
+    }
+
+    private func safeAppIconRelativePath(_ iconPath: String) -> String? {
+        guard !iconPath.isEmpty, !iconPath.hasPrefix("/"),
+              !iconPath.split(separator: "/").contains(".."),
+              let appFolderRelativePath else { return nil }
+        let root = workspaceStore.rootURL.standardizedFileURL.resolvingSymlinksInPath()
+        let folder = workspaceStore.rootURL.appendingPathComponent(appFolderRelativePath, isDirectory: true).standardizedFileURL.resolvingSymlinksInPath()
+        let image = folder.appendingPathComponent(iconPath).standardizedFileURL.resolvingSymlinksInPath()
+        let folderPrefix = folder.path.hasSuffix("/") ? folder.path : folder.path + "/"
+        let rootPrefix = root.path.hasSuffix("/") ? root.path : root.path + "/"
+        guard folder.path.hasPrefix(rootPrefix), image.path.hasPrefix(folderPrefix) else { return nil }
+        return "\(appFolderRelativePath)/\(iconPath)"
+    }
+
+    private func loadAppIconPreview() async {
+        guard let iconPath, let safeRelativePath = safeAppIconRelativePath(iconPath) else { return }
+        do {
+            let data = try await workspaceStore.read(relativePath: safeRelativePath).data
+            guard self.iconPath == iconPath else { return }
+            iconPreview = NSImage(data: data)
+            if iconPreview == nil { iconError = "The linked icon file is not a readable image. Replace or clear it." }
+        } catch {
+            guard self.iconPath == iconPath else { return }
+            iconPreview = nil
+            iconError = "The linked icon is unavailable. Replace or clear it. \(error.localizedDescription)"
+        }
     }
 
     private var draftRecord: AppRecord {
-        AppRecord(id: record?.id ?? draftID, name: name.trimmingCharacters(in: .whitespacesAndNewlines), developerIdentityId: developerID.isEmpty ? nil : developerID, platforms: platforms.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }, projectPath: projectPath.isEmpty ? nil : projectPath, repositoryURL: optionalWebURL(repositoryURL), appStoreURL: optionalWebURL(appStoreURL), websiteLinks: links)
+        let parsedBundleIDs = bundleIDs.split(separator: ",").map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
+        return AppRecord(
+            id: record?.id ?? draftID,
+            name: name.trimmingCharacters(in: .whitespacesAndNewlines),
+            description: appDescription.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : appDescription,
+            bundleIDs: parsedBundleIDs.isEmpty ? nil : parsedBundleIDs,
+            developmentStatus: AppDevelopmentStatus(rawValue: developmentStatus) ?? .development,
+            iconPath: iconPath,
+            developerIdentityId: developerID.isEmpty ? nil : developerID,
+            platforms: platforms.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) },
+            projectPath: projectPath.isEmpty ? nil : projectPath,
+            repositoryURL: optionalWebURL(repositoryURL), appStoreURL: optionalWebURL(appStoreURL),
+            testFlightURL: optionalWebURL(testFlightURL), websiteLinks: links
+        )
     }
 
     private var isDirty: Bool {
-        if let record { return draftRecord != record }
-        return !draftRecord.name.isEmpty || developerID != "" || !platforms.isEmpty || !projectPath.isEmpty || !repositoryURL.isEmpty || !appStoreURL.isEmpty || !links.isEmpty
+        if var record {
+            // Older records omit the state; the editor displays the same default.
+            if record.developmentStatus == nil { record.developmentStatus = .development }
+            return draftRecord != record
+        }
+        return !draftRecord.name.isEmpty || !appDescription.isEmpty || !bundleIDs.isEmpty || developmentStatus != AppDevelopmentStatus.development.rawValue || developerID != "" || !platforms.isEmpty || !projectPath.isEmpty || !repositoryURL.isEmpty || !appStoreURL.isEmpty || !testFlightURL.isEmpty || iconPath != nil || !links.isEmpty
     }
 
     private var bookmarkKey: String { "projectLocationBookmark.\(record?.id ?? draftID)" }
@@ -635,7 +935,7 @@ private struct AppRecordEditor: View {
             let hasAccess = url.startAccessingSecurityScopedResource()
             defer { if hasAccess { url.stopAccessingSecurityScopedResource() } }
             let bookmark = try url.bookmarkData(options: .withSecurityScope, includingResourceValuesForKeys: nil, relativeTo: nil)
-            UserDefaults.standard.set(bookmark, forKey: bookmarkKey)
+            try LocalBookmarkStore.setBookmark(bookmark, forKey: bookmarkKey)
             projectPath = url.path
             projectURL = url
             projectAvailable = true
@@ -648,12 +948,12 @@ private struct AppRecordEditor: View {
 
     private func resolveProjectLocation() {
         guard !projectPath.isEmpty else { projectURL = nil; projectAvailable = false; return }
-        guard let bookmark = UserDefaults.standard.data(forKey: bookmarkKey) else {
-            projectURL = nil; projectAvailable = false
-            projectMessage = "Access to this location is unavailable. Relink the project to continue."
-            return
-        }
         do {
+            guard let bookmark = try LocalBookmarkStore.bookmark(forKey: bookmarkKey) else {
+                projectURL = nil; projectAvailable = false
+                projectMessage = "Access to this location is unavailable. Relink the project to continue."
+                return
+            }
             var isStale = false
             let url = try URL(resolvingBookmarkData: bookmark, options: .withSecurityScope, relativeTo: nil, bookmarkDataIsStale: &isStale)
             let hasAccess = url.startAccessingSecurityScopedResource()
@@ -668,7 +968,7 @@ private struct AppRecordEditor: View {
             projectMessage = nil
             if isStale {
                 let refreshed = try url.bookmarkData(options: .withSecurityScope, includingResourceValuesForKeys: nil, relativeTo: nil)
-                UserDefaults.standard.set(refreshed, forKey: bookmarkKey)
+                try LocalBookmarkStore.setBookmark(refreshed, forKey: bookmarkKey)
             }
         } catch {
             projectURL = nil; projectAvailable = false
@@ -774,6 +1074,7 @@ private struct WebsiteRecordEditor: View {
 private struct SocialAccountRecordEditor: View {
     let record: SocialAccountRecord?
     let owners: [OwnerChoice]
+    let workspaceStore: WorkspaceStore
     let onDirtyChange: (Bool) -> Void
     let onSave: (SocialAccountRecord) async -> Bool
     @State private var platform = "Threads"
@@ -782,6 +1083,11 @@ private struct SocialAccountRecordEditor: View {
     @State private var handle = ""
     @State private var profileURL = ""
     @State private var enabled = true
+    @State private var draftID = UUID().uuidString.lowercased()
+    @State private var avatarPath: String?
+    @State private var avatarPreview: NSImage?
+    @State private var avatarError: String?
+    @State private var showingAvatarPicker = false
     @State private var saving = false
     private let platforms = ["Threads", "Instagram", "X", "Facebook", "LinkedIn", "Other"]
     private var platformValue: String { platform == "Other" ? customPlatform : platform }
@@ -800,33 +1106,135 @@ private struct SocialAccountRecordEditor: View {
                 Text("A new post can use this account when it is enabled, has an owner, and has a platform plus a handle or profile URL.")
                     .font(.caption).foregroundStyle(.secondary)
             }
+            Section("Avatar") {
+                HStack(spacing: 14) {
+                    Group {
+                        if let avatarPreview {
+                            Image(nsImage: avatarPreview).resizable().scaledToFill()
+                        } else {
+                            Image(systemName: "person.crop.circle.fill").resizable().scaledToFit()
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    .frame(width: 64, height: 64)
+                    .clipShape(Circle())
+                    .accessibilityLabel(avatarPreview == nil ? "No account avatar selected" : "Account avatar preview")
+                    VStack(alignment: .leading, spacing: 8) {
+                        Button(avatarPath == nil ? "Choose Avatar…" : "Replace Avatar…") { showingAvatarPicker = true }
+                        if avatarPath != nil {
+                            Button("Clear Avatar", role: .destructive) {
+                                avatarPath = nil
+                                avatarPreview = nil
+                                avatarError = nil
+                            }
+                        }
+                        if let avatarError {
+                            Text(avatarError).font(.caption).foregroundStyle(.red)
+                        } else if let avatarPath {
+                            Text(URL(fileURLWithPath: avatarPath).lastPathComponent)
+                                .font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                        } else {
+                            Text("Optional image stored in the workspace.")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                    }
+                }
+            }
             Section { HStack { Spacer(); Button("Save Social Account") { Task { await save() } }.buttonStyle(.borderedProminent).disabled(platformValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || ownerID.isEmpty || (handle.isEmpty && profileURL.isEmpty) || saving) } }
         }
         .formStyle(.grouped)
         .navigationTitle(record == nil ? "New Social Account" : platformValue)
         .onAppear(perform: load)
         .onChange(of: dirtySignature) { _, _ in onDirtyChange(isDirty) }
+        .fileImporter(isPresented: $showingAvatarPicker, allowedContentTypes: [.image], allowsMultipleSelection: false) { result in
+            switch result {
+            case .success(let urls):
+                guard let url = urls.first else { return }
+                Task { await importAvatar(from: url) }
+            case .failure(let error): avatarError = error.localizedDescription
+            }
+        }
     }
     private func load() {
         guard let record else { ownerID = owners.first?.id ?? ""; return }
+        draftID = record.id
         platform = platforms.contains(record.platform) ? record.platform : "Other"
         customPlatform = platforms.contains(record.platform) ? "" : record.platform
         ownerID = record.owner.map { "\($0.type.rawValue):\($0.id)" } ?? ""
         handle = record.handle ?? ""; profileURL = record.profileURL?.absoluteString ?? ""; enabled = record.enabled
+        avatarPath = record.avatarPath
+        if let avatarPath { Task { await loadAvatarPreview(relativePath: avatarPath) } }
+    }
+    private func loadAvatarPreview(relativePath: String) async {
+        do {
+            let imageData = try await workspaceStore.read(relativePath: relativePath).data
+            guard avatarPath == relativePath else { return }
+            avatarPreview = NSImage(data: imageData)
+            if avatarPreview == nil { avatarError = "The linked avatar file is not a readable image. Replace it or clear the avatar." }
+        } catch {
+            guard avatarPath == relativePath else { return }
+            avatarPreview = nil
+            avatarError = "The linked avatar is unavailable. Replace it or clear the avatar. \(error.localizedDescription)"
+        }
+    }
+    private func importAvatar(from sourceURL: URL) async {
+        let access = sourceURL.startAccessingSecurityScopedResource()
+        defer { if access { sourceURL.stopAccessingSecurityScopedResource() } }
+        do {
+            let sourceData = try Data(contentsOf: sourceURL)
+            guard !sourceData.isEmpty, sourceData.count <= 20 * 1_024 * 1_024,
+                  let image = NSImage(data: sourceData),
+                  let contentType = UTType(filenameExtension: sourceURL.pathExtension), contentType.conforms(to: .image) else {
+                throw CocoaError(.fileReadCorruptFile)
+            }
+            let accountID = record?.id ?? draftID
+            let accountFolder = try await avatarFolderRelativePath(for: accountID)
+            let ext = contentType.preferredFilenameExtension ?? sourceURL.pathExtension.lowercased()
+            guard !ext.isEmpty, ext.unicodeScalars.allSatisfy({ CharacterSet.alphanumerics.contains($0) }) else {
+                throw CocoaError(.fileReadInvalidFileName)
+            }
+            let relativePath = "\(accountFolder)/Assets/avatar-\(UUID().uuidString.lowercased()).\(ext)"
+            _ = try await workspaceStore.write(sourceData, relativePath: relativePath, expectedRevision: nil)
+            avatarPath = relativePath
+            avatarPreview = image
+            avatarError = nil
+        } catch {
+            avatarError = "Could not import this avatar: \(error.localizedDescription)"
+        }
+    }
+    private func avatarFolderRelativePath(for accountID: String) async throws -> String {
+        if record != nil {
+            let category = workspaceStore.rootURL.appendingPathComponent("SocialAccounts", isDirectory: true)
+            let folders = try FileManager.default.contentsOfDirectory(at: category, includingPropertiesForKeys: [.isDirectoryKey])
+            let decoder = JSONDecoder()
+            for folder in folders where (try? folder.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true {
+                let relativeRecord = "SocialAccounts/\(folder.lastPathComponent)/record.json"
+                guard let bytes = try? await workspaceStore.read(relativePath: relativeRecord),
+                      let stored = try? decoder.decode(SocialAccountRecord.self, from: bytes.data), stored.id == accountID else { continue }
+                return "SocialAccounts/\(folder.lastPathComponent)"
+            }
+            throw CocoaError(.fileNoSuchFile)
+        }
+        return "SocialAccounts/\(folderName(platformValue))-\(accountID.prefix(8))"
+    }
+    private func folderName(_ value: String) -> String {
+        let pieces = value.lowercased().split(whereSeparator: { !$0.isLetter && !$0.isNumber })
+        let slug = pieces.prefix(8).joined(separator: "-")
+        return slug.isEmpty ? "record" : slug
     }
     private func save() async {
         guard let choice = owners.first(where: { $0.id == ownerID }) else { return }
         saving = true; defer { saving = false }
-        if await onSave(SocialAccountRecord(id: record?.id ?? UUID().uuidString.lowercased(), platform: platformValue.trimmingCharacters(in: .whitespacesAndNewlines), owner: choice.owner, handle: handle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : handle.trimmingCharacters(in: .whitespacesAndNewlines), profileURL: optionalWebURL(profileURL), enabled: enabled)) { onDirtyChange(false) }
+        if await onSave(SocialAccountRecord(id: record?.id ?? draftID, platform: platformValue.trimmingCharacters(in: .whitespacesAndNewlines), owner: choice.owner, handle: handle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : handle.trimmingCharacters(in: .whitespacesAndNewlines), profileURL: optionalWebURL(profileURL), avatarPath: avatarPath, enabled: enabled)) { onDirtyChange(false) }
     }
-    private var dirtySignature: String { "\(platform)|\(customPlatform)|\(ownerID)|\(handle)|\(profileURL)|\(enabled)" }
+    private var dirtySignature: String { "\(platform)|\(customPlatform)|\(ownerID)|\(handle)|\(profileURL)|\(enabled)|\(avatarPath ?? "")" }
     private var isDirty: Bool {
         if let record {
             let savedPlatform = platforms.contains(record.platform) ? record.platform : "Other"
             let savedCustomPlatform = platforms.contains(record.platform) ? "" : record.platform
-            return platform != savedPlatform || customPlatform != savedCustomPlatform || ownerID != (record.owner.map { "\($0.type.rawValue):\($0.id)" } ?? "") || handle != (record.handle ?? "") || profileURL != (record.profileURL?.absoluteString ?? "") || enabled != record.enabled
+            return platform != savedPlatform || customPlatform != savedCustomPlatform || ownerID != (record.owner.map { "\($0.type.rawValue):\($0.id)" } ?? "") || handle != (record.handle ?? "") || profileURL != (record.profileURL?.absoluteString ?? "") || enabled != record.enabled || avatarPath != record.avatarPath
         }
-        return platform != "Threads" || !customPlatform.isEmpty || ownerID != (owners.first?.id ?? "") || !handle.isEmpty || !profileURL.isEmpty || !enabled
+        return platform != "Threads" || !customPlatform.isEmpty || ownerID != (owners.first?.id ?? "") || !handle.isEmpty || !profileURL.isEmpty || !enabled || avatarPath != nil
     }
 }
 
