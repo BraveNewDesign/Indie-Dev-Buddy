@@ -181,6 +181,7 @@ struct MarketingComposerView: View {
                         Text("Preview").tag(true)
                     }
                     .pickerStyle(.segmented)
+                    .labelsHidden()
                     .padding(.horizontal, 16)
                     .padding(.vertical, 10)
                     if compactPreviewSelected {
@@ -191,7 +192,19 @@ struct MarketingComposerView: View {
                 }
             }
         }
-        .frame(minWidth: 0, minHeight: 500)
+        .frame(minWidth: 0, minHeight: 360)
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            VStack(spacing: 0) {
+                Divider()
+                Button(isSaving ? "Saving…" : "Save Changes") { saveDraft() }
+                    .disabled(isSaving)
+                    .buttonStyle(.borderedProminent)
+                    .keyboardShortcut("s", modifiers: .command)
+                    .frame(maxWidth: .infinity, alignment: .trailing)
+                    .padding(10)
+            }
+            .background(.bar)
+        }
         .confirmationDialog("Use the shared original?", isPresented: $showUseOriginalConfirmation, titleVisibility: .visible) {
             Button("Discard customization and use original", role: .destructive) {
                 if let id = selectedAccountID { customizedText.removeValue(forKey: id) }
@@ -260,16 +273,19 @@ struct MarketingComposerView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
                 header
-                metadataSection
+                TextField("Title", text: $title)
+                    .font(.title2.bold())
+                    .textFieldStyle(.roundedBorder)
                 originalSection
                 sharedMediaSection
+                metadataSection
                 destinationsSection
                 sourceSection
                 relatedSection
             }
             .padding(24)
             .frame(maxWidth: 780, alignment: .leading)
-            .frame(maxWidth: .infinity, alignment: .leading)
+            .frame(maxWidth: .infinity)
         }
         .background(Color(nsColor: .textBackgroundColor))
     }
@@ -289,7 +305,7 @@ struct MarketingComposerView: View {
                         Button(status) { draftStatus = status }
                     }
                 } label: {
-                    Label(effectiveGlobalStatus, systemImage: "chevron.down")
+                    Text(effectiveGlobalStatus)
                 }
             }
         }
@@ -297,9 +313,7 @@ struct MarketingComposerView: View {
 
     private var metadataSection: some View {
         VStack(alignment: .leading, spacing: 8) {
-            sectionTitle("Title and details")
-            TextField("Internal title", text: $title)
-                .textFieldStyle(.roundedBorder)
+            sectionTitle("Details")
             Menu {
                 Button("None") { selectedAppIDs.removeAll() }
                 ForEach(apps) { app in
@@ -313,10 +327,8 @@ struct MarketingComposerView: View {
             } label: {
                 HStack {
                     Text("Apps mentioned")
-                    Spacer()
                     let names = apps.filter { selectedAppIDs.contains($0.id) }.map(\.name).joined(separator: ", ")
                     Text(names.isEmpty ? "None" : names).foregroundStyle(.secondary).lineLimit(1)
-                    Image(systemName: "chevron.down").font(.caption)
                 }
                 .contentShape(Rectangle())
             }
@@ -392,7 +404,10 @@ struct MarketingComposerView: View {
                         } else {
                             Text("Original").font(.caption).foregroundStyle(.secondary)
                         }
-                        Button("Preview") { selectedAccountID = account.id }
+                        Button("Preview") {
+                            selectedAccountID = account.id
+                            compactPreviewSelected = true
+                        }
                             .disabled(!selectedAccountIDs.contains(account.id))
                             .buttonStyle(.link)
                     }
@@ -570,10 +585,6 @@ struct MarketingComposerView: View {
                 ContentUnavailableView("Select an account", systemImage: "rectangle.and.text.magnifyingglass",
                                        description: Text("Choose an eligible destination to review its effective post."))
             }
-            Button(isSaving ? "Saving…" : "Save Changes") { saveDraft() }
-                .disabled(isSaving)
-                .buttonStyle(.bordered)
-                .frame(maxWidth: .infinity, alignment: .trailing)
         }
         .padding(20)
         .sheet(isPresented: $showingGuidanceSettings) {

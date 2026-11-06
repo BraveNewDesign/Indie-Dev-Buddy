@@ -188,7 +188,6 @@ struct ContentView: View {
     @State private var pendingRootAction: RootAction?
     @State private var searchText = ""
     @AppStorage("selectedAppID") private var selectedAppID: String?
-    @State private var appsExpanded = true
     @State private var appsOverviewGeneration = 0
     @FocusState private var searchFocused: Bool
 
@@ -219,31 +218,15 @@ struct ContentView: View {
                 NavigationSplitView {
                     Group {
                         if searchText.isEmpty {
-                            List(selection: Binding(get: { section == "Apps" ? (selectedAppID ?? section) : section }, set: { newValue in
-                                guard let newValue else { return }
-                                if snapshot.apps.contains(where: { $0.id == newValue }) {
-                                    let selection = ManagementRecordSelection(type: .app, id: newValue)
-                                    if section == "Apps" { managementSelectionRequest = selection }
-                                    else { requestRootAction(.management(selection)) }
-                                } else if newValue != section || selectedAppID != nil {
-                                    requestRootAction(.section(newValue))
-                                }
+                            List(selection: Binding(get: { Optional(section) }, set: { (selection: String?) in
+                                if let value = selection, value != section { requestRootAction(.section(value)) }
                             })) {
-                                DisclosureGroup(isExpanded: $appsExpanded) {
-                                    if snapshot.apps.isEmpty {
-                                        Text("No apps yet")
-                                            .foregroundStyle(.secondary)
-                                    } else {
-                                        ForEach(snapshot.apps) { app in
-                                            Label(app.name, systemImage: "app.dashed")
-                                                .tag(app.id)
-                                        }
-                                    }
-                                } label: {
-                                    Label("Apps", systemImage: "square.stack.3d.up").tag("Apps")
-                                }
-                                Label("Marketing Content", systemImage: "megaphone").tag("Marketing Content")
-                                Label("Websites & Social Accounts", systemImage: "globe").tag("Websites & Social Accounts")
+                                Label("Apps", systemImage: "square.stack.3d.up")
+                                    .badge(snapshot.apps.count).tag("Apps")
+                                Label("Marketing Content", systemImage: "megaphone")
+                                    .badge(snapshot.content.count).tag("Marketing Content")
+                                Label("Websites & Social Accounts", systemImage: "globe")
+                                    .tag("Websites & Social Accounts")
                                 Label("Files", systemImage: "folder").tag("Files")
                             }
                         } else if searchResults(snapshot).isEmpty {
@@ -288,26 +271,6 @@ struct ContentView: View {
                     }
                     .toolbar {
                         ToolbarItem {
-                            Button("Search", systemImage: "magnifyingglass") { searchFocused = true }
-                                .help("Search the workspace (⌘F)")
-                                .keyboardShortcut("f", modifiers: .command)
-                        }
-                        ToolbarItem(placement: .primaryAction) {
-                            Menu {
-                                Button("App", systemImage: "app") { requestCreateManagement(.app) }
-                                Button("Blog Article", systemImage: "doc.text") { requestCreateContent(.blog) }
-                                    .keyboardShortcut("n", modifiers: .command)
-                                    .help("Create a blog article (⌘N)")
-                                Button("Social Post", systemImage: "bubble.left.and.bubble.right") { requestCreateContent(.social) }
-                                Button("Idea", systemImage: "lightbulb") { requestCreateContent(.idea) }
-                                Divider()
-                                Button("Website", systemImage: "globe") { requestCreateManagement(.website) }
-                                Button("Social Account", systemImage: "person.crop.circle.badge.plus") { requestCreateManagement(.socialAccount) }
-                            } label: { Label("Create", systemImage: "plus") }
-                                .help("Create a workspace record")
-                        }
-                        ToolbarItem { Button("Refresh", systemImage: "arrow.clockwise", action: session.refresh) }
-                        ToolbarItem {
                             Menu {
                                 ForEach(session.knownWorkspaces, id: \.path) { workspace in
                                     Menu(workspace.lastPathComponent) {
@@ -321,9 +284,11 @@ struct ContentView: View {
                                     }
                                 }
                                 if !session.knownWorkspaces.isEmpty { Divider() }
+                                Button("Refresh Workspace", systemImage: "arrow.clockwise", action: session.refresh)
                                 Button("Add Existing Workspace…", systemImage: "folder.badge.plus") { session.choose(create: false) }
                                 Button("Create New Workspace…", systemImage: "plus") { session.choose(create: true) }
                             } label: { Label("Workspaces", systemImage: "folder") }
+                                .labelStyle(.iconOnly)
                         }
                     }
                 }

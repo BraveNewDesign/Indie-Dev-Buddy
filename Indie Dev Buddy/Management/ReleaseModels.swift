@@ -44,3 +44,32 @@ nonisolated public struct ReleaseRecord: Codable, Identifiable, Equatable, Senda
         self.externalChangelogPath = externalChangelogPath
     }
 }
+
+func workspaceReleaseReferences(apps: [AppRecord], store: WorkspaceStore) async -> [ComposerReleaseReference] {
+    let decoder = JSONDecoder()
+    decoder.dateDecodingStrategy = .iso8601
+    var result: [ComposerReleaseReference] = []
+    for app in apps {
+        let appsURL = store.rootURL.appendingPathComponent("Apps", isDirectory: true)
+        guard let appFolders = try? FileManager.default.contentsOfDirectory(at: appsURL, includingPropertiesForKeys: [.isDirectoryKey]),
+              let appFolder = appFolders.first(where: { folder in
+                  guard let data = try? Data(contentsOf: folder.appendingPathComponent("record.json")),
+                        let stored = try? decoder.decode(AppRecord.self, from: data) else { return false }
+                  return stored.id == app.id
+              }) else { continue }
+        let releasesURL = appFolder.appendingPathComponent("Releases", isDirectory: true)
+        // Resolve folders by reading records and checking appId; folder names are not IDs.
+        guard let folders = try? FileManager.default.contentsOfDirectory(at: releasesURL, includingPropertiesForKeys: [.isDirectoryKey]) else { continue }
+        for folder in folders where (try? folder.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true {
+            let path = "Apps/\(appFolder.lastPathComponent)/Releases/\(folder.lastPathComponent)/record.json"
+            guard let stored = try? await store.read(relativePath: path),
+                  let release = try? decoder.decode(ReleaseRecord.self, from: stored.data), release.appId == app.id else { continue }
+            result.append(ComposerReleaseReference(id: release.id, appID: app.id, appName: app.name, version: release.version, status: release.status.label, releaseDate: release.releaseDate))
+        }
+    }
+    return result.sorted { lhs, rhs in
+        let names = lhs.appName.localizedCaseInsensitiveCompare(rhs.appName)
+        if names != .orderedSame { return names == .orderedAscending }
+        return lhs.version.localizedStandardCompare(rhs.version) == .orderedDescending
+    }
+}

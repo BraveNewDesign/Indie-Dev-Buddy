@@ -26,64 +26,7 @@ struct ContentLibraryView: View {
         }
     }
     var body: some View {
-        HSplitView {
-            VStack(alignment: .leading) {
-                HStack { Text("Marketing Content").font(.title2.bold()); Spacer();
-                    if selectedID != nil {
-                        Button("Delete", systemImage: "trash", role: .destructive) { confirmingDelete = true }
-                            .help("Delete the selected post, idea, or article")
-                    }
-                    Menu("Create", systemImage: "plus") {
-                    Button("Blog Article") { requestCreate(.blog) }
-                    Button("Social Post") { requestCreate(.social) }
-                    Button("Idea") { requestCreate(.idea) }
-                } }
-                Picker("Filter", selection: $filter) { ForEach(["All Content", "Blog Articles", "Social Posts", "Draft", "Ready", "Published", "Ideas / Inbox"], id: \.self) { Text($0) } }
-                TextField("Search content", text: $search).textFieldStyle(.roundedBorder)
-                if records.isEmpty {
-                    VStack(spacing: 10) {
-                        Image(systemName: snapshot.content.isEmpty ? "text.bubble" : "magnifyingglass")
-                            .font(.system(size: 28))
-                            .foregroundStyle(.secondary)
-                        Text(emptyStateTitle)
-                            .font(.headline)
-                        Text(emptyStateMessage)
-                            .font(.callout)
-                            .foregroundStyle(.secondary)
-                            .multilineTextAlignment(.center)
-                        if snapshot.content.isEmpty {
-                            Button("Create Blog Article") { requestCreate(.blog) }
-                                .buttonStyle(.borderedProminent)
-                            Button("Create Social Post") { requestCreate(.social) }
-                                .buttonStyle(.bordered)
-                        } else {
-                            Button("Clear Search and Filters") {
-                                search = ""
-                                filter = "All Content"
-                            }
-                            .buttonStyle(.bordered)
-                        }
-                    }
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .padding()
-                } else {
-                    List(records, selection: Binding(get: { selectedID }, set: { value in
-                        guard let value, value != selectedID else { return }
-                        requestSelection(value)
-                    })) { item in
-                        VStack(alignment: .leading, spacing: 3) {
-                            Text(item.title).font(.headline)
-                            Text("\(item.kind.rawValue.capitalized) · \(displayStatus(item))")
-                                .foregroundStyle(.secondary).font(.caption)
-                            if let plannedDate = item.plannedDate {
-                                Text("Planned · \(plannedDate.formatted(date: .abbreviated, time: .omitted))")
-                                    .foregroundStyle(.secondary).font(.caption)
-                            }
-                        }
-                        .tag(item.id)
-                    }
-                }
-            }.padding().frame(minWidth: 250, idealWidth: 300)
+        Group {
             if let item = snapshot.content.first(where: { $0.id == selectedID }) {
                 ContentRecordEditor(
                     record: item, snapshot: snapshot, snapshotGeneration: snapshotGeneration, store: store, refresh: refresh,
@@ -101,7 +44,7 @@ struct ContentLibraryView: View {
                             }
                         } else {
                             editorHasUnsavedChanges = false
-                            selectedID = destinationID
+                            selectedID = destinationID == listRequestMarker ? nil : destinationID
                             requestedNavigationID = nil
                             onUnsavedChangesChange(false)
                         }
@@ -111,11 +54,39 @@ struct ContentLibraryView: View {
                         onUnsavedChangesChange(dirty)
                     }
                 )
-                .frame(minWidth: 520, maxWidth: .infinity, maxHeight: .infinity)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .id(item.id)
             } else {
-                ContentUnavailableView("Choose Marketing Content", systemImage: "doc.text", description: Text("Select an item or create a blog article, social post, or idea."))
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                contentList
+            }
+        }
+        .navigationTitle("Marketing Content")
+        .toolbar {
+            if selectedID != nil {
+                ToolbarItem(placement: .navigation) {
+                    Button("All Content", systemImage: "chevron.left") {
+                        if editorHasUnsavedChanges { requestedNavigationID = listRequestMarker }
+                        else { selectedID = nil }
+                    }
+                }
+            }
+            ToolbarItem(placement: .primaryAction) {
+                Menu("New Content", systemImage: "plus") {
+                    Button("Blog Article") { requestCreate(.blog) }
+                        .keyboardShortcut("n", modifiers: .command)
+                    Button("Social Post") { requestCreate(.social) }
+                    Button("Idea") { requestCreate(.idea) }
+                }
+                .labelStyle(.iconOnly)
+                .help("New Content")
+            }
+            if selectedID != nil {
+                ToolbarItem {
+                    Menu("Content Actions", systemImage: "ellipsis.circle") {
+                        Button("Delete Content…", role: .destructive) { confirmingDelete = true }
+                    }
+                    .labelStyle(.iconOnly)
+                }
             }
         }
         .alert("Could not create content", isPresented: Binding(get: { error != nil }, set: { if !$0 { error = nil } })) { Button("OK") { error = nil } } message: { Text(error ?? "") }
@@ -135,6 +106,81 @@ struct ContentLibraryView: View {
         .onChange(of: initialCreateKind) { _, value in if let value { requestCreate(value); onCreateRequestHandled() } }
         .onChange(of: requestedNavigationID) { _, value in if value == nil { pendingCreateKind = nil } }
     }
+    private let listRequestMarker = "__all_content__"
+
+    private var contentFilter: some View {
+        Picker("Filter", selection: $filter) {
+            ForEach(["All Content", "Blog Articles", "Social Posts", "Draft", "Ready", "Published", "Ideas / Inbox"], id: \.self) { Text($0) }
+        }
+        .fixedSize()
+    }
+
+    private var contentSearch: some View {
+        TextField("Search content", text: $search).textFieldStyle(.roundedBorder)
+    }
+
+    private var contentList: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            VStack(alignment: .leading, spacing: 8) {
+                Text(records.count == 1 ? "1 item" : "\(records.count) items").foregroundStyle(.secondary)
+                ViewThatFits {
+                    HStack { contentFilter; contentSearch }
+                    VStack(alignment: .leading) { contentFilter; contentSearch }
+                }
+            }
+            .padding(16)
+            if records.isEmpty {
+                VStack(spacing: 10) {
+                    Image(systemName: snapshot.content.isEmpty ? "text.bubble" : "magnifyingglass")
+                        .font(.system(size: 28))
+                        .foregroundStyle(.secondary)
+                    Text(emptyStateTitle)
+                        .font(.headline)
+                    Text(emptyStateMessage)
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                    if snapshot.content.isEmpty {
+                        Button("Create Blog Article") { requestCreate(.blog) }
+                            .buttonStyle(.borderedProminent)
+                        Button("Create Social Post") { requestCreate(.social) }
+                            .buttonStyle(.bordered)
+                    } else {
+                        Button("Clear Search and Filters") {
+                            search = ""
+                            filter = "All Content"
+                        }
+                        .buttonStyle(.bordered)
+                    }
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .padding()
+            } else {
+                List(records, selection: Binding(get: { selectedID }, set: { value in
+                    guard let value, value != selectedID else { return }
+                    requestSelection(value)
+                })) { item in
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(item.title).font(.headline)
+                        Text("\(item.kind.rawValue.capitalized) · \(displayStatus(item))")
+                            .foregroundStyle(.secondary).font(.caption)
+                        let apps = snapshot.apps.filter { item.appIds.contains($0.id) }.map(\.name)
+                        if !apps.isEmpty {
+                            Text(apps.joined(separator: ", "))
+                                .foregroundStyle(.secondary).font(.caption)
+                        }
+                        if let plannedDate = item.plannedDate {
+                            Text("Planned · \(plannedDate.formatted(date: .abbreviated, time: .omitted))")
+                                .foregroundStyle(.secondary).font(.caption)
+                        }
+                    }
+                    .padding(.vertical, 6)
+                    .tag(item.id)
+                }
+            }
+        }
+    }
+
     private func displayStatus(_ item: ContentRecord) -> String {
         guard item.kind == .social, !item.destinations.isEmpty else { return item.status.rawValue.capitalized }
         let published = item.destinations.filter { $0.status == .published }.count
@@ -277,8 +323,25 @@ struct ContentRecordEditor: View {
                 let value = editedRecordBinding
                 ScrollView {
                     VStack(alignment: .leading, spacing: 14) {
-                        Text(record.kind == .blog ? "Blog Article" : "Idea").font(.largeTitle.bold())
-                        TextField("Title", text: value.title).textFieldStyle(.roundedBorder)
+                        HStack {
+                            Text(record.kind == .blog ? "Blog Article" : "Idea")
+                                .font(.headline).foregroundStyle(.secondary)
+                            Spacer()
+                            Button(isSaving ? "Saving…" : "Save") { save(value.wrappedValue, body: bodyText) }
+                                .buttonStyle(.borderedProminent)
+                                .keyboardShortcut("s", modifiers: .command)
+                                .disabled(isSaving)
+                        }
+                        TextField("Title", text: value.title).font(.title2.bold()).textFieldStyle(.roundedBorder)
+                        Text(record.kind == .blog ? "Article (Markdown)" : "Notes").font(.headline)
+                        TextEditor(text: $bodyText)
+                            .font(.body)
+                            .frame(minHeight: 240)
+                            .border(.quaternary)
+                            .accessibilityLabel(record.kind == .blog ? "Article" : "Notes")
+                        ContentMediaView(contentFolderURL: store.rootURL.appendingPathComponent(path), assetPaths: value.mediaPaths)
+                        Divider()
+                        Text("Details").font(.headline)
                         Picker("Status", selection: value.status) { ForEach([ContentStatus.idea, .draft, .ready, .published], id: \.self) { Text($0.rawValue.capitalized).tag($0) } }
                         Toggle("Planned date", isOn: Binding(
                             get: { value.wrappedValue.plannedDate != nil },
@@ -308,9 +371,6 @@ struct ContentRecordEditor: View {
                                 Text(appAssociationSummary(for: value.wrappedValue.appIds))
                                     .foregroundStyle(.secondary)
                                     .lineLimit(1)
-                                Image(systemName: "chevron.up.chevron.down")
-                                    .font(.caption2)
-                                    .foregroundStyle(.secondary)
                             }
                             .contentShape(Rectangle())
                         }
@@ -348,23 +408,19 @@ struct ContentRecordEditor: View {
                             ), axis: .vertical)
                             .lineLimit(2...4)
                         }
-                        Text(record.kind == .blog ? "Article (Markdown)" : "Notes").font(.headline)
-                        TextEditor(text: $bodyText).font(.body).frame(minHeight: 260).overlay(RoundedRectangle(cornerRadius: 5).stroke(.secondary.opacity(0.3)))
-                        ContentMediaView(contentFolderURL: store.rootURL.appendingPathComponent(path), assetPaths: value.mediaPaths)
-                        HStack {
-                            Button(isSaving ? "Saving…" : "Save") { save(value.wrappedValue, body: bodyText) }
-                                .buttonStyle(.borderedProminent).disabled(isSaving)
-                            if record.kind == .blog {
-                                Button("Create Related Social Post") {
-                                    save(value.wrappedValue, body: bodyText) { success in
-                                        if success { createRelated(value.wrappedValue) }
-                                    }
-                                }.disabled(isSaving)
-                            }
+                        if record.kind == .blog {
+                            Button("Create Related Social Post") {
+                                save(value.wrappedValue, body: bodyText) { success in
+                                    if success { createRelated(value.wrappedValue) }
+                                }
+                            }.disabled(isSaving)
                         }
                         let related = snapshot.relatedFamily(to: record.id)
                         if !related.isEmpty { Text("Related Content").font(.headline); ForEach(related) { item in Button(item.title) { requestedNavigationID = item.id } } }
-                    }.padding(24).frame(maxWidth: 800, alignment: .leading)
+                    }
+                    .padding(20)
+                    .frame(maxWidth: 760)
+                    .frame(maxWidth: .infinity)
                 }
             }
         }
@@ -403,7 +459,7 @@ struct ContentRecordEditor: View {
     }
     private func load() async {
         do {
-            releaseReferences = await loadReleaseReferences()
+            releaseReferences = await workspaceReleaseReferences(apps: snapshot.apps, store: store)
             let base = store.rootURL.appendingPathComponent("Content")
             let dirs = try FileManager.default.contentsOfDirectory(at: base, includingPropertiesForKeys: nil)
             for dir in dirs {
@@ -620,34 +676,5 @@ struct ContentRecordEditor: View {
             _ = try await store.save(post, relativePath: "\(folder)/record.json")
             refresh(); open(post.id)
         } catch { self.error = error.localizedDescription } }
-    }
-
-    private func loadReleaseReferences() async -> [ComposerReleaseReference] {
-        let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .iso8601
-        var result: [ComposerReleaseReference] = []
-        for app in snapshot.apps {
-            let appsURL = store.rootURL.appendingPathComponent("Apps", isDirectory: true)
-            guard let appFolders = try? FileManager.default.contentsOfDirectory(at: appsURL, includingPropertiesForKeys: [.isDirectoryKey]),
-                  let appFolder = appFolders.first(where: { folder in
-                      guard let data = try? Data(contentsOf: folder.appendingPathComponent("record.json")),
-                            let stored = try? decoder.decode(AppRecord.self, from: data) else { return false }
-                      return stored.id == app.id
-                  }) else { continue }
-            let releasesURL = appFolder.appendingPathComponent("Releases", isDirectory: true)
-            // Resolve folders by reading records and checking appId; folder names are not IDs.
-            guard let folders = try? FileManager.default.contentsOfDirectory(at: releasesURL, includingPropertiesForKeys: [.isDirectoryKey]) else { continue }
-            for folder in folders where (try? folder.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true {
-                let path = "Apps/\(appFolder.lastPathComponent)/Releases/\(folder.lastPathComponent)/record.json"
-                guard let stored = try? await store.read(relativePath: path),
-                      let release = try? decoder.decode(ReleaseRecord.self, from: stored.data), release.appId == app.id else { continue }
-                result.append(ComposerReleaseReference(id: release.id, appID: app.id, appName: app.name, version: release.version, status: release.status.label, releaseDate: release.releaseDate))
-            }
-        }
-        return result.sorted { lhs, rhs in
-            let names = lhs.appName.localizedCaseInsensitiveCompare(rhs.appName)
-            if names != .orderedSame { return names == .orderedAscending }
-            return lhs.version.localizedStandardCompare(rhs.version) == .orderedDescending
-        }
     }
 }

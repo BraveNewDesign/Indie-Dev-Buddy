@@ -22,8 +22,11 @@ struct ContentMediaView: View {
                 Text("Media").font(.headline)
                 Spacer()
                 Button { showingFilePicker = true } label: { Label("Add Files", systemImage: "plus") }
-                Button { pasteImage() } label: { Label("Paste Image", systemImage: "doc.on.clipboard") }
-                Button { revealAssetsFolder() } label: { Label("Reveal Folder", systemImage: "folder") }
+                Menu("Media Actions", systemImage: "ellipsis.circle") {
+                    Button("Paste Image", systemImage: "doc.on.clipboard", action: pasteImage)
+                    Button("Reveal Folder", systemImage: "folder", action: revealAssetsFolder)
+                }
+                .labelStyle(.iconOnly)
             }
 
             if assetPaths.isEmpty {
@@ -33,7 +36,7 @@ struct ContentMediaView: View {
                     Text("Drop files here to copy them into this content folder.")
                         .font(.callout).foregroundStyle(.secondary)
                 }
-                .frame(maxWidth: .infinity, minHeight: 150)
+                .frame(maxWidth: .infinity, minHeight: 84)
                 .contentShape(Rectangle())
             } else {
                 LazyVGrid(columns: [GridItem(.adaptive(minimum: 150), spacing: 12)], spacing: 12) {

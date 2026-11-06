@@ -57,6 +57,7 @@ struct ManagementWorkspaceView: View {
     @State private var revisionMismatch = false
     @State private var editorGeneration = 0
     @State private var confirmingDelete = false
+    @State private var releaseReferences: [ComposerReleaseReference] = []
 
     init(initialTab: ManagementInitialTab, snapshot: WorkspaceSnapshot, store: WorkspaceStore, onSnapshotChanged: @escaping () -> Void, onReloadSnapshot: @escaping () async -> Void = {}, onUnsavedEditsChanged: @escaping (Bool) -> Void = { _ in }, onOpenMarketingContent: @escaping (String) -> Void, selectionRequest: ManagementRecordSelection? = nil, createRequest: ManagementCreateRequest? = nil, onExternalRequestHandled: @escaping () -> Void = {}, restoredAppID: String? = nil, onAppSelectionChange: @escaping (String?) -> Void = { _ in }) {
         self.initialTab = initialTab
@@ -92,21 +93,40 @@ struct ManagementWorkspaceView: View {
                             }
                         }
                 } else {
-                    recordList
+                    recordList.navigationTitle("Apps")
+                        .task { releaseReferences = await workspaceReleaseReferences(apps: snapshot.apps, store: store) }
                 }
             } else {
-                NavigationSplitView {
-                    recordList
-                } detail: {
-                    detailContent
-                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                VStack(spacing: 0) {
+                    Picker("Record type", selection: Binding(get: { section }, set: requestSection)) {
+                        ForEach(availableSections) { Text($0.rawValue).tag($0) }
+                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+                    .frame(maxWidth: 420)
+                    .padding(12)
+                    Divider()
+                    HSplitView {
+                        recordList.frame(minWidth: 200, idealWidth: 255, maxWidth: 360)
+                        detailContent
+                            .frame(minWidth: 300, maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                    }
                 }
+                .navigationTitle("Websites & Social Accounts")
             }
         }
         .toolbar {
-            ToolbarItem(placement: .destructiveAction) {
-                if selectedID != nil && !creating {
-                    Button("Delete \(singularName)", systemImage: "trash", role: .destructive) { confirmingDelete = true }
+            ToolbarItem(placement: .primaryAction) {
+                Button("Add \(singularName)", systemImage: "plus", action: beginCreate)
+                    .labelStyle(.iconOnly)
+                    .help("Add \(singularName)")
+            }
+            if selectedID != nil && !creating {
+                ToolbarItem {
+                    Menu("Record Actions", systemImage: "ellipsis.circle") {
+                        Button("Delete \(singularName)…", role: .destructive) { confirmingDelete = true }
+                    }
+                    .labelStyle(.iconOnly)
                 }
             }
         }
@@ -163,12 +183,11 @@ struct ManagementWorkspaceView: View {
 
     private var recordList: some View {
         VStack(spacing: 0) {
-            if initialTab != .apps {
-                Picker("Record type", selection: Binding(get: { section }, set: requestSection)) {
-                    ForEach(availableSections) { Text($0.rawValue).tag($0) }
-                }
-                .pickerStyle(.segmented)
-                .padding()
+            if section == .apps {
+                Text(snapshot.apps.count == 1 ? "1 app" : "\(snapshot.apps.count) apps")
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(16)
             }
 
             if section == .websites || section == .socialAccounts {
@@ -180,26 +199,43 @@ struct ManagementWorkspaceView: View {
                     Text("Unassigned / missing").tag("unassigned")
                 }
                 .pickerStyle(.menu)
+                .labelsHidden()
+                .accessibilityLabel("Filter by owner")
+                .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.horizontal)
-                .padding(.bottom, 8)
+                .padding(.vertical, 8)
             }
 
             List(selection: Binding(get: { selectedID }, set: requestSelection)) {
                 ForEach(rows) { row in
-                    Label {
-                        VStack(alignment: .leading, spacing: 3) {
-                            Text(row.title)
-                            if !row.subtitle.isEmpty {
-                                Text(row.subtitle).font(.caption).foregroundStyle(.secondary)
+                    HStack(spacing: 10) {
+                        Group {
+                            if let iconURL = row.iconURL, let image = NSImage(contentsOf: iconURL) {
+                                Image(nsImage: image).resizable().scaledToFit()
+                            } else {
+                                Image(systemName: row.symbol).font(.title3).foregroundStyle(.secondary)
                             }
                         }
-                    } icon: {
-                        if let iconURL = row.iconURL, let image = NSImage(contentsOf: iconURL) {
-                            Image(nsImage: image).resizable().scaledToFit().frame(width: 24, height: 24)
-                        } else {
-                            Image(systemName: row.symbol).foregroundStyle(.secondary)
+                        .frame(width: section == .apps ? 36 : 24, height: 30)
+                        .accessibilityHidden(true)
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(row.title).font(.headline)
+                            if !row.subtitle.isEmpty {
+                                Text(row.subtitle).font(.subheadline).foregroundStyle(.secondary)
+                            }
+                        }
+                        Spacer(minLength: 8)
+                        if let release = releaseReferences.first(where: { $0.appID == row.id }) {
+                            Text(release.version)
+                                .font(.subheadline.monospacedDigit())
+                                .help(release.displayName + " · " + release.status)
+                        }
+                        if section == .apps {
+                            Image(systemName: "chevron.right").font(.caption).foregroundStyle(.secondary)
+                                .accessibilityHidden(true)
                         }
                     }
+                    .padding(.vertical, 6)
                     .tag(Optional(row.id))
                 }
             }
@@ -209,20 +245,6 @@ struct ManagementWorkspaceView: View {
                 }
             }
 
-            Button(action: beginCreate) {
-                Label("Add \(singularName)", systemImage: "plus")
-                    .frame(maxWidth: .infinity)
-            }
-            .buttonStyle(.borderedProminent)
-            .padding()
-        }
-        .navigationTitle(section.rawValue)
-        .toolbar {
-            if initialTab != .apps {
-                ToolbarItem(placement: .primaryAction) {
-                    Button("Add", systemImage: "plus", action: beginCreate).help("Add \(singularName)")
-                }
-            }
         }
     }
 
@@ -282,9 +304,8 @@ struct ManagementWorkspaceView: View {
             snapshot.apps.map { app in
                 let details = [
                     app.platforms.joined(separator: ", "),
-                    (app.developmentStatus ?? .development).label,
-                    app.description?.trimmingCharacters(in: .whitespacesAndNewlines)
-                ].compactMap { $0 }.filter { !$0.isEmpty }
+                    (app.developmentStatus ?? .development).label
+                ].filter { !$0.isEmpty }
                 let recordPath = Self.findRecordPath(root: store.rootURL, category: "Apps", id: app.id)
                 let folderPath = recordPath.map { String($0.dropLast("/record.json".count)) }
                 let iconURL = folderPath.flatMap { Self.safeAppIconURL(root: store.rootURL, appFolderRelativePath: $0, iconPath: app.iconPath) }
@@ -294,7 +315,7 @@ struct ManagementWorkspaceView: View {
             snapshot.identities.map { ManagementRow(id: $0.id, title: $0.name, subtitle: $0.kind ?? "", symbol: "person.crop.circle") }
         case .websites:
             snapshot.websites.filter { matchesOwnerFilter($0.owner) }.map { record in
-                ManagementRow(id: record.id, title: record.name, subtitle: "\(ownerName(record.owner)) · \(record.baseURL.absoluteString)", symbol: "globe")
+                ManagementRow(id: record.id, title: record.name, subtitle: "\(ownerName(record.owner)) · \(record.baseURL.host ?? record.baseURL.absoluteString)", symbol: "globe")
             }
         case .socialAccounts:
             snapshot.socialAccounts.filter { matchesOwnerFilter($0.owner) }.map { record in
@@ -332,13 +353,67 @@ struct ManagementWorkspaceView: View {
         AppRecordEditor(record: record, identities: snapshot.identities, websites: snapshot.websites, snapshot: snapshot, workspaceStore: store, onOpenMarketingContent: onOpenMarketingContent, onSnapshotChanged: onSnapshotChanged, onDirtyChange: setDirty, onSave: { await save($0, category: "Apps", name: $0.name, expectedRevision: loadedRevision) }).id("\(record?.id ?? "new-app")-\(editorGeneration)")
     }
     @ViewBuilder private func editor(for record: IdentityRecord?) -> some View {
-        IdentityRecordEditor(record: record, onDirtyChange: setDirty, onSave: { await save($0, category: "Identities", name: $0.name, expectedRevision: loadedRevision) }).id("\(record?.id ?? "new-identity")-\(editorGeneration)")
+        VStack(spacing: 0) {
+            IdentityRecordEditor(record: record, onDirtyChange: setDirty, onSave: { await save($0, category: "Identities", name: $0.name, expectedRevision: loadedRevision) }).id("\(record?.id ?? "new-identity")-\(editorGeneration)")
+            if let record {
+                relatedRecords(owner: RecordOwner(type: .identity, id: record.id))
+            }
+        }
     }
     @ViewBuilder private func editor(for record: WebsiteRecord?) -> some View {
-        WebsiteRecordEditor(record: record, owners: ownerChoices, onDirtyChange: setDirty, onSave: { await save($0, category: "Websites", name: $0.name, expectedRevision: loadedRevision) }).id("\(record?.id ?? "new-website")-\(editorGeneration)")
+        VStack(spacing: 0) {
+            WebsiteRecordEditor(record: record, owners: ownerChoices, onDirtyChange: setDirty, onSave: { await save($0, category: "Websites", name: $0.name, expectedRevision: loadedRevision) }).id("\(record?.id ?? "new-website")-\(editorGeneration)")
+            if let record {
+                relatedRecords(owner: record.owner, excludingWebsiteID: record.id)
+            }
+        }
     }
     @ViewBuilder private func editor(for record: SocialAccountRecord?) -> some View {
-        SocialAccountRecordEditor(record: record, owners: ownerChoices, workspaceStore: store, onDirtyChange: setDirty, onSave: { await save($0, category: "SocialAccounts", name: $0.platform, expectedRevision: loadedRevision) }).id("\(record?.id ?? "new-social-account")-\(editorGeneration)")
+        VStack(spacing: 0) {
+            SocialAccountRecordEditor(record: record, owners: ownerChoices, workspaceStore: store, onDirtyChange: setDirty, onSave: { await save($0, category: "SocialAccounts", name: $0.platform, expectedRevision: loadedRevision) }).id("\(record?.id ?? "new-social-account")-\(editorGeneration)")
+            if let owner = record?.owner {
+                relatedRecords(owner: owner, excludingAccountID: record?.id)
+            }
+        }
+    }
+
+    @ViewBuilder private func relatedRecords(
+        owner: RecordOwner,
+        excludingWebsiteID: String? = nil,
+        excludingAccountID: String? = nil
+    ) -> some View {
+        let apps = snapshot.apps.filter { app in
+            if let excludingWebsiteID {
+                return app.websiteLinks.contains { $0.websiteId == excludingWebsiteID }
+            }
+            return owner.type == .app ? app.id == owner.id : app.developerIdentityId == owner.id
+        }
+        let websites = snapshot.websites.filter { $0.owner == owner && $0.id != excludingWebsiteID }
+        let accounts = snapshot.socialAccounts.filter { $0.owner == owner && $0.id != excludingAccountID }
+        if !apps.isEmpty || !websites.isEmpty || !accounts.isEmpty {
+            Divider()
+            ScrollView {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Related Records").font(.headline)
+                    if !apps.isEmpty {
+                        LabeledContent("Apps", value: apps.map(\.name).joined(separator: ", "))
+                    }
+                    ForEach(websites) { website in
+                        Button(website.name, systemImage: "globe") {
+                            requestNavigation(.record(.websites, website.id))
+                        }.buttonStyle(.link)
+                    }
+                    ForEach(accounts) { account in
+                        Button([account.platform, account.handle].compactMap { $0 }.joined(separator: " · "), systemImage: "bubble.left.and.bubble.right") {
+                            requestNavigation(.record(.socialAccounts, account.id))
+                        }.buttonStyle(.link)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(12)
+            }
+            .frame(maxHeight: 120)
+        }
     }
 
     private var ownerChoices: [OwnerChoice] {
@@ -661,6 +736,7 @@ private struct AppRecordEditor: View {
     @State private var links: [AppWebsiteLink] = []
     @State private var saving = false
     @State private var detailTab = "Overview"
+    @State private var editingOverview = false
     @State private var overviewIsDirty = false
     @State private var releaseIsDirty = false
     @State private var fileMessage: String?
@@ -684,7 +760,13 @@ private struct AppRecordEditor: View {
             .padding(.vertical, 10)
 
             ZStack(alignment: .topLeading) {
-                overviewForm
+                Group {
+                    if record == nil || editingOverview {
+                        overviewForm
+                    } else {
+                        appOverview
+                    }
+                }
                     .opacity(detailTab == "Overview" ? 1 : 0)
                     .allowsHitTesting(detailTab == "Overview")
                     .accessibilityHidden(detailTab != "Overview")
@@ -726,6 +808,9 @@ private struct AppRecordEditor: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .navigationTitle(record == nil ? "New App" : name)
         .onAppear(perform: load)
+        .onChange(of: record) { _, _ in
+            if !editingOverview { load() }
+        }
         .onChange(of: draftRecord) { _, _ in reportOverviewDirty(isDirty) }
     }
 
@@ -752,7 +837,58 @@ private struct AppRecordEditor: View {
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
             }
+            Spacer()
+            if record != nil && detailTab == "Overview" && !editingOverview {
+                Button("Edit", systemImage: "pencil") { editingOverview = true }
+            }
         }
+    }
+
+    private var appOverview: some View {
+        Form {
+            if !appDescription.isEmpty {
+                Section("Description") { Text(appDescription).textSelection(.enabled) }
+            }
+            Section("App Details") {
+                LabeledContent("Developer Identity", value: identities.first { $0.id == developerID }?.name ?? "Unassigned")
+                LabeledContent("Platforms", value: platforms.isEmpty ? "Unspecified" : platforms)
+                if !bundleIDs.isEmpty {
+                    LabeledContent("Bundle IDs") { Text(bundleIDs).textSelection(.enabled) }
+                }
+            }
+            Section("Xcode Project") {
+                if projectPath.isEmpty {
+                    Text("No project linked").foregroundStyle(.secondary)
+                } else {
+                    Text(URL(fileURLWithPath: projectPath).lastPathComponent)
+                    if let projectMessage { Text(projectMessage).foregroundStyle(.secondary) }
+                    if projectAvailable {
+                        Button("Open Project", systemImage: "arrow.up.right.square", action: openProjectLocation)
+                        Button("Reveal in Finder", systemImage: "folder", action: revealProjectLocation)
+                    }
+                }
+            }
+            Section("Links") {
+                if let url = record?.appStoreURL { Link("App Store", destination: url) }
+                if let url = record?.testFlightURL { Link("TestFlight", destination: url) }
+                if let url = record?.repositoryURL { Link("Repository", destination: url) }
+                ForEach(links) { link in
+                    let website = websites.first { $0.id == link.websiteId }
+                    let label = website?.name ?? link.purpose.capitalized
+                    if let url = link.url ?? website?.baseURL {
+                        Link(label, destination: url)
+                    } else {
+                        Text(label).foregroundStyle(.secondary)
+                    }
+                }
+                if record?.appStoreURL == nil, record?.testFlightURL == nil, record?.repositoryURL == nil, links.isEmpty {
+                    Text("No links added").foregroundStyle(.secondary)
+                }
+            }
+        }
+        .formStyle(.grouped)
+        .frame(maxWidth: 760)
+        .frame(maxWidth: .infinity)
     }
 
     private func reportOverviewDirty(_ value: Bool) {
@@ -841,7 +977,6 @@ private struct AppRecordEditor: View {
                             }
                         }
                         if let iconError { Text(iconError).font(.caption).foregroundStyle(.red) }
-                        else if let iconPath { Text(URL(fileURLWithPath: iconPath).lastPathComponent).font(.caption).foregroundStyle(.secondary).lineLimit(1) }
                         else { Text("Optional artwork copied into this app’s workspace Assets folder.").font(.caption).foregroundStyle(.secondary) }
                     }
                 }
@@ -959,6 +1094,11 @@ private struct AppRecordEditor: View {
         Section {
             HStack {
                 Spacer()
+                if record != nil {
+                    Button("Done") { editingOverview = false }
+                        .disabled(isDirty || saving)
+                        .help("Save your changes before closing the editor.")
+                }
                 Button("Save App") { Task { await save() } }
                     .buttonStyle(.borderedProminent)
                     .disabled(name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || saving)
@@ -995,6 +1135,7 @@ private struct AppRecordEditor: View {
                 pendingIconRevision = nil
                 pendingIconWrittenPath = nil
                 iconError = nil
+                editingOverview = false
                 reportOverviewDirty(false)
             }
         } catch {
@@ -1307,10 +1448,7 @@ private struct SocialAccountRecordEditor: View {
                         }
                         if let avatarError {
                             Text(avatarError).font(.caption).foregroundStyle(.red)
-                        } else if let avatarPath {
-                            Text(URL(fileURLWithPath: avatarPath).lastPathComponent)
-                                .font(.caption).foregroundStyle(.secondary).lineLimit(1)
-                        } else {
+                        } else if avatarPath == nil {
                             Text("Optional image stored in the workspace.")
                                 .font(.caption).foregroundStyle(.secondary)
                         }

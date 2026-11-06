@@ -111,25 +111,15 @@ public struct WorkspaceFilesBrowser: View {
 
     public var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            HStack(alignment: .firstTextBaseline) {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("Files").font(.largeTitle.bold())
-                    Text(canonicalRoot.path).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
-                }
-                Spacer()
-                Button("Import Files", systemImage: "square.and.arrow.down") { showingImportPicker = true }
-                    .disabled(!isSafeDirectory(currentDirectoryURL))
-                Button("New Folder", systemImage: "folder.badge.plus") {
-                    newFolderName = ""
-                    isCreatingFolder = true
-                }
-                .disabled(!isSafeDirectory(currentDirectoryURL))
-                Button("Reveal Workspace", systemImage: "arrow.up.right.square") {
-                    reveal(canonicalRoot)
-                }
+            VStack(alignment: .leading, spacing: 6) {
+                Text(canonicalRoot.lastPathComponent).font(.title2.bold())
+                    .accessibilityAddTraits(.isHeader)
+                Text(canonicalRoot.path)
+                    .font(.caption).foregroundStyle(.secondary)
+                    .lineLimit(1).truncationMode(.middle)
+                    .help(canonicalRoot.path)
+                breadcrumb
             }
-
-            breadcrumb
 
             if skippedSymlinkCount > 0 {
                 Label("Skipped \(skippedSymlinkCount) symbolic link(s) to keep browsing inside this workspace.", systemImage: "link")
@@ -160,7 +150,7 @@ public struct WorkspaceFilesBrowser: View {
                                             .frame(width: 20)
                                         Text(item.name)
                                             .frame(maxWidth: .infinity, alignment: .leading)
-                                        Label("Open Folder", systemImage: "arrow.right")
+                                        Image(systemName: "chevron.right").accessibilityHidden(true)
                                             .foregroundStyle(.secondary)
                                     }
                                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -175,12 +165,16 @@ public struct WorkspaceFilesBrowser: View {
                                     Image(systemName: fileSymbol(for: item.url))
                                         .foregroundStyle(Color.secondary)
                                         .frame(width: 20)
-                                    Text(item.name)
-                                        .frame(maxWidth: .infinity, alignment: .leading)
-                                        .textSelection(.enabled)
+                                    VStack(alignment: .leading, spacing: 3) {
+                                        Text(item.name).textSelection(.enabled)
+                                        if ["AGENTS.md", "record.json", "workspace.json"].contains(item.name) {
+                                            Text("Workspace metadata").font(.caption).foregroundStyle(.secondary)
+                                        }
+                                    }
+                                    .frame(maxWidth: .infinity, alignment: .leading)
                                     Button("Open") { open(item.url) }
                                         .help("Open \(item.name)")
-                                    Button("Reveal in Finder") { reveal(item.url) }
+                                    Button("Reveal in Finder", systemImage: "folder") { reveal(item.url) }
                                         .labelStyle(.iconOnly)
                                         .help("Reveal \(item.name) in Finder")
                                         .accessibilityLabel("Reveal \(item.name) in Finder")
@@ -212,7 +206,32 @@ public struct WorkspaceFilesBrowser: View {
                 .padding(.horizontal, 8)
             }
         }
-        .padding(24)
+        .padding(16)
+        .navigationTitle("Files")
+        .toolbar {
+            ToolbarItem(placement: .primaryAction) {
+                Button("Import Files", systemImage: "square.and.arrow.down") { showingImportPicker = true }
+                    .disabled(!isSafeDirectory(currentDirectoryURL))
+                    .labelStyle(.iconOnly)
+                    .help("Import Files")
+            }
+            ToolbarItem {
+                Button("New Folder", systemImage: "folder.badge.plus") {
+                    newFolderName = ""
+                    isCreatingFolder = true
+                }
+                .disabled(!isSafeDirectory(currentDirectoryURL))
+                .labelStyle(.iconOnly)
+                .help("New Folder")
+            }
+            ToolbarItem {
+                Menu("Folder Actions", systemImage: "ellipsis.circle") {
+                    Button("Reveal in Finder", systemImage: "folder") { reveal(currentDirectoryURL) }
+                    Button("Refresh Folder", systemImage: "arrow.clockwise") { loadDirectory() }
+                }
+                .labelStyle(.iconOnly)
+            }
+        }
         .task(id: currentRelativePath) { loadDirectory() }
         .fileImporter(isPresented: $showingImportPicker, allowedContentTypes: [.data], allowsMultipleSelection: true) { result in
             switch result {
@@ -255,23 +274,27 @@ public struct WorkspaceFilesBrowser: View {
     }
 
     private var breadcrumb: some View {
-        HStack(spacing: 5) {
-            Button("Workspace") { navigate(to: "") }
-                .buttonStyle(.link)
-            ForEach(Array(pathComponents.enumerated()), id: \.offset) { index, component in
-                Image(systemName: "chevron.right").font(.caption2).foregroundStyle(.tertiary)
-                Button(component) {
-                    navigate(to: pathComponents.prefix(index + 1).joined(separator: "/"))
+        ScrollView(.horizontal) {
+            HStack(spacing: 6) {
+                Button("Workspace") { navigate(to: "") }
+                    .buttonStyle(.link)
+                ForEach(Array(pathComponents.enumerated()), id: \.offset) { index, component in
+                    Image(systemName: "chevron.right").font(.caption2).foregroundStyle(.tertiary)
+                    if index == pathComponents.count - 1 {
+                        Text(component).fontWeight(.medium)
+                    } else {
+                        Button(component) {
+                            navigate(to: pathComponents.prefix(index + 1).joined(separator: "/"))
+                        }
+                        .buttonStyle(.link)
+                    }
                 }
-                .buttonStyle(.link)
+                Text("· \(items.count) items").foregroundStyle(.secondary)
             }
-            Spacer()
-            Button("Refresh", systemImage: "arrow.clockwise") { loadDirectory() }
-                .help("Refresh this folder")
-            Text("\(items.count) items")
-                .font(.caption)
-                .foregroundStyle(.secondary)
+            .fixedSize(horizontal: true, vertical: false)
         }
+        .scrollIndicators(.hidden)
+        .defaultScrollAnchor(.trailing)
     }
 
     private func loadDirectory() {
