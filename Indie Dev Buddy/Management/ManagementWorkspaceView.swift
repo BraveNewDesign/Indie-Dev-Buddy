@@ -35,11 +35,14 @@ struct ManagementWorkspaceView: View {
     let snapshot: WorkspaceSnapshot
     let store: WorkspaceStore
     let onSnapshotChanged: () -> Void
+    let onReloadSnapshot: () async -> Void
     let onUnsavedEditsChanged: (Bool) -> Void
     let onOpenMarketingContent: (String) -> Void
     var selectionRequest: ManagementRecordSelection? = nil
     var createRequest: ManagementCreateRequest? = nil
     var onExternalRequestHandled: () -> Void = {}
+    var restoredAppID: String?
+    var onAppSelectionChange: (String?) -> Void = { _ in }
 
     @State private var section: ManagementSection
     @State private var selectedID: String?
@@ -48,20 +51,26 @@ struct ManagementWorkspaceView: View {
     @State private var editorIsDirty = false
     @State private var pendingNavigation: PendingManagementNavigation?
     @State private var saveError: String?
+    @State private var saveConflict: (path: String, currentRevision: String?)?
     @State private var savedMessage: String?
     @State private var loadedRevision: String?
     @State private var revisionMismatch = false
+    @State private var editorGeneration = 0
+    @State private var confirmingDelete = false
 
-    init(initialTab: ManagementInitialTab, snapshot: WorkspaceSnapshot, store: WorkspaceStore, onSnapshotChanged: @escaping () -> Void, onUnsavedEditsChanged: @escaping (Bool) -> Void = { _ in }, onOpenMarketingContent: @escaping (String) -> Void, selectionRequest: ManagementRecordSelection? = nil, createRequest: ManagementCreateRequest? = nil, onExternalRequestHandled: @escaping () -> Void = {}) {
+    init(initialTab: ManagementInitialTab, snapshot: WorkspaceSnapshot, store: WorkspaceStore, onSnapshotChanged: @escaping () -> Void, onReloadSnapshot: @escaping () async -> Void = {}, onUnsavedEditsChanged: @escaping (Bool) -> Void = { _ in }, onOpenMarketingContent: @escaping (String) -> Void, selectionRequest: ManagementRecordSelection? = nil, createRequest: ManagementCreateRequest? = nil, onExternalRequestHandled: @escaping () -> Void = {}, restoredAppID: String? = nil, onAppSelectionChange: @escaping (String?) -> Void = { _ in }) {
         self.initialTab = initialTab
         self.snapshot = snapshot
         self.store = store
         self.onSnapshotChanged = onSnapshotChanged
+        self.onReloadSnapshot = onReloadSnapshot
         self.onUnsavedEditsChanged = onUnsavedEditsChanged
         self.onOpenMarketingContent = onOpenMarketingContent
         self.selectionRequest = selectionRequest
         self.createRequest = createRequest
         self.onExternalRequestHandled = onExternalRequestHandled
+        self.restoredAppID = restoredAppID
+        self.onAppSelectionChange = onAppSelectionChange
         _section = State(initialValue: initialTab == .apps ? .apps : .websites)
     }
 
@@ -71,67 +80,54 @@ struct ManagementWorkspaceView: View {
     }
 
     var body: some View {
-        NavigationSplitView {
-            VStack(spacing: 0) {
-                Picker("Record type", selection: Binding(get: { section }, set: requestSection)) {
-                    ForEach(availableSections) { Text($0.rawValue).tag($0) }
-                }
-                .pickerStyle(.segmented)
-                .padding()
-
-                if section == .websites || section == .socialAccounts {
-                    Picker("Filter by owner", selection: Binding(get: { ownerFilterID }, set: requestOwnerFilter)) {
-                        Text("All owners").tag("all")
-                        ForEach(ownerChoices) { owner in
-                            Text("\(owner.title) · \(owner.detail)").tag(owner.id)
-                        }
-                        Text("Unassigned / missing").tag("unassigned")
-                    }
-                    .pickerStyle(.menu)
-                    .padding(.horizontal)
-                    .padding(.bottom, 8)
-                }
-
-                List(selection: Binding(get: { selectedID }, set: requestSelection)) {
-                    ForEach(rows) { row in
-                        Label {
-                            VStack(alignment: .leading, spacing: 3) {
-                                Text(row.title)
-                                if !row.subtitle.isEmpty {
-                                    Text(row.subtitle).font(.caption).foregroundStyle(.secondary)
+        Group {
+            if initialTab == .apps {
+                if selectedID != nil || creating {
+                    detailContent
+                        .toolbar {
+                            ToolbarItem(placement: .navigation) {
+                                Button("All Apps", systemImage: "chevron.left") {
+                                    requestNavigation(.selection(nil))
                                 }
                             }
-                        } icon: {
-                            if let iconURL = row.iconURL, let image = NSImage(contentsOf: iconURL) {
-                                Image(nsImage: image).resizable().scaledToFit().frame(width: 24, height: 24)
-                            } else {
-                                Image(systemName: row.symbol).foregroundStyle(.secondary)
-                            }
                         }
-                        .tag(Optional(row.id))
-                    }
+                } else {
+                    recordList
                 }
-                .overlay {
-                    if rows.isEmpty {
-                        ContentUnavailableView("No \(section.rawValue)", systemImage: sectionSymbol, description: Text("Add a record to manage it in this workspace."))
-                    }
+            } else {
+                NavigationSplitView {
+                    recordList
+                } detail: {
+                    detailContent
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                 }
-
-                Button(action: beginCreate) {
-                    Label("Add \(singularName)", systemImage: "plus")
-                        .frame(maxWidth: .infinity)
-                }
-                .buttonStyle(.borderedProminent)
-                .padding()
             }
-            .navigationTitle(section.rawValue)
-            .toolbar { ToolbarItem(placement: .primaryAction) { Button("Add", systemImage: "plus", action: beginCreate).help("Add \(singularName)") } }
-        } detail: {
-            detailContent
+        }
+        .toolbar {
+            ToolbarItem(placement: .destructiveAction) {
+                if selectedID != nil && !creating {
+                    Button("Delete \(singularName)", systemImage: "trash", role: .destructive) { confirmingDelete = true }
+                }
+            }
+        }
+        .confirmationDialog("Delete this \(singularName.lowercased())?", isPresented: $confirmingDelete, titleVisibility: .visible) {
+            Button("Delete", role: .destructive) { deleteSelectedRecord() }
+            Button("Cancel", role: .cancel) { }
+        } message: {
+            Text("\(selectedRecordName) and its workspace folder will be permanently deleted. This discards any unsaved edits.")
         }
         .alert("Couldn’t Save", isPresented: Binding(get: { saveError != nil }, set: { if !$0 { saveError = nil } })) {
             Button("OK", role: .cancel) { saveError = nil }
         } message: { Text(saveError ?? "") }
+        .alert("Workspace File Changed", isPresented: Binding(get: { saveConflict != nil }, set: { if !$0 { saveConflict = nil } })) {
+            if saveConflict?.currentRevision != nil {
+                Button("Keep My Changes") { keepLocalAfterConflict() }
+            }
+            Button("Reload Workspace Copy", role: .destructive) { Task { await reloadAfterConflict() } }
+            Button("Continue Editing", role: .cancel) { saveConflict = nil }
+        } message: {
+            Text("\(saveConflict?.path ?? "This record") changed outside Indie Dev Buddy. Keep My Changes lets your next save explicitly replace that version. Reload Workspace Copy discards the local draft.")
+        }
         .alert("Saved", isPresented: Binding(get: { savedMessage != nil }, set: { if !$0 { savedMessage = nil } })) {
             Button("OK", role: .cancel) { savedMessage = nil }
         } message: { Text(savedMessage ?? "") }
@@ -151,9 +147,83 @@ struct ManagementWorkspaceView: View {
         }
         .onAppear {
             if let selectionRequest { selectExternally(selectionRequest); onExternalRequestHandled() }
-            if let createRequest { createExternally(createRequest); onExternalRequestHandled() }
+            if let createRequest {
+                createExternally(createRequest)
+                onExternalRequestHandled()
+            } else if selectionRequest == nil, initialTab == .apps, selectedID == nil,
+                      let restoredAppID, snapshot.apps.contains(where: { $0.id == restoredAppID }) {
+                selectedID = restoredAppID
+            }
+        }
+        .onChange(of: selectedID) { _, id in
+            if initialTab == .apps { onAppSelectionChange(id) }
         }
         .task(id: selectedID) { await loadSelectedRevision() }
+    }
+
+    private var recordList: some View {
+        VStack(spacing: 0) {
+            if initialTab != .apps {
+                Picker("Record type", selection: Binding(get: { section }, set: requestSection)) {
+                    ForEach(availableSections) { Text($0.rawValue).tag($0) }
+                }
+                .pickerStyle(.segmented)
+                .padding()
+            }
+
+            if section == .websites || section == .socialAccounts {
+                Picker("Filter by owner", selection: Binding(get: { ownerFilterID }, set: requestOwnerFilter)) {
+                    Text("All owners").tag("all")
+                    ForEach(ownerChoices) { owner in
+                        Text("\(owner.title) · \(owner.detail)").tag(owner.id)
+                    }
+                    Text("Unassigned / missing").tag("unassigned")
+                }
+                .pickerStyle(.menu)
+                .padding(.horizontal)
+                .padding(.bottom, 8)
+            }
+
+            List(selection: Binding(get: { selectedID }, set: requestSelection)) {
+                ForEach(rows) { row in
+                    Label {
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(row.title)
+                            if !row.subtitle.isEmpty {
+                                Text(row.subtitle).font(.caption).foregroundStyle(.secondary)
+                            }
+                        }
+                    } icon: {
+                        if let iconURL = row.iconURL, let image = NSImage(contentsOf: iconURL) {
+                            Image(nsImage: image).resizable().scaledToFit().frame(width: 24, height: 24)
+                        } else {
+                            Image(systemName: row.symbol).foregroundStyle(.secondary)
+                        }
+                    }
+                    .tag(Optional(row.id))
+                }
+            }
+            .overlay {
+                if rows.isEmpty {
+                    ContentUnavailableView("No \(section.rawValue)", systemImage: sectionSymbol, description: Text("Add a record to manage it in this workspace."))
+                }
+            }
+
+            Button(action: beginCreate) {
+                Label("Add \(singularName)", systemImage: "plus")
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.borderedProminent)
+            .padding()
+        }
+        .navigationTitle(section.rawValue)
+        .toolbar {
+            if initialTab != .apps {
+                ToolbarItem(placement: .primaryAction) {
+                    Button("Add", systemImage: "plus", action: beginCreate).help("Add \(singularName)")
+                }
+            }
+        }
     }
 
     private var availableSections: [ManagementSection] {
@@ -175,6 +245,34 @@ struct ManagementWorkspaceView: View {
         case .identities: "person.crop.circle"
         case .websites: "globe"
         case .socialAccounts: "bubble.left.and.bubble.right"
+        }
+    }
+
+    private var selectedRecordName: String {
+        guard let selectedID else { return "This record" }
+        switch section {
+        case .apps: return snapshot.apps.first(where: { $0.id == selectedID })?.name ?? "This record"
+        case .identities: return snapshot.identities.first(where: { $0.id == selectedID })?.name ?? "This record"
+        case .websites: return snapshot.websites.first(where: { $0.id == selectedID })?.name ?? "This record"
+        case .socialAccounts: return snapshot.socialAccounts.first(where: { $0.id == selectedID })?.platform ?? "This record"
+        }
+    }
+
+    private func deleteSelectedRecord() {
+        guard let selectedID,
+              let recordPath = Self.findRecordPath(root: store.rootURL, category: currentStorageCategory, id: selectedID) else {
+            saveError = "This record’s workspace file could not be found. Refresh and try again."
+            return
+        }
+        let folderPath = String(recordPath.dropLast("/record.json".count))
+        Task {
+            do {
+                try await store.deleteItem(relativePath: folderPath)
+                self.selectedID = nil
+                creating = false
+                setDirty(false)
+                onSnapshotChanged()
+            } catch { saveError = "Could not delete this record: \(error.localizedDescription)" }
         }
     }
 
@@ -231,16 +329,16 @@ struct ManagementWorkspaceView: View {
     }
 
     @ViewBuilder private func editor(for record: AppRecord?) -> some View {
-        AppRecordEditor(record: record, identities: snapshot.identities, websites: snapshot.websites, snapshot: snapshot, workspaceStore: store, onOpenMarketingContent: onOpenMarketingContent, onSnapshotChanged: onSnapshotChanged, onDirtyChange: setDirty, onSave: { await save($0, category: "Apps", name: $0.name, expectedRevision: loadedRevision) }).id(record?.id ?? "new-app")
+        AppRecordEditor(record: record, identities: snapshot.identities, websites: snapshot.websites, snapshot: snapshot, workspaceStore: store, onOpenMarketingContent: onOpenMarketingContent, onSnapshotChanged: onSnapshotChanged, onDirtyChange: setDirty, onSave: { await save($0, category: "Apps", name: $0.name, expectedRevision: loadedRevision) }).id("\(record?.id ?? "new-app")-\(editorGeneration)")
     }
     @ViewBuilder private func editor(for record: IdentityRecord?) -> some View {
-        IdentityRecordEditor(record: record, onDirtyChange: setDirty, onSave: { await save($0, category: "Identities", name: $0.name, expectedRevision: loadedRevision) }).id(record?.id ?? "new-identity")
+        IdentityRecordEditor(record: record, onDirtyChange: setDirty, onSave: { await save($0, category: "Identities", name: $0.name, expectedRevision: loadedRevision) }).id("\(record?.id ?? "new-identity")-\(editorGeneration)")
     }
     @ViewBuilder private func editor(for record: WebsiteRecord?) -> some View {
-        WebsiteRecordEditor(record: record, owners: ownerChoices, onDirtyChange: setDirty, onSave: { await save($0, category: "Websites", name: $0.name, expectedRevision: loadedRevision) }).id(record?.id ?? "new-website")
+        WebsiteRecordEditor(record: record, owners: ownerChoices, onDirtyChange: setDirty, onSave: { await save($0, category: "Websites", name: $0.name, expectedRevision: loadedRevision) }).id("\(record?.id ?? "new-website")-\(editorGeneration)")
     }
     @ViewBuilder private func editor(for record: SocialAccountRecord?) -> some View {
-        SocialAccountRecordEditor(record: record, owners: ownerChoices, workspaceStore: store, onDirtyChange: setDirty, onSave: { await save($0, category: "SocialAccounts", name: $0.platform, expectedRevision: loadedRevision) }).id(record?.id ?? "new-social-account")
+        SocialAccountRecordEditor(record: record, owners: ownerChoices, workspaceStore: store, onDirtyChange: setDirty, onSave: { await save($0, category: "SocialAccounts", name: $0.platform, expectedRevision: loadedRevision) }).id("\(record?.id ?? "new-social-account")-\(editorGeneration)")
     }
 
     private var ownerChoices: [OwnerChoice] {
@@ -375,33 +473,67 @@ struct ManagementWorkspaceView: View {
             onSnapshotChanged()
             return true
         } catch {
-            saveError = error.localizedDescription
+            if case WorkspaceStoreError.conflict(let path, let currentRevision) = error {
+                saveConflict = (path, currentRevision)
+            } else {
+                saveError = error.localizedDescription
+            }
             return false
         }
     }
 
+    private func keepLocalAfterConflict() {
+        guard let conflict = saveConflict, let currentRevision = conflict.currentRevision else { return }
+        loadedRevision = currentRevision
+        revisionMismatch = false
+        saveConflict = nil
+    }
+
+    @MainActor
+    private func reloadAfterConflict() async {
+        saveConflict = nil
+        await onReloadSnapshot()
+        editorGeneration += 1
+        await loadSelectedRevision()
+        setDirty(false)
+    }
+
     private func loadSelectedRevision() async {
+        let revisionFromSuccessfulSave = loadedRevision
+        let wasInSnapshot = selectedID.map { snapshotContains(id: $0, category: currentStorageCategory) } ?? false
         loadedRevision = nil
         revisionMismatch = false
         guard !creating, let selectedID else { return }
-        let category: String
-        switch section {
-        case .apps: category = "Apps"
-        case .identities: category = "Identities"
-        case .websites: category = "Websites"
-        case .socialAccounts: category = "SocialAccounts"
-        }
+        let category = currentStorageCategory
         guard let path = Self.findRecordPath(root: store.rootURL, category: category, id: selectedID) else { revisionMismatch = snapshotContains(id: selectedID, category: category); return }
         do {
             let file = try await store.read(relativePath: path)
+            if !wasInSnapshot, let revisionFromSuccessfulSave {
+                guard file.revision == revisionFromSuccessfulSave else {
+                    revisionMismatch = true
+                    saveConflict = (path, file.revision)
+                    return
+                }
+                loadedRevision = file.revision
+                return
+            }
             guard snapshotMatches(id: selectedID, category: category, data: file.data) else {
                 revisionMismatch = true
-                saveError = "This record changed on disk after the workspace was loaded. Refresh the workspace before editing."
+                saveConflict = (path, file.revision)
                 return
             }
             loadedRevision = file.revision
         }
         catch { saveError = error.localizedDescription }
+    }
+
+    private var currentStorageCategory: String {
+        switch section {
+        case .apps: "Apps"
+        case .identities: "Identities"
+        case .websites: "Websites"
+        case .socialAccounts: "SocialAccounts"
+        }
     }
 
     private func snapshotContains(id: String, category: String) -> Bool {
@@ -534,7 +666,11 @@ private struct AppRecordEditor: View {
     @State private var fileMessage: String?
 
     var body: some View {
-        VStack(spacing: 0) {
+        VStack(alignment: .leading, spacing: 0) {
+            appHeader
+                .padding(.horizontal, 20)
+                .padding(.top, 16)
+
             Picker("App detail", selection: $detailTab) {
                 Text("Overview").tag("Overview")
                 Text("Releases").tag("Releases")
@@ -542,10 +678,12 @@ private struct AppRecordEditor: View {
                 Text("Files").tag("Files")
             }
             .pickerStyle(.segmented)
-            .frame(maxWidth: 420)
+            .labelsHidden()
+            .frame(maxWidth: 420, alignment: .leading)
+            .padding(.horizontal, 20)
             .padding(.vertical, 10)
 
-            ZStack {
+            ZStack(alignment: .topLeading) {
                 overviewForm
                     .opacity(detailTab == "Overview" ? 1 : 0)
                     .allowsHitTesting(detailTab == "Overview")
@@ -582,11 +720,39 @@ private struct AppRecordEditor: View {
                     .allowsHitTesting(detailTab == "Files")
                     .accessibilityHidden(detailTab != "Files")
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            .clipped()
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .navigationTitle(record == nil ? "New App" : name)
         .onAppear(perform: load)
         .onChange(of: draftRecord) { _, _ in reportOverviewDirty(isDirty) }
+    }
+
+    private var appHeader: some View {
+        HStack(spacing: 12) {
+            Group {
+                if let iconPreview {
+                    Image(nsImage: iconPreview).resizable().scaledToFit()
+                } else {
+                    Image(systemName: "app.dashed").font(.title).foregroundStyle(.secondary)
+                }
+            }
+            .frame(width: 44, height: 44)
+            .clipShape(RoundedRectangle(cornerRadius: 9))
+            .accessibilityHidden(true)
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text(name.isEmpty ? "New App" : name)
+                    .font(.title.bold())
+                    .accessibilityAddTraits(.isHeader)
+                Text([platforms, identities.first(where: { $0.id == developerID })?.name ?? "", AppDevelopmentStatus.allCases.first(where: { $0.rawValue == developmentStatus })?.label ?? ""]
+                    .filter { !$0.isEmpty }
+                    .joined(separator: " · "))
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+            }
+        }
     }
 
     private func reportOverviewDirty(_ value: Bool) {
@@ -725,6 +891,9 @@ private struct AppRecordEditor: View {
                 TextField("App Store URL", text: $appStoreURL)
                 TextField("TestFlight URL", text: $testFlightURL)
                 HStack {
+                    if let url = optionalWebURL(repositoryURL) {
+                        Button("Open Repository", systemImage: "arrow.up.right.square") { NSWorkspace.shared.open(url) }
+                    }
                     if let url = optionalWebURL(appStoreURL) {
                         Button("Open App Store", systemImage: "arrow.up.right.square") { NSWorkspace.shared.open(url) }
                     }
@@ -745,6 +914,9 @@ private struct AppRecordEditor: View {
                             TextField("Page URL", text: Binding(get: { link.url?.absoluteString ?? "" }, set: { link.url = optionalWebURL($0) }))
                         }
                         Toggle("Primary app page", isOn: $link.isPrimary)
+                        if let url = link.url {
+                            Button("Open Page", systemImage: "arrow.up.right.square") { NSWorkspace.shared.open(url) }
+                        }
                     }
                     .padding(.vertical, 4)
                 }
@@ -757,6 +929,7 @@ private struct AppRecordEditor: View {
             saveBar
         }
         .formStyle(.grouped)
+        .frame(maxWidth: .infinity, alignment: .leading)
         .fileImporter(isPresented: $showingIconPicker, allowedContentTypes: [.image], allowsMultipleSelection: false) { result in
             switch result {
             case .success(let urls):
@@ -956,8 +1129,12 @@ private struct AppRecordEditor: View {
             }
             var isStale = false
             let url = try URL(resolvingBookmarkData: bookmark, options: .withSecurityScope, relativeTo: nil, bookmarkDataIsStale: &isStale)
-            let hasAccess = url.startAccessingSecurityScopedResource()
-            defer { if hasAccess { url.stopAccessingSecurityScopedResource() } }
+            guard url.startAccessingSecurityScopedResource() else {
+                projectURL = nil; projectAvailable = false
+                projectMessage = "macOS could not restore access to this location. Relink the project."
+                return
+            }
+            defer { url.stopAccessingSecurityScopedResource() }
             guard FileManager.default.fileExists(atPath: url.path) else {
                 projectURL = nil; projectAvailable = false
                 projectMessage = "This location can’t be found. Relink the project location."

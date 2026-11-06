@@ -28,12 +28,29 @@ nonisolated public struct RecordOwner: Codable, Sendable, Equatable {
 }
 
 nonisolated public struct AppWebsiteLink: Codable, Sendable, Equatable, Identifiable {
-    public var id: String { "\(websiteId):\(purpose)" }
+    public var id: String
     public var websiteId: String
     public var purpose: String
     public var url: URL?
     public var isPrimary: Bool
-    public init(websiteId: String, purpose: String, url: URL? = nil, isPrimary: Bool = false) { self.websiteId = websiteId; self.purpose = purpose; self.url = url; self.isPrimary = isPrimary }
+    public init(id: String = UUID().uuidString.lowercased(), websiteId: String, purpose: String, url: URL? = nil, isPrimary: Bool = false) {
+        self.id = id
+        self.websiteId = websiteId
+        self.purpose = purpose
+        self.url = url
+        self.isPrimary = isPrimary
+    }
+
+    private enum CodingKeys: String, CodingKey { case id, websiteId, purpose, url, isPrimary }
+
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        id = try values.decodeIfPresent(String.self, forKey: .id) ?? UUID().uuidString.lowercased()
+        websiteId = try values.decode(String.self, forKey: .websiteId)
+        purpose = try values.decode(String.self, forKey: .purpose)
+        url = try values.decodeIfPresent(URL.self, forKey: .url)
+        isPrimary = try values.decodeIfPresent(Bool.self, forKey: .isPrimary) ?? false
+    }
 }
 
 nonisolated public enum AppDevelopmentStatus: String, Codable, CaseIterable, Sendable, Identifiable {
@@ -146,6 +163,15 @@ nonisolated public struct ContentRecord: Codable, Sendable, Identifiable, Equata
     public init(id: String = UUID().uuidString.lowercased(), kind: ContentKind, title: String, appIds: [String] = [], websiteId: String? = nil, sourceContentId: String? = nil, releaseId: String? = nil, relatedGroupId: String? = nil, originalBodyPath: String? = nil, excerpt: String? = nil, includeSourceLink: Bool = false, status: ContentStatus = .draft, plannedDate: Date? = nil, publishedURL: URL? = nil, destinations: [ContentDestination] = [], mediaPaths: [String] = []) {
         self.id = id; self.kind = kind; self.title = title; self.appIds = appIds; self.websiteId = websiteId; self.sourceContentId = sourceContentId; self.releaseId = releaseId; self.relatedGroupId = relatedGroupId; self.originalBodyPath = originalBodyPath; self.excerpt = excerpt; self.includeSourceLink = includeSourceLink; self.status = status; self.plannedDate = plannedDate; self.publishedURL = publishedURL; self.destinations = destinations; self.mediaPaths = mediaPaths
     }
+
+    public mutating func setAppAssociation(_ appID: String, selected: Bool) {
+        guard !appID.isEmpty else { return }
+        if selected {
+            if !appIds.contains(appID) { appIds.append(appID) }
+        } else {
+            appIds.removeAll { $0 == appID }
+        }
+    }
 }
 
 nonisolated public struct WorkspaceSnapshot: Sendable {
@@ -162,6 +188,22 @@ nonisolated public struct WorkspaceSnapshot: Sendable {
 
     public var contentByID: [String: ContentRecord] { Dictionary(content.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first }) }
     public var socialAccountsByID: [String: SocialAccountRecord] { Dictionary(socialAccounts.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first }) }
+    public func socialDestinationSelection(for record: ContentRecord) -> SocialDestinationSelection {
+        let referencedIDs = Set(record.destinations.map(\.accountId))
+        let eligibleIDs = Set(socialAccounts.compactMap { account -> String? in
+            guard account.isEligibleDestination, let owner = account.owner else { return nil }
+            let hasResolvedOwner: Bool
+            switch owner.type {
+            case .identity: hasResolvedOwner = identities.contains { $0.id == owner.id }
+            case .app: hasResolvedOwner = apps.contains { $0.id == owner.id }
+            }
+            return hasResolvedOwner ? account.id : nil
+        })
+        return SocialDestinationSelection(
+            selectedAccountIDs: referencedIDs.intersection(eligibleIDs),
+            unavailableAccountIDs: referencedIDs.subtracting(eligibleIDs)
+        )
+    }
     public func relatedContent(to recordID: String) -> [ContentRecord] {
         content.filter { $0.id != recordID && $0.sourceContentId == recordID }
     }
@@ -190,4 +232,14 @@ nonisolated public struct WorkspaceFileError: Sendable, Identifiable {
     public var id: String { path }
     public let path: String
     public let message: String
+}
+
+nonisolated public struct SocialDestinationSelection: Sendable, Equatable {
+    public let selectedAccountIDs: Set<String>
+    public let unavailableAccountIDs: Set<String>
+
+    public init(selectedAccountIDs: Set<String>, unavailableAccountIDs: Set<String>) {
+        self.selectedAccountIDs = selectedAccountIDs
+        self.unavailableAccountIDs = unavailableAccountIDs
+    }
 }

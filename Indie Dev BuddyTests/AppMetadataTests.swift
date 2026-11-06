@@ -30,6 +30,25 @@ struct AppMetadataTests {
         #expect(decoded == record)
     }
 
+    @Test func appWebsiteLinksHaveStableUniqueIDsAndDecodeLegacyRecords() throws {
+        let first = AppWebsiteLink(websiteId: "shared-site", purpose: "product", isPrimary: true)
+        let second = AppWebsiteLink(websiteId: "shared-site", purpose: "product")
+        #expect(first.id != second.id)
+
+        let decoded = try JSONDecoder().decode(AppWebsiteLink.self, from: JSONEncoder().encode(first))
+        #expect(decoded.id == first.id)
+        #expect(decoded.websiteId == first.websiteId)
+
+        let app = AppRecord(id: "linked-app", name: "Linked App", websiteLinks: [first, second])
+        let decodedApp = try JSONDecoder().decode(AppRecord.self, from: JSONEncoder().encode(app))
+        #expect(decodedApp.websiteLinks.map(\.id) == [first.id, second.id])
+
+        let legacy = Data(#"{"websiteId":"shared-site","purpose":"support","url":null,"isPrimary":false}"#.utf8)
+        let legacyLink = try JSONDecoder().decode(AppWebsiteLink.self, from: legacy)
+        #expect(!legacyLink.id.isEmpty)
+        #expect(legacyLink.purpose == "support")
+    }
+
     @Test func legacyContentRecordsDecodeWithoutPlannedDate() throws {
         let data = Data(#"{"schemaVersion":1,"id":"legacy-content","kind":"social","title":"Legacy","appIds":[],"includeSourceLink":false,"status":"draft","destinations":[],"mediaPaths":[]}"#.utf8)
         let record = try JSONDecoder().decode(ContentRecord.self, from: data)

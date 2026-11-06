@@ -74,6 +74,13 @@ Top bar: discoverable **Search** and **+ Create** (App, Blog Article, Social Pos
 
 ### Apps overview
 
+Use a native macOS split view for the workspace sidebar. The Apps list and selected
+app detail use the same main pane, so selecting an app leaves the full pane available
+to the editor. The toolbar’s **All Apps** action returns to the list and follows the
+same unsaved-change rules as other navigation. The app header and native segmented
+control stay visible above the active tab. Websites & Social Accounts can retain
+a separate record list beside its editor for browsing and comparison.
+
 A compact, scannable list/grid showing icon, name, platforms, release state, latest known version, and summary of related marketing work. No fabricated analytics or activity numbers. New app action prominent.
 
 ### App details
@@ -204,8 +211,8 @@ Keep the first implementation compatible with these shapes or document one equiv
   "platforms": ["macOS"],
   "projectPath": null,
   "websiteLinks": [
-    { "websiteId": "website-bnd", "purpose": "product", "url": null, "isPrimary": true },
-    { "websiteId": "website-bnd", "purpose": "support", "url": null, "isPrimary": false }
+    { "id": "app-link-product", "websiteId": "website-bnd", "purpose": "product", "url": null, "isPrimary": true },
+    { "id": "app-link-support", "websiteId": "website-bnd", "purpose": "support", "url": null, "isPrimary": false }
   ]
 }
 ```

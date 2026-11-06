@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import UniformTypeIdentifiers
 
 private struct WorkspaceBrowserItem: Identifiable {
     var id: String { relativePath }
@@ -7,6 +8,77 @@ private struct WorkspaceBrowserItem: Identifiable {
     let relativePath: String
     let url: URL
     let isDirectory: Bool
+}
+
+nonisolated func workspaceRelativePath(for url: URL, root: URL) -> String? {
+    let rootPath = root.standardizedFileURL.resolvingSymlinksInPath().path
+    let resolvedPath = url.standardizedFileURL.resolvingSymlinksInPath().path
+    guard resolvedPath.hasPrefix(rootPath + "/") else { return nil }
+    return String(resolvedPath.dropFirst(rootPath.count + 1))
+}
+
+nonisolated func workspaceBrowserCanManageItem(relativePath: String) -> Bool {
+    let components = relativePath.split(separator: "/")
+    guard components.count > 1, let name = components.last else { return false }
+    // The store requires record.json and the root workspace markers to stay put.
+    return name != "record.json" && name != "workspace.json" && name != "AGENTS.md"
+}
+
+nonisolated enum WorkspaceFileImportError: LocalizedError {
+    case unsafeDestination
+    case symbolicLink
+    case directory
+
+    var errorDescription: String? {
+        switch self {
+        case .unsafeDestination: "The destination folder is outside the selected workspace or is unavailable."
+        case .symbolicLink: "Symbolic links cannot be imported."
+        case .directory: "Only files can be imported."
+        }
+    }
+}
+
+/// Copies user-selected files into a workspace without replacing any existing item.
+/// URLs from SwiftUI's file importer already have security-scoped access; this
+/// function balances that access after each copy attempt.
+nonisolated func importWorkspaceFiles(
+    _ sources: [URL],
+    into destination: URL,
+    workspaceRoot: URL,
+    fileManager: FileManager = .default
+) -> [String] {
+    let canonicalRoot = workspaceRoot.standardizedFileURL.resolvingSymlinksInPath()
+    let canonicalDestination = destination.standardizedFileURL.resolvingSymlinksInPath()
+    var isDirectory: ObjCBool = false
+    let destinationIsDirectory = fileManager.fileExists(atPath: canonicalDestination.path, isDirectory: &isDirectory)
+        && isDirectory.boolValue
+    let destinationIsInsideWorkspace = canonicalDestination.path == canonicalRoot.path
+        || canonicalDestination.path.hasPrefix(canonicalRoot.path + "/")
+
+    guard destinationIsInsideWorkspace, destinationIsDirectory else {
+        for source in sources { source.stopAccessingSecurityScopedResource() }
+        return [WorkspaceFileImportError.unsafeDestination.localizedDescription]
+    }
+
+    var failures: [String] = []
+    for source in sources {
+        defer { source.stopAccessingSecurityScopedResource() }
+        let target = canonicalDestination.appendingPathComponent(source.lastPathComponent)
+        do {
+            let values = try source.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
+            guard values.isSymbolicLink != true else { throw WorkspaceFileImportError.symbolicLink }
+            guard values.isDirectory != true else { throw WorkspaceFileImportError.directory }
+            let resolvedTarget = target.standardizedFileURL.resolvingSymlinksInPath()
+            guard resolvedTarget.path.hasPrefix(canonicalRoot.path + "/") else {
+                throw WorkspaceFileImportError.unsafeDestination
+            }
+            // copyItem fails if the destination exists; never replace workspace data.
+            try fileManager.copyItem(at: source, to: target)
+        } catch {
+            failures.append("\(source.lastPathComponent): \(error.localizedDescription)")
+        }
+    }
+    return failures
 }
 
 /// A non-destructive browser for a user-selected workspace folder.
@@ -17,6 +89,7 @@ public struct WorkspaceFilesBrowser: View {
     @State private var currentRelativePath = ""
     @State private var items: [WorkspaceBrowserItem] = []
     @State private var skippedSymlinkCount = 0
+    @State private var showingImportPicker = false
     @State private var isCreatingFolder = false
     @State private var newFolderName = ""
     @State private var renameItem: WorkspaceBrowserItem?
@@ -44,7 +117,7 @@ public struct WorkspaceFilesBrowser: View {
                     Text(canonicalRoot.path).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
                 }
                 Spacer()
-                Button("Import Files", systemImage: "square.and.arrow.down") { importFiles() }
+                Button("Import Files", systemImage: "square.and.arrow.down") { showingImportPicker = true }
                     .disabled(!isSafeDirectory(currentDirectoryURL))
                 Button("New Folder", systemImage: "folder.badge.plus") {
                     newFolderName = ""
@@ -64,65 +137,95 @@ public struct WorkspaceFilesBrowser: View {
                     .foregroundStyle(.secondary)
             }
 
-            List {
-                if !currentRelativePath.isEmpty {
-                    Button {
-                        navigateUp()
-                    } label: {
-                        Label("Parent Folder", systemImage: "arrow.up")
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 0) {
+                    if !currentRelativePath.isEmpty {
+                        Button {
+                            navigateUp()
+                        } label: {
+                            Label("Parent Folder", systemImage: "arrow.up")
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                        .buttonStyle(.plain)
+                        .padding(.vertical, 10)
+                        Divider()
                     }
-                    .buttonStyle(.plain)
-                }
-                ForEach(items) { item in
-                    HStack(spacing: 10) {
-                        Image(systemName: item.isDirectory ? "folder" : fileSymbol(for: item.url))
-                            .foregroundStyle(item.isDirectory ? Color.accentColor : Color.secondary)
-                            .frame(width: 20)
-                        if item.isDirectory {
-                            Button(item.name) { navigate(to: item.relativePath) }
+                    ForEach(items) { item in
+                        Group {
+                            if item.isDirectory {
+                                Button { navigate(to: item.relativePath) } label: {
+                                    HStack(spacing: 10) {
+                                        Image(systemName: "folder")
+                                            .foregroundStyle(Color.accentColor)
+                                            .frame(width: 20)
+                                        Text(item.name)
+                                            .frame(maxWidth: .infinity, alignment: .leading)
+                                        Label("Open Folder", systemImage: "arrow.right")
+                                            .foregroundStyle(.secondary)
+                                    }
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .contentShape(Rectangle())
+                                }
                                 .buttonStyle(.plain)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                            Button("Open Folder") { navigate(to: item.relativePath) }
-                                .labelStyle(.iconOnly)
-                                .help("Open Folder")
                                 .accessibilityLabel("Open \(item.name)")
-                        } else {
-                            Text(item.name)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .textSelection(.enabled)
-                            Button("Open") { open(item.url) }
-                                .help("Open \(item.name)")
-                            Button("Reveal in Finder") { reveal(item.url) }
-                                .labelStyle(.iconOnly)
-                                .help("Reveal \(item.name) in Finder")
-                                .accessibilityLabel("Reveal \(item.name) in Finder")
+                                .accessibilityHint("Opens this folder in the workspace browser.")
+                                .accessibilityIdentifier("workspace-open-folder-\(item.relativePath)")
+                            } else {
+                                HStack(spacing: 10) {
+                                    Image(systemName: fileSymbol(for: item.url))
+                                        .foregroundStyle(Color.secondary)
+                                        .frame(width: 20)
+                                    Text(item.name)
+                                        .frame(maxWidth: .infinity, alignment: .leading)
+                                        .textSelection(.enabled)
+                                    Button("Open") { open(item.url) }
+                                        .help("Open \(item.name)")
+                                    Button("Reveal in Finder") { reveal(item.url) }
+                                        .labelStyle(.iconOnly)
+                                        .help("Reveal \(item.name) in Finder")
+                                        .accessibilityLabel("Reveal \(item.name) in Finder")
+                                }
+                            }
                         }
+                        .padding(.vertical, 10)
+                        .contextMenu {
+                            if item.isDirectory {
+                                Button("Open Folder") { navigate(to: item.relativePath) }
+                                Button("Reveal in Finder") { reveal(item.url) }
+                            } else {
+                                Button("Open") { open(item.url) }
+                                Button("Reveal in Finder") { reveal(item.url) }
+                            }
+                            if canManage(item) {
+                                Divider()
+                                Button("Rename…") { renamedItemName = item.name; renameItem = item }
+                                Button("Move to Trash…", role: .destructive) { trashItem = item }
+                            }
+                        }
+                        Divider()
                     }
-                    .padding(.vertical, 3)
-                    .contextMenu {
-                        if item.isDirectory {
-                            Button("Open Folder") { navigate(to: item.relativePath) }
-                            Button("Reveal in Finder") { reveal(item.url) }
-                        } else {
-                            Button("Open") { open(item.url) }
-                            Button("Reveal in Finder") { reveal(item.url) }
-                        }
-                        if canManage(item) {
-                            Divider()
-                            Button("Rename…") { renamedItemName = item.name; renameItem = item }
-                            Button("Move to Trash…", role: .destructive) { trashItem = item }
-                        }
+                    if items.isEmpty {
+                        ContentUnavailableView("This Folder Is Empty", systemImage: "folder", description: Text("Use Import Files or New Folder to add items."))
+                            .frame(maxWidth: .infinity, minHeight: 180)
                     }
                 }
-                if items.isEmpty {
-                    ContentUnavailableView("This Folder Is Empty", systemImage: "folder", description: Text("Create a folder or add files with Finder or another app."))
-                        .listRowSeparator(.hidden)
-                }
+                .padding(.horizontal, 8)
             }
-            .listStyle(.inset)
         }
         .padding(24)
         .task(id: currentRelativePath) { loadDirectory() }
+        .fileImporter(isPresented: $showingImportPicker, allowedContentTypes: [.data], allowsMultipleSelection: true) { result in
+            switch result {
+            case .success(let urls):
+                let failures = importWorkspaceFiles(urls, into: currentDirectoryURL, workspaceRoot: canonicalRoot)
+                loadDirectory()
+                if !failures.isEmpty {
+                    errorMessage = "Some files could not be imported. Existing files were not replaced:\n" + failures.joined(separator: "\n")
+                }
+            case .failure(let error):
+                errorMessage = "Could not select files for import: \(error.localizedDescription)"
+            }
+        }
         .alert("Create Folder", isPresented: $isCreatingFolder) {
             TextField("Folder name", text: $newFolderName)
             Button("Create") { createFolder() }
@@ -188,12 +291,13 @@ public struct WorkspaceFilesBrowser: View {
             var loaded: [WorkspaceBrowserItem] = []
             for url in urls {
                 let values = try url.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
-                if values.isSymbolicLink == true || !isInsideWorkspace(url) {
+                let resolvedURL = url.standardizedFileURL.resolvingSymlinksInPath()
+                guard values.isSymbolicLink != true,
+                      let relative = workspaceRelativePath(for: url, root: canonicalRoot) else {
                     skipped += 1
                     continue
                 }
-                let relative = String(url.path.dropFirst(canonicalRoot.path.count + 1))
-                loaded.append(WorkspaceBrowserItem(name: url.lastPathComponent, relativePath: relative, url: url, isDirectory: values.isDirectory == true))
+                loaded.append(WorkspaceBrowserItem(name: resolvedURL.lastPathComponent, relativePath: relative, url: resolvedURL, isDirectory: values.isDirectory == true))
             }
             items = loaded.sorted {
                 if $0.isDirectory != $1.isDirectory { return $0.isDirectory }
@@ -237,45 +341,8 @@ public struct WorkspaceFilesBrowser: View {
         }
     }
 
-    private func importFiles() {
-        guard isSafeDirectory(currentDirectoryURL) else { return }
-        let panel = NSOpenPanel()
-        panel.canChooseFiles = true
-        panel.canChooseDirectories = false
-        panel.allowsMultipleSelection = true
-        panel.prompt = "Import"
-        guard panel.runModal() == .OK else { return }
-
-        var failures: [String] = []
-        for source in panel.urls {
-            let scoped = source.startAccessingSecurityScopedResource()
-            defer { if scoped { source.stopAccessingSecurityScopedResource() } }
-            let target = currentDirectoryURL.appendingPathComponent(source.lastPathComponent)
-            do {
-                guard isSafeDirectory(currentDirectoryURL), isInsideWorkspace(target) else {
-                    throw CocoaError(.fileWriteNoPermission)
-                }
-                guard !isSymbolicLink(source) else {
-                    failures.append("\(source.lastPathComponent): Symbolic links cannot be imported.")
-                    continue
-                }
-                // copyItem fails if the destination exists; never replace a workspace file.
-                try FileManager.default.copyItem(at: source, to: target)
-            } catch {
-                failures.append("\(source.lastPathComponent): \(error.localizedDescription)")
-            }
-        }
-        loadDirectory()
-        if !failures.isEmpty {
-            errorMessage = "Some files could not be imported. Existing files were not replaced:\n" + failures.joined(separator: "\n")
-        }
-    }
-
-    // Structured records and their assets are managed by their editors. Limit direct
-    // file operations to the workspace's general-purpose folders.
     private func canManage(_ item: WorkspaceBrowserItem) -> Bool {
-        let parts = item.relativePath.split(separator: "/")
-        return parts.count > 1 && (parts.first == "Inbox" || parts.first == "Shared Files")
+        workspaceBrowserCanManageItem(relativePath: item.relativePath)
     }
 
     private func renameSelectedItem() {

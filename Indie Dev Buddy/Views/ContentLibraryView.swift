@@ -3,19 +3,21 @@ import AppKit
 
 struct ContentLibraryView: View {
     let snapshot: WorkspaceSnapshot
+    let snapshotGeneration: Int
     let store: WorkspaceStore
     let refresh: () -> Void
     var initialSelectionID: String? = nil
     var onUnsavedChangesChange: (Bool) -> Void = { _ in }
     var initialCreateKind: ContentKind? = nil
     var onCreateRequestHandled: () -> Void = {}
-    @State private var selectedID: String?
+    @AppStorage("selectedContentID") private var selectedID: String?
     @State private var filter = "All Content"
     @State private var search = ""
     @State private var error: String?
     @State private var editorHasUnsavedChanges = false
     @State private var requestedNavigationID: String?
     @State private var pendingCreateKind: ContentKind?
+    @State private var confirmingDelete = false
     private let createRequestMarker = "__indie_dev_buddy_create__"
     private var records: [ContentRecord] {
         snapshot.content.filter { item in
@@ -26,7 +28,12 @@ struct ContentLibraryView: View {
     var body: some View {
         HSplitView {
             VStack(alignment: .leading) {
-                HStack { Text("Marketing Content").font(.title2.bold()); Spacer(); Menu("Create", systemImage: "plus") {
+                HStack { Text("Marketing Content").font(.title2.bold()); Spacer();
+                    if selectedID != nil {
+                        Button("Delete", systemImage: "trash", role: .destructive) { confirmingDelete = true }
+                            .help("Delete the selected post, idea, or article")
+                    }
+                    Menu("Create", systemImage: "plus") {
                     Button("Blog Article") { requestCreate(.blog) }
                     Button("Social Post") { requestCreate(.social) }
                     Button("Idea") { requestCreate(.idea) }
@@ -79,7 +86,7 @@ struct ContentLibraryView: View {
             }.padding().frame(minWidth: 250, idealWidth: 300)
             if let item = snapshot.content.first(where: { $0.id == selectedID }) {
                 ContentRecordEditor(
-                    record: item, snapshot: snapshot, store: store, refresh: refresh,
+                    record: item, snapshot: snapshot, snapshotGeneration: snapshotGeneration, store: store, refresh: refresh,
                     open: requestSelection,
                     requestedNavigationID: $requestedNavigationID,
                     onNavigationConfirmed: { destinationID in
@@ -103,15 +110,25 @@ struct ContentLibraryView: View {
                         editorHasUnsavedChanges = dirty
                         onUnsavedChangesChange(dirty)
                     }
-                ).id(item.id)
+                )
+                .frame(minWidth: 520, maxWidth: .infinity, maxHeight: .infinity)
+                .id(item.id)
             } else {
                 ContentUnavailableView("Choose Marketing Content", systemImage: "doc.text", description: Text("Select an item or create a blog article, social post, or idea."))
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
         .alert("Could not create content", isPresented: Binding(get: { error != nil }, set: { if !$0 { error = nil } })) { Button("OK") { error = nil } } message: { Text(error ?? "") }
+        .alert("Delete this content?", isPresented: $confirmingDelete) {
+            Button("Delete", role: .destructive) { deleteSelectedContent() }
+            Button("Cancel", role: .cancel) { }
+        } message: {
+            Text("\(snapshot.content.first(where: { $0.id == selectedID })?.title ?? "This item") and its workspace files will be permanently deleted. This also discards any unsaved edits.")
+        }
         .onAppear {
-            if selectedID == nil { selectedID = initialSelectionID }
+            if selectedID == nil || !snapshot.content.contains(where: { $0.id == selectedID }) {
+                selectedID = initialSelectionID.flatMap { id in snapshot.content.contains(where: { $0.id == id }) ? id : nil }
+            }
             if let initialCreateKind { requestCreate(initialCreateKind); onCreateRequestHandled() }
         }
         .onChange(of: initialSelectionID) { _, value in if let value { requestSelection(value) } }
@@ -155,11 +172,32 @@ struct ContentLibraryView: View {
             completion?(record.id)
         } catch { self.error = error.localizedDescription; completion?(nil) } }
     }
+
+    private func deleteSelectedContent() {
+        guard let selectedID else { return }
+        let root = store.rootURL.appendingPathComponent("Content", isDirectory: true)
+        Task {
+            do {
+                let folders = try FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: [.isDirectoryKey])
+                guard let folder = folders.first(where: { candidate in
+                    guard let data = try? Data(contentsOf: candidate.appendingPathComponent("record.json")),
+                          let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return false }
+                    return object["id"] as? String == selectedID
+                }) else { throw CocoaError(.fileNoSuchFile) }
+                try await store.deleteItem(relativePath: "Content/\(folder.lastPathComponent)")
+                self.selectedID = nil
+                editorHasUnsavedChanges = false
+                onUnsavedChangesChange(false)
+                refresh()
+            } catch { self.error = "Could not delete this content: \(error.localizedDescription)" }
+        }
+    }
 }
 
 struct ContentRecordEditor: View {
     let record: ContentRecord
     let snapshot: WorkspaceSnapshot
+    let snapshotGeneration: Int
     let store: WorkspaceStore
     let refresh: () -> Void
     let open: (String) -> Void
@@ -176,6 +214,7 @@ struct ContentRecordEditor: View {
     @State private var releaseReferences: [ComposerReleaseReference] = []
     @State private var error: String?
     @State private var loaded = false
+    @State private var socialComposerHasUnsavedChanges = false
     @State private var baselineRecord: ContentRecord?
     @State private var baselineBodyText = ""
     @State private var baselineVariantText: [String: String] = [:]
@@ -184,24 +223,58 @@ struct ContentRecordEditor: View {
     @State private var conflictMessage: String?
     @State private var isSaving = false
     private var hasUnsavedChanges: Bool {
-        loaded && (edited != baselineRecord || bodyText != baselineBodyText || variantText != baselineVariantText)
+        loaded && (socialComposerHasUnsavedChanges || edited != baselineRecord || bodyText != baselineBodyText || variantText != baselineVariantText)
+    }
+    private func appAssociationNames(for ids: [String]) -> String {
+        ids.compactMap { id in snapshot.apps.first(where: { $0.id == id })?.name }.joined(separator: ", ")
+    }
+    private func appAssociationSummary(for ids: [String]) -> String {
+        switch ids.count {
+        case 0: "None"
+        case 1: appAssociationNames(for: ids)
+        default: "\(ids.count) apps"
+        }
+    }
+    private var editedRecordBinding: Binding<ContentRecord> {
+        Binding(get: { edited ?? record }, set: { edited = $0 })
     }
     var body: some View {
         Group {
-            if !loaded { ProgressView("Opening content…") }
-            else if record.kind == .social, let edited {
-                MarketingComposerView(
-                    snapshot: snapshot, content: edited,
-                    contentFolderURL: store.rootURL.appendingPathComponent(path),
-                    originalText: bodyText, customizedText: variantText,
-                    releases: releaseReferences,
-                    characterGuidelines: ["threads": 500, "instagram": 2200, "x": 280, "facebook": 63206, "linkedin": 3000],
-                    requestedNavigationID: $requestedNavigationID,
-                    onSave: saveSocial, onOpenRelated: open,
-                    onNavigationConfirmed: onNavigationConfirmed,
-                    onDirtyChange: onDirtyChange
-                )
-            } else if let value = Binding($edited) {
+            if !loaded, let error {
+                VStack(spacing: 10) {
+                    Image(systemName: "exclamationmark.triangle").font(.largeTitle).foregroundStyle(.orange)
+                    Text("Content Could Not Be Loaded").font(.headline)
+                    Text(error).font(.callout).foregroundStyle(.secondary).textSelection(.enabled)
+                    Button("Try Again") {
+                        self.error = nil
+                        Task { await load() }
+                    }
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .padding()
+            }
+            else if !loaded { ProgressView("Opening content…") }
+            else if record.kind == .social {
+                if let edited {
+                    MarketingComposerView(
+                        snapshot: snapshot, content: edited,
+                        contentFolderURL: store.rootURL.appendingPathComponent(path),
+                        originalText: bodyText, customizedText: variantText,
+                        releases: releaseReferences,
+                        characterGuidelines: ["threads": 500, "instagram": 2200, "x": 280, "facebook": 63206, "linkedin": 3000],
+                        requestedNavigationID: $requestedNavigationID,
+                        onSave: saveSocial, onOpenRelated: open,
+                        onNavigationConfirmed: onNavigationConfirmed,
+                        onDirtyChange: { dirty in
+                            socialComposerHasUnsavedChanges = dirty
+                            onDirtyChange(dirty)
+                        }
+                    )
+                } else {
+                    ProgressView("Opening content…")
+                }
+            } else {
+                let value = editedRecordBinding
                 ScrollView {
                     VStack(alignment: .leading, spacing: 14) {
                         Text(record.kind == .blog ? "Blog Article" : "Idea").font(.largeTitle.bold())
@@ -217,9 +290,32 @@ struct ContentRecordEditor: View {
                                 set: { value.wrappedValue.plannedDate = $0 }
                             ), displayedComponents: .date)
                         }
-                        Picker("App", selection: Binding(get: { value.wrappedValue.appIds.first ?? "" }, set: { value.wrappedValue.appIds = $0.isEmpty ? [] : [$0] })) {
-                            Text("None").tag(""); ForEach(snapshot.apps) { Text($0.name).tag($0.id) }
+                        Menu {
+                            ForEach(snapshot.apps) { app in
+                                Toggle(app.name, isOn: Binding(
+                                    get: { value.wrappedValue.appIds.contains(app.id) },
+                                    set: { selected in
+                                        var updated = value.wrappedValue
+                                        updated.setAppAssociation(app.id, selected: selected)
+                                        value.wrappedValue = updated
+                                    }
+                                ))
+                            }
+                        } label: {
+                            HStack {
+                                Text("Apps mentioned")
+                                Spacer()
+                                Text(appAssociationSummary(for: value.wrappedValue.appIds))
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(1)
+                                Image(systemName: "chevron.up.chevron.down")
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                            }
+                            .contentShape(Rectangle())
                         }
+                        .accessibilityLabel("Apps mentioned")
+                        .accessibilityValue(appAssociationNames(for: value.wrappedValue.appIds))
                         Picker("Related release", selection: Binding(get: { value.wrappedValue.releaseId }, set: { value.wrappedValue.releaseId = $0 })) {
                             Text("None").tag(String?.none)
                             ForEach(releaseReferences.filter { $0.id == value.wrappedValue.releaseId || value.wrappedValue.appIds.isEmpty || value.wrappedValue.appIds.contains($0.appID) }) { release in
@@ -275,6 +371,10 @@ struct ContentRecordEditor: View {
         .task { await load() }
         .onAppear { onDirtyChange(hasUnsavedChanges) }
         .onChange(of: hasUnsavedChanges) { _, dirty in onDirtyChange(dirty) }
+        .onChange(of: snapshotGeneration) { _, _ in
+            guard loaded else { return }
+            Task { await handleWorkspaceRefresh() }
+        }
         .onChange(of: requestedNavigationID) { _, destinationID in
             guard record.kind != .social, destinationID != nil else { return }
             if hasUnsavedChanges { showUnsavedChanges = true }
@@ -299,7 +399,7 @@ struct ContentRecordEditor: View {
         } message: {
             Text(conflictMessage ?? "The workspace changed outside the app. Choose how to continue.")
         }
-        .alert("Content could not be saved", isPresented: Binding(get: { error != nil }, set: { if !$0 { error = nil } })) { Button("OK") { error = nil } } message: { Text(error ?? "") }
+        .alert("Content needs attention", isPresented: Binding(get: { error != nil }, set: { if !$0 { error = nil } })) { Button("OK") { error = nil } } message: { Text(error ?? "") }
     }
     private func load() async {
         do {
@@ -325,11 +425,15 @@ struct ContentRecordEditor: View {
                 baselineBodyText = text
                 baselineVariantText = variantText
                 loaded = true
+                error = nil
                 onDirtyChange(false)
                 return
             }
             throw CocoaError(.fileNoSuchFile)
-        } catch { self.error = error.localizedDescription }
+        } catch {
+            let location = path.isEmpty ? "the selected workspace files" : path
+            self.error = "Could not open \(record.title) from \(location): \(error.localizedDescription)"
+        }
     }
     private func save(_ item: ContentRecord, body: String, completion: ((Bool) -> Void)? = nil) {
         guard !isSaving else { completion?(false); return }
@@ -356,7 +460,7 @@ struct ContentRecordEditor: View {
                 conflictMessage = "A save failed and some files could not be safely rolled back: \(paths.joined(separator: ", ")). Your local edits remain open. Review both the workspace files and this draft before continuing."
                 showConflictResolution = true
             } else if case WorkspaceStoreError.conflict(let conflictPath, _) = error {
-                conflictMessage = "\(conflictPath) changed outside the app. Earlier writes may already have saved some files. Keep your local version or reload the workspace copy."
+                conflictMessage = "\(conflictPath) changed outside the app. This save left the workspace version intact and kept your local edits open. Keep My Local Changes to explicitly replace it on a later save, or reload the workspace copy."
                 showConflictResolution = true
             } else {
                 self.error = "\(error.localizedDescription) The save was canceled or rolled back. Your edits remain open; review the workspace before retrying."
@@ -426,7 +530,7 @@ struct ContentRecordEditor: View {
                 conflictMessage = "A save failed and some files could not be safely rolled back: \(paths.joined(separator: ", ")). Your local edits remain open. Review both the workspace files and this draft before continuing."
                 showConflictResolution = true
             } else if case WorkspaceStoreError.conflict(let conflictPath, _) = error {
-                conflictMessage = "\(conflictPath) changed outside the app. Earlier writes may already have saved some files. Keep your local version or reload the workspace copy."
+                conflictMessage = "\(conflictPath) changed outside the app. This save left the workspace version intact and kept your local edits open. Keep My Local Changes to explicitly replace it on a later save, or reload the workspace copy."
                 showConflictResolution = true
             } else { self.error = "\(error.localizedDescription) The save was canceled or rolled back. Your edits remain open; review the workspace before retrying." }
             isSaving = false
@@ -479,6 +583,7 @@ struct ContentRecordEditor: View {
         bodyText = ""
         variantText = [:]
         variantRevisions = [:]
+        socialComposerHasUnsavedChanges = false
         baselineRecord = nil
         baselineBodyText = ""
         baselineVariantText = [:]
@@ -486,6 +591,26 @@ struct ContentRecordEditor: View {
         showConflictResolution = false
         conflictMessage = nil
         if loaded, let destinationID = requestedNavigationID { onNavigationConfirmed(destinationID) }
+    }
+    private func handleWorkspaceRefresh() async {
+        guard let item = edited else { return }
+        do {
+            try await verifyCurrentRevisions(item)
+        } catch WorkspaceStoreError.conflict(let conflictPath, _) {
+            if hasUnsavedChanges {
+                conflictMessage = "\(conflictPath) changed outside Indie Dev Buddy. Your local draft remains open. Keep My Local Changes to replace the workspace copy explicitly, or reload the workspace version."
+                showConflictResolution = true
+            } else {
+                await reloadFromWorkspace()
+            }
+        } catch {
+            if hasUnsavedChanges {
+                conflictMessage = "Could not verify the workspace files after an external change. Your local draft remains open. Review the workspace file issue, then choose whether to keep this draft or reload. \(error.localizedDescription)"
+                showConflictResolution = true
+            } else {
+                await reloadFromWorkspace()
+            }
+        }
     }
     private func createRelated(_ source: ContentRecord) {
         let post = ContentRecord(kind: .social, title: "\(source.title) — Social", appIds: source.appIds, sourceContentId: source.id, releaseId: source.releaseId, originalBodyPath: "original.txt")

@@ -202,12 +202,31 @@ struct MarketingComposerView: View {
         }
         .onChange(of: selectedAccountIDs) { _, ids in
             if let current = selectedAccountID, !ids.contains(current) {
-                selectedAccountID = ids.first
+                selectedAccountID = ids.sorted().first
             }
-            if selectedAccountID == nil { selectedAccountID = ids.first }
+            if selectedAccountID == nil { selectedAccountID = ids.sorted().first }
         }
         .onChange(of: currentDraft) { _, draft in onDirtyChange(draft != savedDraftSnapshot) }
         .onAppear { onDirtyChange(hasUnsavedChanges) }
+        .onChange(of: accounts) { _, _ in
+            let eligibleIDs = Set(eligibleAccounts.map(\.id))
+            var current = currentDraft
+            current.reconcileAccountAvailability(
+                eligibleAccountIDs: eligibleIDs,
+                unavailableDestinationIDs: unavailableDestinationIDs
+            )
+            selectedAccountIDs = current.selectedAccountIDs
+            if let selectedAccountID, !current.selectedAccountIDs.contains(selectedAccountID) {
+                self.selectedAccountID = current.selectedAccountIDs.sorted().first
+            }
+            if var baseline = savedDraftSnapshot {
+                baseline.reconcileAccountAvailability(
+                    eligibleAccountIDs: eligibleIDs,
+                    unavailableDestinationIDs: unavailableDestinationIDs
+                )
+                savedDraftSnapshot = baseline
+            }
+        }
         .onChange(of: requestedNavigationID) { _, destinationID in
             guard let destinationID else { return }
             if hasUnsavedChanges { showUnsavedChanges = true }
@@ -882,6 +901,11 @@ struct ComposerDraft: Equatable {
     var preservedDestinationIDs: Set<String>
     var includeArticleLink: Bool
     var status: String
+
+    mutating func reconcileAccountAvailability(eligibleAccountIDs: Set<String>, unavailableDestinationIDs: Set<String>) {
+        selectedAccountIDs.formIntersection(eligibleAccountIDs)
+        preservedDestinationIDs = unavailableDestinationIDs
+    }
 }
 
 extension MarketingComposerView {
@@ -902,18 +926,9 @@ extension MarketingComposerView {
         onDirtyChange: @escaping (Bool) -> Void
     ) {
         let related = Self.relatedFamily(for: content, snapshot: snapshot)
-        let selectableIDs = Set(content.destinations.compactMap { destination -> String? in
-            guard let account = snapshot.socialAccountsByID[destination.accountId] else { return nil }
-            let ownerName: String?
-            if let owner = account.owner {
-                switch owner.type {
-                case .identity: ownerName = snapshot.identities.first { $0.id == owner.id }?.name
-                case .app: ownerName = snapshot.apps.first { $0.id == owner.id }?.name
-                }
-            } else { ownerName = nil }
-            return account.isEligibleDestination && ownerName != nil ? destination.accountId : nil
-        })
-        let unavailableIDs = Set(content.destinations.map(\.accountId)).subtracting(selectableIDs)
+        let destinationSelection = snapshot.socialDestinationSelection(for: content)
+        let selectableIDs = destinationSelection.selectedAccountIDs
+        let unavailableIDs = destinationSelection.unavailableAccountIDs
         self.init(
             contentFolderURL: contentFolderURL,
             apps: snapshot.apps,

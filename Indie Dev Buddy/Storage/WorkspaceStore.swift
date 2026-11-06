@@ -49,6 +49,7 @@ public actor WorkspaceStore {
     private var changeHandler: (@Sendable () -> Void)?
     private var pendingChange: Task<Void, Never>?
     private var writeFailurePathForTesting: String?
+    private var writeInterferenceForTesting: (path: String, data: Data)?
 
     public init(rootURL: URL) {
         self.rootURL = rootURL.standardizedFileURL.resolvingSymlinksInPath()
@@ -105,6 +106,15 @@ public actor WorkspaceStore {
         return (data, Self.revision(data))
     }
 
+    /// Removes one workspace item after resolving and validating its path inside the workspace.
+    public func deleteItem(relativePath: String) throws {
+        let url = try safeURL(relativePath)
+        guard url.path != rootURL.path, fileManager.fileExists(atPath: url.path) else {
+            throw WorkspaceStoreError.invalidRelativePath(relativePath)
+        }
+        try fileManager.removeItem(at: url)
+    }
+
     /// Atomic same-volume replacement. A non-nil expectedRevision enables optimistic conflict detection.
     /// Pass nil only for creating a new file; existing files then produce a conflict.
     @discardableResult
@@ -158,6 +168,11 @@ public actor WorkspaceStore {
                 }
                 if writeFailurePathForTesting == item.operation.relativePath {
                     writeFailurePathForTesting = nil
+                    if let interference = writeInterferenceForTesting,
+                       let previouslyWritten = attempted.last(where: { $0.operation.relativePath == interference.path }) {
+                        writeInterferenceForTesting = nil
+                        try writeAtomically(interference.data, to: previouslyWritten.url)
+                    }
                     attempted.append(item)
                     throw CocoaError(.fileWriteUnknown)
                 }
@@ -201,6 +216,11 @@ public actor WorkspaceStore {
     /// Internal deterministic fault hook for exercising rollback behavior in unit tests.
     func setWriteFailureInjectionForTesting(at relativePath: String?) {
         writeFailurePathForTesting = relativePath
+    }
+
+    /// Simulates an independent writer racing a batch before its rollback pass.
+    func setWriteInterferenceInjectionForTesting(at relativePath: String, data: Data) {
+        writeInterferenceForTesting = (relativePath, data)
     }
 
     /// Watches the workspace's record folders and coalesces filesystem notifications.
@@ -272,7 +292,13 @@ public actor WorkspaceStore {
     public static func revision(_ data: Data) -> String { SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined() }
 
     private func scan<T: Decodable>(_ directory: String, errors: inout [WorkspaceFileError], opaque: inout [OpaqueWorkspaceRecord]) -> [T] {
-        let base = rootURL.appendingPathComponent(directory, isDirectory: true)
+        let base: URL
+        do {
+            base = try safeURL(directory)
+        } catch {
+            errors.append(.init(path: rootURL.appendingPathComponent(directory, isDirectory: true).path, message: error.localizedDescription))
+            return []
+        }
         let urls: [URL]
         do {
             urls = try fileManager.contentsOfDirectory(at: base, includingPropertiesForKeys: nil)
@@ -282,7 +308,16 @@ public actor WorkspaceStore {
         }
         var result: [T] = []
         for dir in urls.sorted(by: { $0.lastPathComponent < $1.lastPathComponent }) {
-            let file = dir.appendingPathComponent("record.json")
+            let relativePath = "\(directory)/\(dir.lastPathComponent)/record.json"
+            let file: URL
+            do {
+                // Loading must obey the same workspace boundary as ordinary reads.
+                // In particular, a record folder may itself be a symlink.
+                file = try safeURL(relativePath)
+            } catch {
+                errors.append(.init(path: rootURL.appendingPathComponent(relativePath).path, message: error.localizedDescription))
+                continue
+            }
             guard fileManager.fileExists(atPath: file.path) else { continue }
             do {
                 let raw = try Data(contentsOf: file)
@@ -370,7 +405,7 @@ public actor WorkspaceStore {
       "projectPath": "/Users/example/Projects/DictateBar",
       "repositoryURL": "https://example.com/dictate-bar", "appStoreURL": null,
       "websiteLinks": [
-        { "websiteId": "website-bnd", "purpose": "product", "url": "https://example.com/software/dictate-bar", "isPrimary": true }
+        { "id": "app-link-dictate-bar-product", "websiteId": "website-bnd", "purpose": "product", "url": "https://example.com/software/dictate-bar", "isPrimary": true }
       ]
     }
     ```
@@ -438,7 +473,7 @@ public actor WorkspaceStore {
 
     App `developmentStatus` is one of `development`, `beta`, `released`, `maintenance`, or `archived`. `description`, `bundleIDs`, `developmentStatus`, and `testFlightURL` are optional and may be omitted or `null`.
 
-    Supported `kind` values: `blog`, `social`, `idea`. Supported statuses: `idea`, `draft`, `ready`, `published`. `releaseId` is an optional stable ID reference to a release record; it is not a folder name or version string. `plannedDate` is an optional ISO-8601 date for the content schedule. A destination's `publishedDate` is optional and records the manually entered publication date for that account. A destination with `bodyPath: null` uses the current `originalBodyPath` contents live; it is not a snapshot. A non-null destination body path is a customized branch. Editing a branch must not edit the original or other branches. `mediaPaths: null` on a destination inherits the record's `mediaPaths`; a list overrides it (an empty list means no media for that destination). `sourceContentId` is a one-way link; reverse related items are derived by finding records whose `sourceContentId` matches this record's ID.
+    Supported `kind` values: `blog`, `social`, `idea`. Supported statuses: `idea`, `draft`, `ready`, `published`. `releaseId` is an optional stable ID reference to a release record; it is not a folder name or version string. `plannedDate` is an optional ISO-8601 date for the content schedule. A destination's `publishedDate` is optional and records the manually entered publication date for that account. A destination with `bodyPath: null` uses the current `originalBodyPath` contents live; it is not a snapshot. A non-null destination body path is a customized branch. Editing a branch must not edit the original or other branches. `mediaPaths: null` on a destination inherits the record's `mediaPaths`; a list overrides it (an empty list means no media for that destination). `sourceContentId` is a one-way link; reverse related items are derived by finding records whose `sourceContentId` matches this record's ID. Records with the same non-null `relatedGroupId` are also shown together; this optional group ID does not replace source links.
 
     ## External editing and conflicts
 

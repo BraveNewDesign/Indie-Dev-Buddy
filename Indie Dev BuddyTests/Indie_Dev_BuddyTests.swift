@@ -24,6 +24,12 @@ private final class TestChangeFlag: @unchecked Sendable {
         defer { lock.unlock() }
         return didChange
     }
+
+    func reset() {
+        lock.lock()
+        didChange = false
+        lock.unlock()
+    }
 }
 
 struct Indie_Dev_BuddyTests {
@@ -56,6 +62,10 @@ struct Indie_Dev_BuddyTests {
             _ = try await store.write(Data("{}".utf8), relativePath: path, expectedRevision: revision)
             Issue.record("Expected external edit to cause a conflict")
         } catch WorkspaceStoreError.conflict { }
+        let externalVersion = try await store.read(relativePath: path)
+        let retryData = Data("{\"schemaVersion\":1,\"keptLocal\":true}".utf8)
+        _ = try await store.write(retryData, relativePath: path, expectedRevision: externalVersion.revision)
+        #expect(try await store.read(relativePath: path).data == retryData)
     }
 
     @Test func batchWritePreflightPreventsEarlierFilesChangingOnLaterConflict() async throws {
@@ -106,6 +116,36 @@ struct Indie_Dev_BuddyTests {
         #expect(try Data(contentsOf: root.appendingPathComponent(secondPath)) == Data("record".utf8))
     }
 
+    @Test func batchWriteReportsAndPreservesExternalChangesThatPreventRollback() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let store = WorkspaceStore(rootURL: root)
+        _ = try await store.createWorkspace(at: root)
+        let firstPath = "Content/item/original.txt"
+        let secondPath = "Content/item/record.json"
+        let firstRevision = try await store.write(Data("draft".utf8), relativePath: firstPath)
+        let secondRevision = try await store.write(Data("record".utf8), relativePath: secondPath)
+        let externalData = Data("external writer's version".utf8)
+        await store.setWriteInterferenceInjectionForTesting(at: firstPath, data: externalData)
+        await store.setWriteFailureInjectionForTesting(at: secondPath)
+
+        do {
+            _ = try await store.writeBatch([
+                WorkspaceWriteOperation(data: Data("replacement".utf8), relativePath: firstPath, expectedRevision: firstRevision),
+                WorkspaceWriteOperation(data: Data("replacement record".utf8), relativePath: secondPath, expectedRevision: secondRevision)
+            ])
+            Issue.record("Expected the injected failure and external-write interference")
+        } catch let WorkspaceStoreError.partialWriteRecovery(paths) {
+            #expect(paths == [firstPath])
+        } catch {
+            Issue.record("Expected partial recovery to identify the externally changed file, got \(error)")
+        }
+
+        #expect(try Data(contentsOf: root.appendingPathComponent(firstPath)) == externalData)
+        #expect(try Data(contentsOf: root.appendingPathComponent(secondPath)) == Data("record".utf8))
+    }
+
     @Test func socialDestinationEligibilityRejectsWhitespaceOnlyHandle() {
         let account = SocialAccountRecord(
             id: "account", platform: "threads", owner: RecordOwner(type: .identity, id: "owner"),
@@ -129,6 +169,79 @@ struct Indie_Dev_BuddyTests {
         #expect(!noPlatform.isEligibleDestination)
     }
 
+    @Test func blogCanKeepMultipleUniqueAppAssociations() throws {
+        var article = ContentRecord(kind: .blog, title: "Shared launch", appIds: ["app-a"])
+        article.setAppAssociation("app-b", selected: true)
+        article.setAppAssociation("app-b", selected: true)
+        article.setAppAssociation("", selected: true)
+
+        #expect(article.appIds == ["app-a", "app-b"])
+
+        let data = try JSONEncoder().encode(article)
+        let reopened = try JSONDecoder().decode(ContentRecord.self, from: data)
+        #expect(reopened.appIds == ["app-a", "app-b"])
+
+        article.setAppAssociation("app-a", selected: false)
+        #expect(article.appIds == ["app-b"])
+    }
+
+    @Test func existingPostKeepsUnavailableDestinationsOutOfNewSelection() {
+        let identity = IdentityRecord(id: "person", name: "Personal")
+        let app = AppRecord(id: "app", name: "Example App")
+        let available = SocialAccountRecord(
+            id: "available", platform: "Threads", owner: RecordOwner(type: .identity, id: identity.id), handle: "@person"
+        )
+        let appOwned = SocialAccountRecord(
+            id: "app-owned", platform: "Instagram", owner: RecordOwner(type: .app, id: app.id), handle: "@exampleapp"
+        )
+        let disabled = SocialAccountRecord(
+            id: "disabled", platform: "Threads", owner: RecordOwner(type: .identity, id: identity.id), handle: "@brand", enabled: false
+        )
+        let unresolvedOwner = SocialAccountRecord(
+            id: "unresolved-owner", platform: "LinkedIn", owner: RecordOwner(type: .identity, id: "missing-person"), handle: "@legacy"
+        )
+        let ownerless = SocialAccountRecord(id: "ownerless", platform: "X", handle: "@legacy")
+        let destinations = ["available", "app-owned", "disabled", "unresolved-owner", "ownerless", "deleted-account"].map {
+            ContentDestination(accountId: $0, status: .published)
+        }
+        let post = ContentRecord(id: "post", kind: .social, title: "Existing post", destinations: destinations)
+        let snapshot = WorkspaceSnapshot(
+            manifest: WorkspaceManifest(), identities: [identity], apps: [app], websites: [],
+            socialAccounts: [available, appOwned, disabled, unresolvedOwner, ownerless], content: [post],
+            errors: [], opaqueRecords: []
+        )
+
+        let selection = snapshot.socialDestinationSelection(for: post)
+
+        #expect(selection.selectedAccountIDs == ["available", "app-owned"])
+        #expect(selection.unavailableAccountIDs == ["disabled", "unresolved-owner", "ownerless", "deleted-account"])
+        #expect(post.destinations == destinations)
+    }
+
+    @MainActor @Test func accountEligibilityRefreshPreservesDraftAndDoesNotCreateFalseDirtyState() {
+        func draft() -> ComposerDraft {
+            ComposerDraft(
+                title: "Post", originalText: "Shared text", selectedAccountIDs: ["enabled", "disabled"],
+                appIDs: [], releaseID: nil, customizedText: [:], destinationStatuses: [:], destinationURLs: [:],
+                plannedDate: nil, destinationPublicationDates: [:], sharedMediaPaths: [],
+                destinationMediaOverrides: [:], preservedDestinationIDs: [], includeArticleLink: false, status: "Draft"
+            )
+        }
+        var current = draft()
+        var baseline = current
+        current.reconcileAccountAvailability(eligibleAccountIDs: ["enabled"], unavailableDestinationIDs: ["disabled"])
+        baseline.reconcileAccountAvailability(eligibleAccountIDs: ["enabled"], unavailableDestinationIDs: ["disabled"])
+
+        #expect(current.selectedAccountIDs == ["enabled"])
+        #expect(current.preservedDestinationIDs == ["disabled"])
+        #expect(current == baseline)
+
+        current.originalText = "Local unsaved edit"
+        current.reconcileAccountAvailability(eligibleAccountIDs: ["enabled"], unavailableDestinationIDs: ["disabled"])
+        #expect(current.originalText == "Local unsaved edit")
+        #expect(current != baseline)
+    }
+
     @Test func workspacePathsCannotEscapeThroughSymlink() async throws {
         let parent = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
         let outside = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
@@ -142,6 +255,96 @@ struct Indie_Dev_BuddyTests {
             _ = try await store.read(relativePath: "escape/secret.txt")
             Issue.record("Expected symlink escape to be rejected")
         } catch WorkspaceStoreError.invalidRelativePath { }
+    }
+
+    @Test func workspaceLoadRejectsSymlinkedRecordFoldersOutsideWorkspace() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let outside = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer {
+            try? FileManager.default.removeItem(at: root)
+            try? FileManager.default.removeItem(at: outside)
+        }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: outside, withIntermediateDirectories: true)
+        let store = WorkspaceStore(rootURL: root)
+        _ = try await store.createWorkspace(at: root)
+
+        let externalRecord = try JSONEncoder().encode(AppRecord(id: "outside-app", name: "Outside App"))
+        try externalRecord.write(to: outside.appendingPathComponent("record.json"))
+        try FileManager.default.createSymbolicLink(
+            at: root.appendingPathComponent("Apps/linked-outside", isDirectory: true),
+            withDestinationURL: outside
+        )
+
+        let snapshot = try await store.load()
+
+        #expect(snapshot.apps.isEmpty)
+        #expect(snapshot.errors.contains { $0.path.hasSuffix("Apps/linked-outside/record.json") })
+        #expect(!snapshot.opaqueRecords.contains { $0.relativePath.hasSuffix("Apps/linked-outside/record.json") })
+    }
+
+    @Test func filesBrowserRelativePathCanonicalizesTemporaryDirectoryAliases() {
+        let root = URL(fileURLWithPath: "/tmp/indie-dev-buddy-\(UUID().uuidString)", isDirectory: true)
+        let child = root.appendingPathComponent("Inbox", isDirectory: true)
+        let sibling = URL(fileURLWithPath: "/tmp/other-\(UUID().uuidString)", isDirectory: true)
+
+        #expect(workspaceRelativePath(for: child, root: root) == "Inbox")
+        #expect(workspaceRelativePath(for: sibling, root: root) == nil)
+    }
+
+    @Test func filesBrowserOperationsCoverWorkspaceItemsButProtectStoreMarkers() {
+        #expect(workspaceBrowserCanManageItem(relativePath: "Inbox/notes.txt"))
+        #expect(workspaceBrowserCanManageItem(relativePath: "Apps/dictate-bar"))
+        #expect(workspaceBrowserCanManageItem(relativePath: "Content/article/Assets/cover.png"))
+        #expect(!workspaceBrowserCanManageItem(relativePath: "Apps/dictate-bar/record.json"))
+        #expect(!workspaceBrowserCanManageItem(relativePath: "workspace.json"))
+        #expect(!workspaceBrowserCanManageItem(relativePath: "AGENTS.md"))
+        #expect(!workspaceBrowserCanManageItem(relativePath: "Apps"))
+    }
+
+    @Test func filesBrowserImportCopiesFilesWithoutReplacingExistingItems() throws {
+        let parent = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: parent) }
+        let root = parent.appendingPathComponent("workspace", isDirectory: true)
+        let inbox = root.appendingPathComponent("Inbox", isDirectory: true)
+        try FileManager.default.createDirectory(at: inbox, withIntermediateDirectories: true)
+
+        let newSource = parent.appendingPathComponent("new-file.txt")
+        let existingSource = parent.appendingPathComponent("existing.txt")
+        let existingTarget = inbox.appendingPathComponent("existing.txt")
+        try Data("new content".utf8).write(to: newSource)
+        try Data("replacement attempt".utf8).write(to: existingSource)
+        try Data("keep this".utf8).write(to: existingTarget)
+
+        let failures = importWorkspaceFiles([newSource, existingSource], into: inbox, workspaceRoot: root)
+
+        #expect(failures.count == 1)
+        #expect(try Data(contentsOf: inbox.appendingPathComponent("new-file.txt")) == Data("new content".utf8))
+        #expect(try Data(contentsOf: existingTarget) == Data("keep this".utf8))
+    }
+
+    @Test func filesBrowserImportRejectsSymbolicLinksAndDestinationsOutsideWorkspace() throws {
+        let parent = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: parent) }
+        let root = parent.appendingPathComponent("workspace", isDirectory: true)
+        let inbox = root.appendingPathComponent("Inbox", isDirectory: true)
+        let outside = parent.appendingPathComponent("outside", isDirectory: true)
+        try FileManager.default.createDirectory(at: inbox, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: outside, withIntermediateDirectories: true)
+
+        let source = parent.appendingPathComponent("source.txt")
+        let symbolicLink = parent.appendingPathComponent("source-link.txt")
+        try Data("source".utf8).write(to: source)
+        try FileManager.default.createSymbolicLink(at: symbolicLink, withDestinationURL: source)
+
+        let linkFailures = importWorkspaceFiles([symbolicLink], into: inbox, workspaceRoot: root)
+        let outsideFailures = importWorkspaceFiles([source], into: outside, workspaceRoot: root)
+
+        #expect(linkFailures.count == 1)
+        #expect(linkFailures[0].contains("Symbolic links"))
+        #expect(outsideFailures.count == 1)
+        #expect(try FileManager.default.contentsOfDirectory(atPath: inbox.path).isEmpty)
+        #expect(try FileManager.default.contentsOfDirectory(atPath: outside.path).isEmpty)
     }
 
     @Test func malformedAndFutureRecordsArePreservedAsOpaqueData() async throws {
@@ -206,7 +409,8 @@ struct Indie_Dev_BuddyTests {
         #expect(guide.contains("iconPath` is relative to the app folder"))
         #expect(guide.contains("release notes/assets are relative to that release folder"))
         #expect(guide.contains("avatarPath` is relative to the workspace root"))
-        #expect(guide.contains("destination's `mediaPaths: null`"))
+        #expect(guide.contains("app-link-dictate-bar-product"))
+        #expect(guide.contains("mediaPaths: null"))
         #expect(guide.contains("not crash recovery or a transaction"))
     }
 
@@ -263,6 +467,38 @@ struct Indie_Dev_BuddyTests {
         #expect(flag.value())
         let snapshot = try await store.load()
         #expect(snapshot.contentByID[record.id]?.title == "After external edit")
+    }
+
+    @Test func externalMarkdownAndImageReplacementsNotifyWorkspaceWatcher() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let store = WorkspaceStore(rootURL: root)
+        _ = try await store.createWorkspace(at: root)
+
+        let bodyURL = root.appendingPathComponent("Content/article/body.md")
+        let imageURL = root.appendingPathComponent("Content/article/Assets/cover.png")
+        try FileManager.default.createDirectory(at: imageURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data("First draft".utf8).write(to: bodyURL)
+        try Data([0, 1, 2]).write(to: imageURL)
+
+        let flag = TestChangeFlag()
+        await store.startWatching { flag.signal() }
+        try await Task.sleep(for: .milliseconds(200))
+
+        try Data("Externally edited article".utf8).write(to: bodyURL, options: .atomic)
+        for _ in 0..<60 where !flag.value() { try await Task.sleep(for: .milliseconds(50)) }
+        #expect(flag.value())
+
+        try await Task.sleep(for: .milliseconds(300))
+        flag.reset()
+        try Data([3, 4, 5]).write(to: imageURL, options: .atomic)
+        for _ in 0..<60 where !flag.value() { try await Task.sleep(for: .milliseconds(50)) }
+        await store.stopWatching()
+
+        #expect(flag.value())
+        #expect(try Data(contentsOf: bodyURL) == Data("Externally edited article".utf8))
+        #expect(try Data(contentsOf: imageURL) == Data([3, 4, 5]))
     }
 
     @Test func nestedReleaseRecordCanBeReadAndDecodedFromWorkspace() async throws {
