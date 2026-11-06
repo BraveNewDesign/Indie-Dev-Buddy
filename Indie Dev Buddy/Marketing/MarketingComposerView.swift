@@ -365,7 +365,7 @@ struct MarketingComposerView: View {
             if eligibleAccounts.isEmpty {
                 ContentUnavailableView("No eligible accounts", systemImage: "person.crop.circle.badge.exclamationmark",
                                        description: Text("Enable an account and add an owner, platform, and handle or profile URL."))
-                    .frame(height: 120)
+                    .frame(maxWidth: .infinity, minHeight: 120)
             } else {
                 ForEach(eligibleAccounts) { account in
                     HStack(spacing: 10) {
@@ -558,6 +558,7 @@ struct MarketingComposerView: View {
             } else {
                 ContentUnavailableView("Select an account", systemImage: "rectangle.and.text.magnifyingglass",
                                        description: Text("Choose an eligible destination to review its effective post."))
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
         .padding(20)

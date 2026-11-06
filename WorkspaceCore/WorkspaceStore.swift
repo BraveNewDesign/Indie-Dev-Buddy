@@ -43,8 +43,8 @@ nonisolated public struct WorkspaceWriteOperation: Sendable {
 public actor WorkspaceStore {
     public let rootURL: URL
     private let fileManager = FileManager.default
-    private let encoder: JSONEncoder
-    private let decoder: JSONDecoder
+    let encoder: JSONEncoder
+    let decoder: JSONDecoder
     private var watchSources: [Int32: DispatchSourceFileSystemObject] = [:]
     private var changeHandler: (@Sendable () -> Void)?
     private var pendingChange: Task<Void, Never>?
@@ -76,39 +76,54 @@ public actor WorkspaceStore {
         return manifest
     }
 
-    public func load() throws -> WorkspaceSnapshot {
-        let manifestURL = rootURL.appendingPathComponent("workspace.json")
-        guard let manifestData = try? Data(contentsOf: manifestURL) else { throw WorkspaceStoreError.notWorkspace }
+    func readManifest() throws -> WorkspaceManifest {
+        let manifestData: Data
+        do { manifestData = try read(relativePath: "workspace.json").data }
+        catch CocoaError.fileReadNoSuchFile { throw WorkspaceStoreError.notWorkspace }
         let manifest = try decoder.decode(WorkspaceManifest.self, from: manifestData)
         guard manifest.schemaVersion == 1 else { throw WorkspaceStoreError.unsupportedSchema(manifest.schemaVersion) }
-        installGuidance(at: rootURL)
+        guard !manifest.id.isEmpty, !manifest.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw WorkspaceStoreError.notWorkspace
+        }
+        return manifest
+    }
+
+    public func load(installAgentGuidance: Bool = true) throws -> WorkspaceSnapshot {
+        let manifest = try readManifest()
+        if installAgentGuidance { installGuidance(at: rootURL) }
+        var recordPaths: [String: [String: String]] = [:]
         var errors: [WorkspaceFileError] = []
         var opaque: [OpaqueWorkspaceRecord] = []
-        let identities: [IdentityRecord] = scan("Identities", errors: &errors, opaque: &opaque)
-        let apps: [AppRecord] = scan("Apps", errors: &errors, opaque: &opaque)
-        let websites: [WebsiteRecord] = scan("Websites", errors: &errors, opaque: &opaque)
-        let accounts: [SocialAccountRecord] = scan("SocialAccounts", errors: &errors, opaque: &opaque)
-        let content: [ContentRecord] = scan("Content", errors: &errors, opaque: &opaque)
+        let identities: [IdentityRecord] = scan("Identities", errors: &errors, opaque: &opaque, recordPaths: &recordPaths)
+        let apps: [AppRecord] = scan("Apps", errors: &errors, opaque: &opaque, recordPaths: &recordPaths)
+        let websites: [WebsiteRecord] = scan("Websites", errors: &errors, opaque: &opaque, recordPaths: &recordPaths)
+        let accounts: [SocialAccountRecord] = scan("SocialAccounts", errors: &errors, opaque: &opaque, recordPaths: &recordPaths)
+        let content: [ContentRecord] = scan("Content", errors: &errors, opaque: &opaque, recordPaths: &recordPaths)
         for (label, ids) in [("identity", identities.map(\.id)), ("app", apps.map(\.id)), ("website", websites.map(\.id)), ("social account", accounts.map(\.id)), ("content", content.map(\.id))] {
             var seen = Set<String>()
             for id in ids where !seen.insert(id).inserted { errors.append(.init(path: label, message: WorkspaceStoreError.duplicateID(id).localizedDescription)) }
         }
-        return WorkspaceSnapshot(manifest: manifest, identities: identities, apps: apps, websites: websites, socialAccounts: accounts, content: content, errors: errors, opaqueRecords: opaque)
+        return WorkspaceSnapshot(manifest: manifest, identities: identities, apps: apps, websites: websites, socialAccounts: accounts, content: content, errors: errors, opaqueRecords: opaque, recordPaths: recordPaths)
     }
 
     public func read(relativePath: String) throws -> (data: Data, revision: String) {
         let url = try safeURL(relativePath)
+        guard try url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile == true else {
+            throw WorkspaceStoreError.invalidRelativePath(relativePath)
+        }
         let data = try Data(contentsOf: url)
         return (data, Self.revision(data))
     }
 
     /// Removes one workspace item after resolving and validating its path inside the workspace.
     public func deleteItem(relativePath: String) throws {
-        let url = try safeURL(relativePath)
-        guard url.path != rootURL.path, fileManager.fileExists(atPath: url.path) else {
-            throw WorkspaceStoreError.invalidRelativePath(relativePath)
+        try withWorkspaceLock {
+            let url = try safeURL(relativePath)
+            guard url.path != rootURL.path, fileManager.fileExists(atPath: url.path) else {
+                throw WorkspaceStoreError.invalidRelativePath(relativePath)
+            }
+            try fileManager.removeItem(at: url)
         }
-        try fileManager.removeItem(at: url)
     }
 
     /// Atomic same-volume replacement. A non-nil expectedRevision enables optimistic conflict detection.
@@ -125,10 +140,22 @@ public actor WorkspaceStore {
     @discardableResult
     public func writeBatch(_ operations: [WorkspaceWriteOperation]) throws -> [String] {
         guard !operations.isEmpty else { return [] }
-        var seen = Set<String>()
-        for operation in operations where !seen.insert(operation.relativePath).inserted {
-            throw WorkspaceStoreError.duplicateWritePath(operation.relativePath)
+        return try withWorkspaceLock { try applyWrites(operations) }
+    }
+
+    func withWorkspaceLock<Result>(exclusive: Bool = true, _ action: () throws -> Result) throws -> Result {
+        // The directory inode remains stable across atomic replacements of record files.
+        let descriptor = open(rootURL.path, O_RDONLY | O_DIRECTORY | O_CLOEXEC)
+        guard descriptor >= 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
+        defer { close(descriptor) }
+        while flock(descriptor, exclusive ? LOCK_EX : LOCK_SH) != 0 {
+            guard errno == EINTR else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
         }
+        return try action()
+    }
+
+    func applyWrites(_ operations: [WorkspaceWriteOperation], backupDirectory: String? = nil) throws -> [String] {
+        var seen = Set<URL>()
 
         struct Prepared {
             let operation: WorkspaceWriteOperation
@@ -142,7 +169,8 @@ public actor WorkspaceStore {
         // Check every input and revision before changing any file.
         for operation in operations {
             let url = try safeURL(operation.relativePath)
-            let oldData = fileManager.fileExists(atPath: url.path) ? try Data(contentsOf: url) : nil
+            guard seen.insert(url).inserted else { throw WorkspaceStoreError.duplicateWritePath(operation.relativePath) }
+            let oldData = fileManager.fileExists(atPath: url.path) ? try read(relativePath: operation.relativePath).data : nil
             let currentRevision = oldData.map(Self.revision)
             guard operation.expectedRevision == currentRevision else {
                 throw WorkspaceStoreError.conflict(path: operation.relativePath, currentRevision: currentRevision)
@@ -154,10 +182,27 @@ public actor WorkspaceStore {
             try fileManager.createDirectory(at: item.url.deletingLastPathComponent(), withIntermediateDirectories: true)
         }
 
+        if let backupDirectory {
+            for item in prepared {
+                guard let oldData = item.oldData else { continue }
+                let path = "\(backupDirectory)/\(item.operation.relativePath)"
+                let backup = try safeURL(path)
+                guard backup.path == rootURL.appendingPathComponent(path).path else {
+                    throw WorkspaceStoreError.invalidRelativePath(path)
+                }
+                try fileManager.createDirectory(at: backup.deletingLastPathComponent(), withIntermediateDirectories: true)
+                guard try safeURL(path).path == backup.path else { throw WorkspaceStoreError.invalidRelativePath(path) }
+                try writeExclusively(oldData, to: backup)
+            }
+        }
+
         var attempted: [Prepared] = []
         do {
             for item in prepared {
-                let currentData = fileManager.fileExists(atPath: item.url.path) ? try Data(contentsOf: item.url) : nil
+                guard try safeURL(item.operation.relativePath).path == item.url.path else {
+                    throw WorkspaceStoreError.invalidRelativePath(item.operation.relativePath)
+                }
+                let currentData = fileManager.fileExists(atPath: item.url.path) ? try read(relativePath: item.operation.relativePath).data : nil
                 let currentRevision = currentData.map(Self.revision)
                 guard currentRevision == item.operation.expectedRevision else {
                     throw WorkspaceStoreError.conflict(path: item.operation.relativePath, currentRevision: currentRevision)
@@ -172,14 +217,22 @@ public actor WorkspaceStore {
                     attempted.append(item)
                     throw CocoaError(.fileWriteUnknown)
                 }
+                if item.oldData == nil {
+                    try writeNewAtomically(item.operation.data, to: item.url)
+                } else {
+                    try writeAtomically(item.operation.data, to: item.url)
+                }
                 attempted.append(item)
-                try writeAtomically(item.operation.data, to: item.url)
             }
         } catch {
             var unrecovered: [String] = []
             for item in attempted.reversed() {
                 do {
-                    let current = fileManager.fileExists(atPath: item.url.path) ? try Data(contentsOf: item.url) : nil
+                    guard try safeURL(item.operation.relativePath).path == item.url.path else {
+                        unrecovered.append(item.operation.relativePath)
+                        continue
+                    }
+                    let current = fileManager.fileExists(atPath: item.url.path) ? try read(relativePath: item.operation.relativePath).data : nil
                     let currentRevision = current.map(Self.revision)
                     let oldRevision = item.oldData.map(Self.revision)
                     if currentRevision == oldRevision { continue }
@@ -287,7 +340,10 @@ public actor WorkspaceStore {
 
     public static func revision(_ data: Data) -> String { SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined() }
 
-    private func scan<T: Decodable>(_ directory: String, errors: inout [WorkspaceFileError], opaque: inout [OpaqueWorkspaceRecord]) -> [T] {
+    private func scan<T: Decodable & Identifiable>(
+        _ directory: String, errors: inout [WorkspaceFileError],
+        opaque: inout [OpaqueWorkspaceRecord], recordPaths: inout [String: [String: String]]
+    ) -> [T] where T.ID == String {
         let base: URL
         do {
             base = try safeURL(directory)
@@ -316,18 +372,22 @@ public actor WorkspaceStore {
             }
             guard fileManager.fileExists(atPath: file.path) else { continue }
             do {
-                let raw = try Data(contentsOf: file)
+                let raw = try read(relativePath: relativePath).data
                 if let object = try JSONSerialization.jsonObject(with: raw) as? [String: Any],
-                   let version = object["schemaVersion"] as? Int, version > 1 {
+                   let version = object["schemaVersion"] as? Int, version != 1 {
                     let reason = WorkspaceStoreError.unsupportedSchema(version).localizedDescription
                     errors.append(.init(path: file.path, message: reason))
                     opaque.append(.init(relativePath: String(file.path.dropFirst(rootURL.path.count + 1)), data: raw, reason: reason))
                     continue
                 }
-                result.append(try decoder.decode(T.self, from: raw))
+                let record = try decoder.decode(T.self, from: raw)
+                if recordPaths[directory, default: [:]][record.id] == nil {
+                    recordPaths[directory, default: [:]][record.id] = relativePath
+                }
+                result.append(record)
             } catch {
                 errors.append(.init(path: file.path, message: error.localizedDescription))
-                if let raw = try? Data(contentsOf: file) {
+                if let raw = try? read(relativePath: relativePath).data {
                     opaque.append(.init(relativePath: String(file.path.dropFirst(rootURL.path.count + 1)), data: raw, reason: error.localizedDescription))
                 }
             }
@@ -335,14 +395,44 @@ public actor WorkspaceStore {
         return result
     }
 
-    private func safeURL(_ relativePath: String) throws -> URL {
-        guard !relativePath.isEmpty, !relativePath.hasPrefix("/"), !relativePath.split(separator: "/").contains("..") else { throw WorkspaceStoreError.invalidRelativePath(relativePath) }
-        let url = rootURL.appendingPathComponent(relativePath).standardizedFileURL.resolvingSymlinksInPath()
-        guard url.path == rootURL.path || url.path.hasPrefix(rootURL.path + "/") else { throw WorkspaceStoreError.invalidRelativePath(relativePath) }
+    func safeURL(_ relativePath: String) throws -> URL {
+        try safeURL(relativePath, inside: rootURL)
+    }
+
+    private func safeURL(_ relativePath: String, inside root: URL) throws -> URL {
+        let components = relativePath.split(separator: "/")
+        guard !components.isEmpty, !relativePath.contains("\0"), !relativePath.hasPrefix("/"),
+              !components.contains("..") else {
+            throw WorkspaceStoreError.invalidRelativePath(relativePath)
+        }
+        var url = root
+        for component in components where component != "." {
+            let candidate = url.appendingPathComponent(String(component))
+            // Resolve each existing ancestor before appending a potentially missing suffix.
+            // Resolving only the complete URL can leave a symlinked ancestor unresolved.
+            url = candidate.resolvingSymlinksInPath()
+            if url.path == candidate.path,
+               (try? fileManager.destinationOfSymbolicLink(atPath: candidate.path)) != nil {
+                throw WorkspaceStoreError.invalidRelativePath(relativePath)
+            }
+            guard url.path == root.path || url.path.hasPrefix(root.path + "/") else {
+                throw WorkspaceStoreError.invalidRelativePath(relativePath)
+            }
+        }
         return url
     }
 
     private func writeAtomically(_ data: Data, to url: URL) throws { try data.write(to: url, options: .atomic) }
+
+    private func writeNewAtomically(_ data: Data, to url: URL) throws {
+        let temporary = url.deletingLastPathComponent().appendingPathComponent(".idb-\(UUID().uuidString)")
+        try writeExclusively(data, to: temporary)
+        defer { try? fileManager.removeItem(at: temporary) }
+        guard link(temporary.path, url.path) == 0 else {
+            if errno == EEXIST { throw WorkspaceStoreError.conflict(path: url.path, currentRevision: nil) }
+            throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+        }
+    }
 
     private func writeExclusively(_ data: Data, to url: URL) throws {
         let fd = open(url.path, O_WRONLY | O_CREAT | O_EXCL, S_IRUSR | S_IWUSR)
@@ -372,34 +462,32 @@ public actor WorkspaceStore {
     /// with exclusive creation so existing or concurrently created instructions survive.
     private func installGuidance(at root: URL) {
         for (path, content) in WorkspaceGuidance.files {
-            let destination = root.appendingPathComponent(path).standardizedFileURL
-            guard !fileManager.fileExists(atPath: destination.path) else { continue }
             do {
-                let parent = destination.deletingLastPathComponent()
-                // Resolve existing ancestors before and after creation, including a symlinked
-                // parent when the final file does not yet exist.
-                guard parent.resolvingSymlinksInPath().path == root.path || parent.resolvingSymlinksInPath().path.hasPrefix(root.path + "/") else { continue }
-                try fileManager.createDirectory(at: parent, withIntermediateDirectories: true)
-                let resolvedParent = parent.resolvingSymlinksInPath()
-                guard resolvedParent.path == root.path || resolvedParent.path.hasPrefix(root.path + "/") else { continue }
-                try writeExclusively(Data(content.utf8), to: resolvedParent.appendingPathComponent(destination.lastPathComponent))
+                let destination = try safeURL(path, inside: root)
+                if fileManager.fileExists(atPath: destination.path) {
+                    if root == rootURL, let prior = WorkspaceGuidance.priorCLIRevisions[path],
+                       destination.path == root.appendingPathComponent(path).path,
+                       let current = try? read(relativePath: path), current.revision == prior {
+                        _ = try? write(Data(content.utf8), relativePath: path, expectedRevision: prior)
+                    }
+                    continue
+                }
+                try fileManager.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
+                guard try safeURL(path, inside: root).path == destination.path else { continue }
+                try writeExclusively(Data(content.utf8), to: destination)
             } catch {
                 // A read-only workspace, conflicting path, or concurrent creator must not block loading.
             }
         }
-        // Future guidance versions can place a new reference alongside an older marked
-        // document; the original, including any user edits, is never replaced.
-        let format = root.appendingPathComponent("docs/DATA_FORMAT.md")
-        if let text = try? String(contentsOf: format, encoding: .utf8),
+        // Keep older data-format references intact and install updates alongside them.
+        if let format = try? safeURL("docs/DATA_FORMAT.md", inside: root),
+           let text = try? String(contentsOf: format, encoding: .utf8),
            let range = text.range(of: #"<!-- Indie Dev Buddy guidance version: ([0-9]+) -->"#, options: .regularExpression),
            let version = Int(text[range].filter(\.isNumber)), version < WorkspaceGuidance.version,
-           let reference = WorkspaceGuidance.files.first(where: { $0.path == "docs/DATA_FORMAT.md" })?.contents {
-            let path = "docs/DATA_FORMAT.v\(WorkspaceGuidance.version).md"
-            let destination = root.appendingPathComponent(path).standardizedFileURL
-            let parent = destination.deletingLastPathComponent().resolvingSymlinksInPath()
-            if parent.path.hasPrefix(root.path + "/"), !fileManager.fileExists(atPath: destination.path) {
-                try? writeExclusively(Data(reference.utf8), to: parent.appendingPathComponent(destination.lastPathComponent))
-            }
+           let reference = WorkspaceGuidance.files.first(where: { $0.path == "docs/DATA_FORMAT.md" })?.contents,
+           let destination = try? safeURL("docs/DATA_FORMAT.v\(WorkspaceGuidance.version).md", inside: root),
+           !fileManager.fileExists(atPath: destination.path) {
+            try? writeExclusively(Data(reference.utf8), to: destination)
         }
     }
 }

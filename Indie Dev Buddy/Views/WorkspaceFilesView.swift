@@ -127,8 +127,12 @@ public struct WorkspaceFilesBrowser: View {
                     .foregroundStyle(.secondary)
             }
 
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: 0) {
+            if items.isEmpty {
+                ContentUnavailableView("This Folder Is Empty", systemImage: "folder", description: Text("Use Import Files or New Folder to add items."))
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 0) {
                     if !currentRelativePath.isEmpty {
                         Button {
                             navigateUp()
@@ -198,12 +202,10 @@ public struct WorkspaceFilesBrowser: View {
                         }
                         Divider()
                     }
-                    if items.isEmpty {
-                        ContentUnavailableView("This Folder Is Empty", systemImage: "folder", description: Text("Use Import Files or New Folder to add items."))
-                            .frame(maxWidth: .infinity, minHeight: 180)
                     }
+                    .frame(maxWidth: .infinity, alignment: .topLeading)
+                    .padding(.horizontal, 8)
                 }
-                .padding(.horizontal, 8)
             }
         }
         .padding(16)

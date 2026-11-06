@@ -13,5 +13,10 @@ struct Indie_Dev_BuddyApp: App {
         WindowGroup {
             ContentView()
         }
+        .commands {
+            CommandGroup(after: .appInfo) {
+                Button("Install Command-Line Tool…", action: CLIInstallation.install)
+            }
+        }
     }
 }

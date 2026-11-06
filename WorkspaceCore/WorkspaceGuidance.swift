@@ -10,16 +10,22 @@ nonisolated enum WorkspaceGuidance {
         (".agents/skills/indie-dev-buddy-content/SKILL.md", skill)
     ]
 
+    // Exact shipped originals, so customized workspace instructions remain intact.
+    static let priorCLIRevisions = [
+        "AGENTS.md": "ffda75d6f1519dd2158963035965f4f3a7bf537b2edb8de33b0e9d6e6a85dfe7",
+        ".agents/skills/indie-dev-buddy-content/SKILL.md": "e14564334144f84a1ed8a72c23eb511faedc522e3b67b6063032487f4ba7fccd"
+    ]
+
     private static let agents = #"""
     # Indie Dev Buddy workspace
 
-    Guidance version: 1 (workspace schema 1). This folder contains the user's records and files. Read `docs/DATA_FORMAT.md` before changing records and `docs/EXAMPLES.md` for complete examples. For marketing work, also follow `.agents/skills/indie-dev-buddy-content/SKILL.md`.
+    Guidance version 2. Workspace schema 1.
 
-    - Discover existing records and read the relevant JSON and referenced text before editing. Preserve user content, unknown JSON fields, stable IDs, unrelated records, media, and customized instructions. Never overwrite an existing file just to install guidance.
-    - Connect records using IDs, not folder names. Check referenced records exist and social accounts are eligible; the data-format guide explains ownership, links, and content variants.
-    - Keep workspace-relative paths inside the workspace; never traverse `..` or escape through symlinks. Do not store secrets here. Leave `workspace.json` alone unless explicitly changing workspace metadata.
-    - Avoid simultaneous edits with another writer. Write new contents to a temporary file in the same directory and atomically replace an existing file after checking it has not changed since reading it. Several file changes are not a transaction; check all changes and references afterward.
-    - Validate JSON, schema version, required fields, IDs, paths, and relationships against the format guide. Preserve malformed or newer-version files and ask for clarification instead of rewriting or downgrading them.
+    - Prefer the validated `indiedevbuddy` CLI for discovery, reads, and edits. Use `indiedevbuddy --help` for commands and install it from the Indie Dev Buddy app menu if needed.
+    - Run `indiedevbuddy workspaces` to find the workspace path. Use that path with `--workspace` for `list`, `read`, `create`, `update`, and `validate`.
+    - Select records by ID. Read a draft before updating it and pass the returned revision with `--revision`. Pass its body revision with `--body-revision` for body edits. If a write conflicts, read again and reconcile the changes before retrying.
+    - Follow `.agents/skills/indie-dev-buddy-content/SKILL.md` for marketing tasks. See `docs/DATA_FORMAT.md` and `docs/EXAMPLES.md` for reference. Use the app for changes beyond the CLI's supported edits.
+    - Preserve user content, unknown fields, stable IDs, media, and customized instructions. Keep workspace paths inside the workspace, and keep secrets out of it.
     """#
 
     private static let dataFormat = #"""
@@ -118,15 +124,17 @@ nonisolated enum WorkspaceGuidance {
     private static let skill = #"""
     ---
     name: indie-dev-buddy-content
-    description: Create, organize, and adapt marketing drafts in an Indie Dev Buddy workspace using its local files.
+    description: Create, organize, and adapt marketing drafts in an Indie Dev Buddy workspace using the validated indiedevbuddy CLI.
     ---
 
     # Indie Dev Buddy content
 
-    Read the workspace `AGENTS.md`, `docs/DATA_FORMAT.md`, and `docs/EXAMPLES.md` first. Discover configured apps, websites, identities, and enabled social accounts by reading their records. Resolve owners and links by ID; choose only eligible accounts and appropriate blog-enabled websites. Ask when the intended destination or facts are unclear.
+    Read `AGENTS.md` and run `indiedevbuddy --help`. Discover the workspace with `indiedevbuddy workspaces`, then use `list apps`, `list websites`, `list accounts`, and `list content` with `--workspace "$workspace"`. Choose eligible accounts and blog-enabled websites using their IDs.
 
-    Create a new content folder and unique stable ID for each new piece. Write its original body and complete `record.json` using the documented required fields; associate existing app, website, and source IDs as appropriate. For related posts use `sourceContentId`; do not modify the source or duplicate unrelated records. A social record can have multiple account destinations. Leave a destination's `bodyPath` absent to inherit the original, or create a separate file and reference it for an account-specific adaptation. Preserve the original, other variants, and media. Use destination media inheritance or an explicit override as documented.
+    Create drafts with `indiedevbuddy create blog --workspace "$workspace" --title "Launch notes" --body-file draft.md`. Use `create social` for social drafts and pass `--account ID` for each destination. Use `--app ID`, `--website ID`, and `--source ID` as appropriate. Use the app for custom variants or media.
 
-    Keep created content and destinations as `draft` unless explicitly instructed otherwise. Do not claim publication, invent URLs or dates, publish externally, or overwrite existing content. Validate JSON, schema, IDs, destination eligibility, and every referenced path; preserve unknown fields and check for concurrent changes before editing existing files.
+    Run `read content ID --workspace "$workspace"` to get the record, original body, and revisions. Pass `--revision` to `update`, plus `--body-revision` for body changes. If there is a conflict, reread and reconcile before retrying. The returned backup directory contains the previous bytes at their original workspace-relative paths. Run `validate --workspace "$workspace"` after changes.
+
+    Keep drafts unpublished and preserve other variants and media. Prefer the CLI or app to direct JSON edits. Read `docs/DATA_FORMAT.md` and `docs/EXAMPLES.md` to understand the relationships and file layout.
     """#
 }

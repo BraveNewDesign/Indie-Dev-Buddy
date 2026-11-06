@@ -232,11 +232,9 @@ struct ContentLibraryView: View {
         requestedNavigationID = createRequestMarker
     }
     private func create(_ kind: ContentKind, completion: ((String?) -> Void)? = nil) {
-        let record = ContentRecord(kind: kind, title: kind == .blog ? "Untitled Article" : kind == .social ? "Untitled Social Post" : "New Idea", originalBodyPath: kind == .blog ? "body.md" : "original.txt", status: kind == .idea ? .idea : .draft)
-        let folder = "Content/\(record.id)"
+        let record = ContentRecord.draft(kind: kind, title: kind == .blog ? "Untitled Article" : kind == .social ? "Untitled Social Post" : "New Idea")
         Task { do {
-            _ = try await store.write(Data(), relativePath: "\(folder)/\(record.originalBodyPath!)")
-            _ = try await store.save(record, relativePath: "\(folder)/record.json")
+            try await store.createContent(record, body: "")
             refresh()
             if completion == nil { selectedID = record.id }
             completion?(record.id)

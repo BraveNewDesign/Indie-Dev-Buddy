@@ -238,6 +238,7 @@ struct ManagementWorkspaceView: View {
             .overlay {
                 if rows.isEmpty {
                     ContentUnavailableView("No \(section.rawValue)", systemImage: sectionSymbol, description: Text("Add a record to manage it in this workspace."))
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
             }
 
@@ -770,6 +771,7 @@ private struct AppRecordEditor: View {
                     .accessibilityHidden(detailTab != "Marketing")
                 } else {
                     ContentUnavailableView("Save App First", systemImage: "megaphone", description: Text("Save the app overview before creating related marketing content."))
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
                         .opacity(detailTab == "Marketing" ? 1 : 0)
                         .allowsHitTesting(detailTab == "Marketing")
                         .accessibilityHidden(detailTab != "Marketing")
@@ -907,6 +909,7 @@ private struct AppRecordEditor: View {
                 Text("App ID: \(appID)").font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
             } else {
                 ContentUnavailableView("Save App First", systemImage: "folder", description: Text("Save this app before creating its asset folder."))
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
             if let fileMessage { Label(fileMessage, systemImage: "exclamationmark.triangle").foregroundStyle(.orange) }
             Spacer()
@@ -1233,7 +1236,7 @@ private struct AppRecordEditor: View {
             let hasAccess = url.startAccessingSecurityScopedResource()
             defer { if hasAccess { url.stopAccessingSecurityScopedResource() } }
             let bookmark = try url.bookmarkData(options: .withSecurityScope, includingResourceValuesForKeys: nil, relativeTo: nil)
-            try LocalBookmarkStore.setBookmark(bookmark, forKey: bookmarkKey)
+            try WorkspaceRegistry.setBookmark(bookmark, forKey: bookmarkKey)
             projectPath = url.path
             projectURL = url
             projectAvailable = true
@@ -1247,7 +1250,7 @@ private struct AppRecordEditor: View {
     private func resolveProjectLocation() {
         guard !projectPath.isEmpty else { projectURL = nil; projectAvailable = false; return }
         do {
-            guard let bookmark = try LocalBookmarkStore.bookmark(forKey: bookmarkKey) else {
+            guard let bookmark = try WorkspaceRegistry.bookmark(forKey: bookmarkKey) else {
                 projectURL = nil; projectAvailable = false
                 projectMessage = "Access to this location is unavailable. Relink the project to continue."
                 return
@@ -1270,7 +1273,7 @@ private struct AppRecordEditor: View {
             projectMessage = nil
             if isStale {
                 let refreshed = try url.bookmarkData(options: .withSecurityScope, includingResourceValuesForKeys: nil, relativeTo: nil)
-                try LocalBookmarkStore.setBookmark(refreshed, forKey: bookmarkKey)
+                try WorkspaceRegistry.setBookmark(refreshed, forKey: bookmarkKey)
             }
         } catch {
             projectURL = nil; projectAvailable = false
@@ -1702,6 +1705,7 @@ private struct AppMarketingContentPanel: View {
             }
             if records.isEmpty {
                 ContentUnavailableView("No Marketing Content", systemImage: "megaphone", description: Text("Create an article, social post, or idea for this app."))
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 List(records) { item in
                     HStack {

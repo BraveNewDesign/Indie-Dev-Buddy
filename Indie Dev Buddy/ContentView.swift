@@ -1,93 +1,19 @@
 import SwiftUI
 import AppKit
 
-/// Stores security-scoped bookmark blobs in the app's container instead of UserDefaults.
-/// Older builds used defaults; reads migrate those values after the file write succeeds.
-enum LocalBookmarkStore {
-    private static let workspacePrefix = "workspace:"
-    static func bookmark(forKey key: String) throws -> Data? {
-        let url = try storeURL(createDirectory: false)
-        if FileManager.default.fileExists(atPath: url.path) {
-            let data = try Data(contentsOf: url)
-            guard let bookmarks = try PropertyListSerialization.propertyList(from: data, options: [], format: nil) as? [String: Data] else {
-                throw CocoaError(.propertyListReadCorrupt)
-            }
-            return bookmarks[key]
-        }
-        guard let legacy = UserDefaults.standard.data(forKey: key) else { return nil }
-        try setBookmark(legacy, forKey: key)
-        UserDefaults.standard.removeObject(forKey: key)
-        return legacy
-    }
-
-    static func setBookmark(_ bookmark: Data?, forKey key: String) throws {
-        let url = try storeURL(createDirectory: true)
-        var bookmarks: [String: Data] = [:]
-        if FileManager.default.fileExists(atPath: url.path) {
-            let existing = try Data(contentsOf: url)
-            guard let decoded = try PropertyListSerialization.propertyList(from: existing, options: [], format: nil) as? [String: Data] else {
-                throw CocoaError(.propertyListReadCorrupt)
-            }
-            bookmarks = decoded
-        }
-        bookmarks[key] = bookmark
-        let encoded = try PropertyListSerialization.data(fromPropertyList: bookmarks, format: .binary, options: 0)
-        try encoded.write(to: url, options: .atomic)
-    }
-
-    static func addWorkspace(_ url: URL, bookmark: Data) throws {
-        try setBookmark(bookmark, forKey: workspacePrefix + url.standardizedFileURL.path)
-        // New workspace entries supersede the single-workspace bookmark used by older builds.
-        try setBookmark(nil, forKey: "workspaceBookmark")
-    }
-
-    static func workspaces() throws -> [(URL, Data)] {
-        let file = try storeURL(createDirectory: false)
-        guard FileManager.default.fileExists(atPath: file.path) else { return [] }
-        let data = try Data(contentsOf: file)
-        guard let values = try PropertyListSerialization.propertyList(from: data, options: [], format: nil) as? [String: Data] else {
-            throw CocoaError(.propertyListReadCorrupt)
-        }
-        return values.compactMap { key, value in
-            guard key.hasPrefix(workspacePrefix) else { return nil }
-            return (URL(fileURLWithPath: String(key.dropFirst(workspacePrefix.count))), value)
-        }.sorted { $0.0.lastPathComponent.localizedCaseInsensitiveCompare($1.0.lastPathComponent) == .orderedAscending }
-    }
-
-    static func removeWorkspace(_ url: URL) throws {
-        try setBookmark(nil, forKey: workspacePrefix + url.standardizedFileURL.path)
-    }
-
-    private static func storeURL(createDirectory: Bool) throws -> URL {
-        let support = try FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: createDirectory)
-        let directory = support.appendingPathComponent("Indie Dev Buddy", isDirectory: true)
-        if createDirectory { try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true) }
-        return directory.appendingPathComponent("ExternalFileBookmarks.plist")
-    }
-}
-
 @MainActor @Observable final class WorkspaceSession {
     var store: WorkspaceStore?
     var snapshot: WorkspaceSnapshot?
     var snapshotGeneration = 0
     var error: String?
     var workspaceURL: URL?
-    private var accessURL: URL?
     var knownWorkspaces: [URL] = []
 
     func restore() {
         do {
-            let saved = try LocalBookmarkStore.workspaces()
-            knownWorkspaces = saved.map(\.0)
-            let data: Data?
-            if let bookmark = saved.first?.1 { data = bookmark }
-            else { data = try LocalBookmarkStore.bookmark(forKey: "workspaceBookmark") }
-            guard let data else { return }
-            var stale = false
-            let scopedURL = try URL(resolvingBookmarkData: data, options: .withSecurityScope, relativeTo: nil, bookmarkDataIsStale: &stale)
-            guard !stale else { error = "Workspace access needs to be renewed. Choose the folder again."; return }
-            if let savedWorkspace = saved.first { open(savedWorkspace.0, scopedAccessURL: scopedURL) }
-            else { open(scopedURL) }
+            let saved = try WorkspaceRegistry.workspaces()
+            knownWorkspaces = saved
+            if let workspace = saved.first { open(workspace) }
         } catch { self.error = "Could not reopen the workspace: \(error.localizedDescription)" }
     }
     func choose(create: Bool) {
@@ -99,9 +25,7 @@ enum LocalBookmarkStore {
             : "Choose an existing Indie Dev Buddy workspace folder."
         guard panel.runModal() == .OK, let url = panel.url else { return }
         if create {
-            let scoped = url.startAccessingSecurityScopedResource()
             Task {
-                defer { if scoped { url.stopAccessingSecurityScopedResource() } }
                 do {
                     let baseName = "Indie Dev Buddy Workspace"
                     var destination = url.appendingPathComponent(baseName, isDirectory: true)
@@ -112,33 +36,27 @@ enum LocalBookmarkStore {
                     }
                     let newStore = WorkspaceStore(rootURL: destination)
                     _ = try await newStore.createWorkspace(at: destination, name: destination.lastPathComponent)
-                    open(destination, scopedAccessURL: scoped ? url : nil)
+                    open(destination)
                 }
                 catch { self.error = error.localizedDescription }
             }
         } else { open(url) }
     }
-    func open(_ url: URL, scopedAccessURL: URL? = nil) {
-        let accessURL = scopedAccessURL ?? url
-        let scoped = accessURL.startAccessingSecurityScopedResource()
+    func open(_ url: URL) {
         let newStore = WorkspaceStore(rootURL: url)
         Task { [weak self] in
-            guard let self else { if scoped { accessURL.stopAccessingSecurityScopedResource() }; return }
+            guard let self else { return }
             do {
                 let loaded = try await newStore.load()
-                let bookmark = try accessURL.bookmarkData(options: .withSecurityScope, includingResourceValuesForKeys: nil, relativeTo: nil)
-                try LocalBookmarkStore.addWorkspace(url, bookmark: bookmark)
-                knownWorkspaces = try LocalBookmarkStore.workspaces().map(\.0)
+                try WorkspaceRegistry.addWorkspace(url)
+                knownWorkspaces = try WorkspaceRegistry.workspaces()
                 if let previous = store { await previous.stopWatching() }
-                self.accessURL?.stopAccessingSecurityScopedResource()
-                self.accessURL = scoped ? accessURL : nil
                 workspaceURL = url
                 store = newStore
                 snapshot = loaded
                 snapshotGeneration &+= 1
                 await newStore.startWatching { [weak self] in Task { @MainActor in self?.refresh() } }
             } catch {
-                if scoped { accessURL.stopAccessingSecurityScopedResource() }
                 self.error = error.localizedDescription
             }
         }
@@ -147,14 +65,12 @@ enum LocalBookmarkStore {
         Task {
             if workspaceURL?.standardizedFileURL.path == url.standardizedFileURL.path {
                 if let store { await store.stopWatching() }
-                accessURL?.stopAccessingSecurityScopedResource()
-                accessURL = nil
                 self.workspaceURL = nil
                 self.store = nil
                 snapshot = nil
             }
-            try? LocalBookmarkStore.removeWorkspace(url)
-            knownWorkspaces = (try? LocalBookmarkStore.workspaces().map(\.0)) ?? []
+            try? WorkspaceRegistry.removeWorkspace(url)
+            knownWorkspaces = (try? WorkspaceRegistry.workspaces()) ?? []
         }
     }
     func refresh() {
@@ -244,6 +160,7 @@ struct ContentView: View {
                             }
                         } else if searchResults(snapshot).isEmpty {
                             ContentUnavailableView.search(text: searchText)
+                                .frame(maxWidth: .infinity, maxHeight: .infinity)
                         } else {
                             List {
                             Section("Workspace Results") {

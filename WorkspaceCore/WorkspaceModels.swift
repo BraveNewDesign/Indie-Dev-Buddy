@@ -166,6 +166,13 @@ nonisolated public struct ContentRecord: Codable, Sendable, Identifiable, Equata
         self.id = id; self.kind = kind; self.title = title; self.appIds = appIds; self.websiteId = websiteId; self.sourceContentId = sourceContentId; self.releaseId = releaseId; self.relatedGroupId = relatedGroupId; self.originalBodyPath = originalBodyPath; self.excerpt = excerpt; self.includeSourceLink = includeSourceLink; self.status = status; self.plannedDate = plannedDate; self.publishedURL = publishedURL; self.destinations = destinations; self.mediaPaths = mediaPaths
     }
 
+    static func draft(kind: ContentKind, title: String, appIDs: [String] = [], websiteID: String? = nil,
+                      sourceID: String? = nil, accountIDs: [String] = []) -> Self {
+        ContentRecord(kind: kind, title: title, appIds: appIDs, websiteId: websiteID, sourceContentId: sourceID,
+                      originalBodyPath: kind == .blog ? "body.md" : "original.txt",
+                      status: kind == .idea ? .idea : .draft, destinations: accountIDs.map { ContentDestination(accountId: $0) })
+    }
+
     public mutating func setAppAssociation(_ appID: String, selected: Bool) {
         guard !appID.isEmpty else { return }
         if selected {
@@ -187,6 +194,7 @@ nonisolated public struct WorkspaceSnapshot: Sendable {
     /// Raw bytes for records the current app cannot decode or safely interpret. Keep these
     /// files untouched when saving other records; surface errors so the user can repair them.
     public var opaqueRecords: [OpaqueWorkspaceRecord]
+    var recordPaths: [String: [String: String]] = [:]
 
     public var contentByID: [String: ContentRecord] { Dictionary(content.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first }) }
     public var socialAccountsByID: [String: SocialAccountRecord] { Dictionary(socialAccounts.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first }) }
