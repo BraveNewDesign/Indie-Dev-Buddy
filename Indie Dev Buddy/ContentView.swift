@@ -188,12 +188,14 @@ struct ContentView: View {
     @State private var pendingRootAction: RootAction?
     @State private var searchText = ""
     @AppStorage("selectedAppID") private var selectedAppID: String?
+    @State private var contentListResetGeneration = 0
     @State private var appsOverviewGeneration = 0
     @FocusState private var searchFocused: Bool
 
     private enum RootAction {
         case section(String)
         case content(String)
+        case showContentList
         case management(ManagementRecordSelection)
         case createContent(ContentKind)
         case createManagement(ManagementCreateRequest)
@@ -226,6 +228,10 @@ struct ContentView: View {
                                     .badge(snapshot.apps.count).tag("Apps")
                                 Label("Marketing Content", systemImage: "megaphone")
                                     .badge(snapshot.content.count).tag("Marketing Content")
+                                    .contentShape(Rectangle())
+                                    .onTapGesture {
+                                        if section == "Marketing Content" { requestRootAction(.showContentList) }
+                                    }
                                 Label("Files", systemImage: "folder").tag("Files")
                                 Section("Profiles") {
                                     Label("Identities", systemImage: "person.crop.circle")
@@ -275,7 +281,7 @@ struct ContentView: View {
                             }.padding().background(.orange.opacity(0.12))
                         }
                         switch section {
-                        case "Marketing Content": ContentLibraryView(snapshot: snapshot, snapshotGeneration: session.snapshotGeneration, store: store, refresh: session.refresh, initialSelectionID: marketingSelectionID, onUnsavedChangesChange: { hasUnsavedEdits = $0 }, initialCreateKind: contentCreateRequest, onCreateRequestHandled: { contentCreateRequest = nil })
+                        case "Marketing Content": ContentLibraryView(snapshot: snapshot, snapshotGeneration: session.snapshotGeneration, store: store, refresh: session.refresh, initialSelectionID: marketingSelectionID, onInitialSelectionHandled: { marketingSelectionID = nil }, listResetGeneration: contentListResetGeneration, onUnsavedChangesChange: { hasUnsavedEdits = $0 }, initialCreateKind: contentCreateRequest, onCreateRequestHandled: { contentCreateRequest = nil })
                         case "Files": WorkspaceFilesBrowser(root: store.rootURL)
                         default: ManagementWorkspaceView(section: ManagementSection(rawValue: section) ?? .apps, snapshot: snapshot, store: store, onSnapshotChanged: session.refresh, onReloadSnapshot: session.reload, onUnsavedEditsChanged: { hasUnsavedEdits = $0 }, onOpenMarketingContent: { id in requestRootAction(.content(id)); session.refresh() }, onOpenRecord: { requestRootAction(.management($0)) }, selectionRequest: managementSelectionRequest, createRequest: managementCreateRequest, onExternalRequestHandled: { managementSelectionRequest = nil; managementCreateRequest = nil }, restoredAppID: selectedAppID, onAppSelectionChange: { selectedAppID = $0 }).id(section == "Apps" ? "Apps-\(appsOverviewGeneration)" : section)
                         }
@@ -349,8 +355,11 @@ struct ContentView: View {
             section = value
             selectedAppID = nil
             managementSelectionRequest = nil
+            if value != "Marketing Content" { marketingSelectionID = nil }
             if value == "Apps" { appsOverviewGeneration += 1 }
         case .content(let id): section = "Marketing Content"; selectedAppID = nil; marketingSelectionID = id
+        case .showContentList:
+            contentListResetGeneration &+= 1
         case .management(let selection):
             section = selection.type.section.rawValue
             selectedAppID = selection.type == .app ? selection.id : nil

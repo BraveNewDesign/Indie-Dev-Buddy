@@ -208,14 +208,18 @@ struct ManagementWorkspaceView: View {
                     HStack(spacing: 10) {
                         Group {
                             if let iconURL = row.iconURL, let image = NSImage(contentsOf: iconURL) {
-                                Image(nsImage: image).resizable().scaledToFit()
+                                if section == .identities {
+                                    Image(nsImage: image).resizable().scaledToFill().clipShape(Circle())
+                                } else {
+                                    Image(nsImage: image).resizable().scaledToFit()
+                                }
                             } else if let platform = row.socialPlatform {
                                 SocialPlatformIcon(platform: platform, size: 24)
                             } else {
                                 Image(systemName: row.symbol).font(.title3).foregroundStyle(.secondary)
                             }
                         }
-                        .frame(width: section == .apps ? 36 : 24, height: 30)
+                        .frame(width: section == .apps ? 36 : (section == .identities ? 30 : 24), height: 30)
                         .accessibilityHidden(true)
                         VStack(alignment: .leading, spacing: 3) {
                             Text(row.title).font(.headline)
@@ -307,7 +311,9 @@ struct ManagementWorkspaceView: View {
                 return ManagementRow(id: app.id, title: app.name, subtitle: details.joined(separator: " · "), symbol: "app.dashed", iconURL: iconURL)
             }
         case .identities:
-            snapshot.identities.map { ManagementRow(id: $0.id, title: $0.name, subtitle: $0.kind ?? "", symbol: "person.crop.circle") }
+            snapshot.identities.map { identity in
+                ManagementRow(id: identity.id, title: identity.name, subtitle: identity.kind ?? "", symbol: "person.crop.circle", iconURL: Self.safeWorkspacePhotoURL(root: store.rootURL, photoPath: identity.photoPath))
+            }
         case .websites:
             snapshot.websites.filter { matchesOwnerFilter($0.owner) }.map { record in
                 ManagementRow(id: record.id, title: record.name, subtitle: "\(ownerName(record.owner)) · \(record.baseURL.host ?? record.baseURL.absoluteString)", symbol: "globe")
@@ -353,7 +359,7 @@ struct ManagementWorkspaceView: View {
     }
     @ViewBuilder private func editor(for record: IdentityRecord?) -> some View {
         VStack(spacing: 0) {
-            IdentityRecordEditor(record: record, onDirtyChange: setDirty, onSave: { await save($0, category: "Identities", name: $0.name, expectedRevision: loadedRevision) }).id("\(record?.id ?? "new-identity")-\(editorGeneration)")
+            IdentityRecordEditor(record: record, workspaceStore: store, onDirtyChange: setDirty, onSave: { await save($0, category: "Identities", name: $0.name, expectedRevision: loadedRevision) }).id("\(record?.id ?? "new-identity")-\(editorGeneration)")
             if let record {
                 relatedRecords(owner: RecordOwner(type: .identity, id: record.id))
             }
@@ -369,7 +375,7 @@ struct ManagementWorkspaceView: View {
     }
     @ViewBuilder private func editor(for record: SocialAccountRecord?) -> some View {
         VStack(spacing: 0) {
-            SocialAccountRecordEditor(record: record, owners: ownerChoices, workspaceStore: store, onDirtyChange: setDirty, onSave: { await save($0, category: "SocialAccounts", name: $0.platform, expectedRevision: loadedRevision) }).id("\(record?.id ?? "new-social-account")-\(editorGeneration)")
+            SocialAccountRecordEditor(record: record, owners: ownerChoices, identities: snapshot.identities, workspaceStore: store, onDirtyChange: setDirty, onSave: { await save($0, category: "SocialAccounts", name: $0.platform, expectedRevision: loadedRevision) }).id("\(record?.id ?? "new-social-account")-\(editorGeneration)")
             if let owner = record?.owner {
                 relatedRecords(owner: owner, excludingAccountID: record?.id)
             }
@@ -625,7 +631,7 @@ struct ManagementWorkspaceView: View {
         } catch { return false }
     }
 
-    private static func findRecordPath(root: URL, category: String, id: String) -> String? {
+    fileprivate static func findRecordPath(root: URL, category: String, id: String) -> String? {
         let base = root.appendingPathComponent(category, isDirectory: true)
         guard let folders = try? FileManager.default.contentsOfDirectory(at: base, includingPropertiesForKeys: nil) else { return nil }
         for folder in folders {
@@ -651,7 +657,17 @@ struct ManagementWorkspaceView: View {
         return resolved
     }
 
-    private static func slug(_ text: String) -> String {
+    private static func safeWorkspacePhotoURL(root: URL, photoPath: String?) -> URL? {
+        guard let photoPath, !photoPath.isEmpty, !photoPath.hasPrefix("/"),
+              !photoPath.split(separator: "/").contains("..") else { return nil }
+        let resolvedRoot = root.standardizedFileURL.resolvingSymlinksInPath()
+        let resolved = root.appendingPathComponent(photoPath).standardizedFileURL.resolvingSymlinksInPath()
+        let prefix = resolvedRoot.path.hasSuffix("/") ? resolvedRoot.path : resolvedRoot.path + "/"
+        guard resolved.path.hasPrefix(prefix), FileManager.default.fileExists(atPath: resolved.path) else { return nil }
+        return resolved
+    }
+
+    fileprivate static func slug(_ text: String) -> String {
         let pieces = text.lowercased().split(whereSeparator: { !$0.isLetter && !$0.isNumber })
         let value = pieces.prefix(8).joined(separator: "-")
         return value.isEmpty ? "record" : value
@@ -1292,10 +1308,16 @@ private struct AppRecordEditor: View {
 
 private struct IdentityRecordEditor: View {
     let record: IdentityRecord?
+    let workspaceStore: WorkspaceStore
     let onDirtyChange: (Bool) -> Void
     let onSave: (IdentityRecord) async -> Bool
     @State private var name = ""
     @State private var kind = "Personal"
+    @State private var draftID = UUID().uuidString.lowercased()
+    @State private var photoPath: String?
+    @State private var photoPreview: NSImage?
+    @State private var photoError: String?
+    @State private var showingPhotoPicker = false
     @State private var saving = false
     var body: some View {
         Form {
@@ -1307,19 +1329,104 @@ private struct IdentityRecordEditor: View {
                     Text("Brand").tag("Brand")
                 }
             }
+            Section("Photo") {
+                HStack(spacing: 14) {
+                    Group {
+                        if let photoPreview {
+                            Image(nsImage: photoPreview).resizable().scaledToFill()
+                        } else {
+                            Image(systemName: "person.crop.circle.fill").resizable().scaledToFit().foregroundStyle(.secondary)
+                        }
+                    }
+                    .frame(width: 64, height: 64)
+                    .clipShape(Circle())
+                    .accessibilityLabel(photoPreview == nil ? "No identity photo selected" : "Identity photo preview")
+                    VStack(alignment: .leading, spacing: 8) {
+                        Button(photoPath == nil ? "Choose Photo…" : "Replace Photo…") { showingPhotoPicker = true }
+                        if photoPath != nil {
+                            Button("Remove Photo", role: .destructive) {
+                                photoPath = nil
+                                photoPreview = nil
+                                photoError = nil
+                            }
+                        }
+                        if let photoError { Text(photoError).font(.caption).foregroundStyle(.red) }
+                        else if photoPath == nil { Text("Used as the default avatar for this identity’s social accounts.").font(.caption).foregroundStyle(.secondary) }
+                    }
+                }
+            }
             Section { HStack { Spacer(); Button("Save Identity") { Task { await save() } }.buttonStyle(.borderedProminent).disabled(name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || saving) } }
         }
         .formStyle(.grouped)
         .navigationTitle(record == nil ? "New Identity" : name)
-        .onAppear { if let record { name = record.name; kind = record.kind ?? "Personal" } }
+        .onAppear {
+            if let record {
+                draftID = record.id
+                name = record.name
+                kind = record.kind ?? "Personal"
+                photoPath = record.photoPath
+                if let photoPath { Task { await loadPhotoPreview(relativePath: photoPath) } }
+            }
+        }
         .onChange(of: name) { _, _ in onDirtyChange(isDirty) }
         .onChange(of: kind) { _, _ in onDirtyChange(isDirty) }
+        .onChange(of: photoPath) { _, _ in onDirtyChange(isDirty) }
+        .fileImporter(isPresented: $showingPhotoPicker, allowedContentTypes: [.image], allowsMultipleSelection: false) { result in
+            switch result {
+            case .success(let urls):
+                guard let url = urls.first else { return }
+                Task { await importPhoto(from: url) }
+            case .failure(let error): photoError = error.localizedDescription
+            }
+        }
     }
     private func save() async {
         saving = true; defer { saving = false }
-        if await onSave(IdentityRecord(id: record?.id ?? UUID().uuidString.lowercased(), name: name.trimmingCharacters(in: .whitespacesAndNewlines), kind: kind)) { onDirtyChange(false) }
+        if await onSave(IdentityRecord(id: draftID, name: name.trimmingCharacters(in: .whitespacesAndNewlines), kind: kind, photoPath: photoPath)) { onDirtyChange(false) }
     }
-    private var isDirty: Bool { record.map { $0.name != name.trimmingCharacters(in: .whitespacesAndNewlines) || ($0.kind ?? "Personal") != kind } ?? (!name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || kind != "Personal") }
+    private func loadPhotoPreview(relativePath: String) async {
+        do {
+            let data = try await workspaceStore.read(relativePath: relativePath).data
+            guard photoPath == relativePath else { return }
+            photoPreview = NSImage(data: data)
+            if photoPreview == nil { photoError = "The linked photo file is not a readable image. Replace or remove it." }
+        } catch {
+            guard photoPath == relativePath else { return }
+            photoPreview = nil
+            photoError = "The linked photo is unavailable. Replace or remove it. \(error.localizedDescription)"
+        }
+    }
+    private func importPhoto(from sourceURL: URL) async {
+        let access = sourceURL.startAccessingSecurityScopedResource()
+        defer { if access { sourceURL.stopAccessingSecurityScopedResource() } }
+        do {
+            let data = try Data(contentsOf: sourceURL)
+            guard !data.isEmpty, data.count <= 20 * 1_024 * 1_024,
+                  let image = NSImage(data: data),
+                  let type = UTType(filenameExtension: sourceURL.pathExtension), type.conforms(to: .image) else {
+                throw CocoaError(.fileReadCorruptFile)
+            }
+            let ext = type.preferredFilenameExtension ?? sourceURL.pathExtension.lowercased()
+            guard !ext.isEmpty, ext.unicodeScalars.allSatisfy({ CharacterSet.alphanumerics.contains($0) }) else {
+                throw CocoaError(.fileReadInvalidFileName)
+            }
+            let identityFolder = record.flatMap { ManagementWorkspaceView.findRecordPath(root: workspaceStore.rootURL, category: "Identities", id: $0.id) }
+                .map { String($0.dropLast("/record.json".count)) }
+                ?? "Identities/\(ManagementWorkspaceView.slug(name))-\(draftID.prefix(8))"
+            let path = "\(identityFolder)/Assets/identity-photo-\(UUID().uuidString.lowercased()).\(ext)"
+            _ = try await workspaceStore.write(data, relativePath: path, expectedRevision: nil)
+            photoPath = path
+            photoPreview = image
+            photoError = nil
+        } catch {
+            photoError = "Could not import this photo: \(error.localizedDescription)"
+        }
+    }
+    private var isDirty: Bool {
+        record.map {
+            $0.name != name.trimmingCharacters(in: .whitespacesAndNewlines) || ($0.kind ?? "Personal") != kind || $0.photoPath != photoPath
+        } ?? (!name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || kind != "Personal" || photoPath != nil)
+    }
 }
 
 private struct WebsiteRecordEditor: View {
@@ -1373,6 +1480,7 @@ private struct WebsiteRecordEditor: View {
 private struct SocialAccountRecordEditor: View {
     let record: SocialAccountRecord?
     let owners: [OwnerChoice]
+    let identities: [IdentityRecord]
     let workspaceStore: WorkspaceStore
     let onDirtyChange: (Bool) -> Void
     let onSave: (SocialAccountRecord) async -> Bool
@@ -1385,6 +1493,7 @@ private struct SocialAccountRecordEditor: View {
     @State private var draftID = UUID().uuidString.lowercased()
     @State private var avatarPath: String?
     @State private var avatarPreview: NSImage?
+    @State private var identityAvatarPreview: NSImage?
     @State private var avatarError: String?
     @State private var showingAvatarPicker = false
     @State private var saving = false
@@ -1408,8 +1517,8 @@ private struct SocialAccountRecordEditor: View {
             Section("Avatar") {
                 HStack(spacing: 14) {
                     Group {
-                        if let avatarPreview {
-                            Image(nsImage: avatarPreview).resizable().scaledToFill()
+                        if let displayedAvatarPreview {
+                            Image(nsImage: displayedAvatarPreview).resizable().scaledToFill()
                         } else {
                             Image(systemName: "person.crop.circle.fill").resizable().scaledToFit()
                                 .foregroundStyle(.secondary)
@@ -1417,11 +1526,11 @@ private struct SocialAccountRecordEditor: View {
                     }
                     .frame(width: 64, height: 64)
                     .clipShape(Circle())
-                    .accessibilityLabel(avatarPreview == nil ? "No account avatar selected" : "Account avatar preview")
+                    .accessibilityLabel(displayedAvatarPreview == nil ? "No account avatar selected" : (avatarPath == nil ? "Identity photo avatar preview" : "Custom account avatar preview"))
                     VStack(alignment: .leading, spacing: 8) {
-                        Button(avatarPath == nil ? "Choose Avatar…" : "Replace Avatar…") { showingAvatarPicker = true }
+                        Button(avatarPath == nil ? "Choose Custom Avatar…" : "Replace Custom Avatar…") { showingAvatarPicker = true }
                         if avatarPath != nil {
-                            Button("Clear Avatar", role: .destructive) {
+                            Button("Use Identity Photo") {
                                 avatarPath = nil
                                 avatarPreview = nil
                                 avatarError = nil
@@ -1429,8 +1538,11 @@ private struct SocialAccountRecordEditor: View {
                         }
                         if let avatarError {
                             Text(avatarError).font(.caption).foregroundStyle(.red)
+                        } else if avatarPath == nil, selectedIdentity?.photoPath != nil {
+                            Text("Using the owner’s identity photo. Add a custom avatar to override it.")
+                                .font(.caption).foregroundStyle(.secondary)
                         } else if avatarPath == nil {
-                            Text("Optional image stored in the workspace.")
+                            Text("Using a custom avatar overrides the owner’s identity photo when one is set.")
                                 .font(.caption).foregroundStyle(.secondary)
                         }
                     }
@@ -1442,6 +1554,8 @@ private struct SocialAccountRecordEditor: View {
         .navigationTitle(record == nil ? "New Social Account" : platformValue)
         .onAppear(perform: load)
         .onChange(of: dirtySignature) { _, _ in onDirtyChange(isDirty) }
+        .onChange(of: ownerID) { _, _ in Task { await loadIdentityAvatarPreview() } }
+        .onChange(of: selectedIdentity?.photoPath) { _, _ in Task { await loadIdentityAvatarPreview() } }
         .fileImporter(isPresented: $showingAvatarPicker, allowedContentTypes: [.image], allowsMultipleSelection: false) { result in
             switch result {
             case .success(let urls):
@@ -1452,7 +1566,11 @@ private struct SocialAccountRecordEditor: View {
         }
     }
     private func load() {
-        guard let record else { ownerID = owners.first?.id ?? ""; return }
+        guard let record else {
+            ownerID = owners.first?.id ?? ""
+            Task { await loadIdentityAvatarPreview() }
+            return
+        }
         draftID = record.id
         platform = platforms.contains(record.platform) ? record.platform : "Other"
         customPlatform = platforms.contains(record.platform) ? "" : record.platform
@@ -1460,6 +1578,24 @@ private struct SocialAccountRecordEditor: View {
         handle = record.handle ?? ""; profileURL = record.profileURL?.absoluteString ?? ""; enabled = record.enabled
         avatarPath = record.avatarPath
         if let avatarPath { Task { await loadAvatarPreview(relativePath: avatarPath) } }
+        Task { await loadIdentityAvatarPreview() }
+    }
+    private var selectedIdentity: IdentityRecord? {
+        guard ownerID.hasPrefix("identity:") else { return nil }
+        let identityID = String(ownerID.dropFirst("identity:".count))
+        return identities.first { $0.id == identityID }
+    }
+    private var displayedAvatarPreview: NSImage? { avatarPath == nil ? identityAvatarPreview : (avatarPreview ?? identityAvatarPreview) }
+    private func loadIdentityAvatarPreview() async {
+        guard let path = selectedIdentity?.photoPath else { identityAvatarPreview = nil; return }
+        do {
+            let data = try await workspaceStore.read(relativePath: path).data
+            guard selectedIdentity?.photoPath == path else { return }
+            identityAvatarPreview = NSImage(data: data)
+        } catch {
+            guard selectedIdentity?.photoPath == path else { return }
+            identityAvatarPreview = nil
+        }
     }
     private func loadAvatarPreview(relativePath: String) async {
         do {

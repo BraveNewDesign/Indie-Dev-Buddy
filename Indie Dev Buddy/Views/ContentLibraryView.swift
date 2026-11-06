@@ -7,6 +7,8 @@ struct ContentLibraryView: View {
     let store: WorkspaceStore
     let refresh: () -> Void
     var initialSelectionID: String? = nil
+    var onInitialSelectionHandled: () -> Void = {}
+    var listResetGeneration: Int = 0
     var onUnsavedChangesChange: (Bool) -> Void = { _ in }
     var initialCreateKind: ContentKind? = nil
     var onCreateRequestHandled: () -> Void = {}
@@ -65,8 +67,7 @@ struct ContentLibraryView: View {
             if selectedID != nil {
                 ToolbarItem(placement: .navigation) {
                     Button("All Content", systemImage: "chevron.left") {
-                        if editorHasUnsavedChanges { requestedNavigationID = listRequestMarker }
-                        else { selectedID = nil }
+                        returnToList()
                     }
                 }
             }
@@ -97,12 +98,21 @@ struct ContentLibraryView: View {
             Text("\(snapshot.content.first(where: { $0.id == selectedID })?.title ?? "This item") and its workspace files will be permanently deleted. This also discards any unsaved edits.")
         }
         .onAppear {
-            if selectedID == nil || !snapshot.content.contains(where: { $0.id == selectedID }) {
-                selectedID = initialSelectionID.flatMap { id in snapshot.content.contains(where: { $0.id == id }) ? id : nil }
+            if let initialSelectionID, snapshot.content.contains(where: { $0.id == initialSelectionID }) {
+                if selectedID != initialSelectionID { requestSelection(initialSelectionID) }
+                onInitialSelectionHandled()
+            } else if selectedID == nil || !snapshot.content.contains(where: { $0.id == selectedID }) {
+                selectedID = nil
             }
             if let initialCreateKind { requestCreate(initialCreateKind); onCreateRequestHandled() }
         }
-        .onChange(of: initialSelectionID) { _, value in if let value { requestSelection(value) } }
+        .onChange(of: initialSelectionID) { _, value in
+            if let value {
+                requestSelection(value)
+                onInitialSelectionHandled()
+            }
+        }
+        .onChange(of: listResetGeneration) { _, _ in resetToListAfterSidebarRequest() }
         .onChange(of: initialCreateKind) { _, value in if let value { requestCreate(value); onCreateRequestHandled() } }
         .onChange(of: requestedNavigationID) { _, value in if value == nil { pendingCreateKind = nil } }
     }
@@ -201,6 +211,20 @@ struct ContentLibraryView: View {
         pendingCreateKind = nil
         if editorHasUnsavedChanges { requestedNavigationID = id }
         else { selectedID = id }
+    }
+    private func returnToList() {
+        if editorHasUnsavedChanges { requestedNavigationID = listRequestMarker }
+        else {
+            selectedID = nil
+            requestedNavigationID = nil
+            onUnsavedChangesChange(false)
+        }
+    }
+    private func resetToListAfterSidebarRequest() {
+        editorHasUnsavedChanges = false
+        selectedID = nil
+        requestedNavigationID = nil
+        onUnsavedChangesChange(false)
     }
     private func requestCreate(_ kind: ContentKind) {
         guard editorHasUnsavedChanges, selectedID != nil else { create(kind); return }

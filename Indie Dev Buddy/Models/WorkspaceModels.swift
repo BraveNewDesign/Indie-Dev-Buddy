@@ -17,7 +17,9 @@ nonisolated public struct IdentityRecord: Codable, Sendable, Identifiable, Equat
     public var id: String
     public var name: String
     public var kind: String?
-    public init(id: String = UUID().uuidString.lowercased(), name: String, kind: String? = nil) { self.id = id; self.name = name; self.kind = kind }
+    /// Image path relative to the workspace root.
+    public var photoPath: String?
+    public init(id: String = UUID().uuidString.lowercased(), name: String, kind: String? = nil, photoPath: String? = nil) { self.id = id; self.name = name; self.kind = kind; self.photoPath = photoPath }
 }
 
 nonisolated public struct RecordOwner: Codable, Sendable, Equatable {

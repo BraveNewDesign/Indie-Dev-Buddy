@@ -19,7 +19,10 @@ struct ComposerSocialAccount: Identifiable, Hashable {
         platform = record.platform
         handle = record.handle
         profileURL = record.profileURL
-        avatarPath = record.avatarPath
+        let identityPhotoPath = record.owner.flatMap { owner in
+            owner.type == .identity ? snapshot.identities.first { $0.id == owner.id }?.photoPath : nil
+        }
+        avatarPath = record.avatarPath ?? identityPhotoPath
         enabled = record.enabled
         var resolvedOwnerName: String?
         if let owner = record.owner {
