@@ -225,9 +225,15 @@ struct ContentView: View {
                                     .badge(snapshot.apps.count).tag("Apps")
                                 Label("Marketing Content", systemImage: "megaphone")
                                     .badge(snapshot.content.count).tag("Marketing Content")
-                                Label("Websites & Social Accounts", systemImage: "globe")
-                                    .tag("Websites & Social Accounts")
                                 Label("Files", systemImage: "folder").tag("Files")
+                                Section("Profiles") {
+                                    Label("Identities", systemImage: "person.crop.circle")
+                                        .tag(ManagementSection.identities.rawValue)
+                                    Label("Websites", systemImage: "globe")
+                                        .tag(ManagementSection.websites.rawValue)
+                                    Label("Social Accounts", systemImage: "at")
+                                        .tag(ManagementSection.socialAccounts.rawValue)
+                                }
                             }
                         } else if searchResults(snapshot).isEmpty {
                             ContentUnavailableView.search(text: searchText)
@@ -266,7 +272,7 @@ struct ContentView: View {
                         switch section {
                         case "Marketing Content": ContentLibraryView(snapshot: snapshot, snapshotGeneration: session.snapshotGeneration, store: store, refresh: session.refresh, initialSelectionID: marketingSelectionID, onUnsavedChangesChange: { hasUnsavedEdits = $0 }, initialCreateKind: contentCreateRequest, onCreateRequestHandled: { contentCreateRequest = nil })
                         case "Files": WorkspaceFilesBrowser(root: store.rootURL)
-                        default: ManagementWorkspaceView(initialTab: section == "Apps" ? .apps : .websitesAndSocialAccounts, snapshot: snapshot, store: store, onSnapshotChanged: session.refresh, onReloadSnapshot: session.reload, onUnsavedEditsChanged: { hasUnsavedEdits = $0 }, onOpenMarketingContent: { id in requestRootAction(.content(id)); session.refresh() }, selectionRequest: managementSelectionRequest, createRequest: managementCreateRequest, onExternalRequestHandled: { managementSelectionRequest = nil; managementCreateRequest = nil }, restoredAppID: selectedAppID, onAppSelectionChange: { selectedAppID = $0 }).id(section == "Apps" ? "Apps-\(appsOverviewGeneration)" : section)
+                        default: ManagementWorkspaceView(section: ManagementSection(rawValue: section) ?? .apps, snapshot: snapshot, store: store, onSnapshotChanged: session.refresh, onReloadSnapshot: session.reload, onUnsavedEditsChanged: { hasUnsavedEdits = $0 }, onOpenMarketingContent: { id in requestRootAction(.content(id)); session.refresh() }, onOpenRecord: { requestRootAction(.management($0)) }, selectionRequest: managementSelectionRequest, createRequest: managementCreateRequest, onExternalRequestHandled: { managementSelectionRequest = nil; managementCreateRequest = nil }, restoredAppID: selectedAppID, onAppSelectionChange: { selectedAppID = $0 }).id(section == "Apps" ? "Apps-\(appsOverviewGeneration)" : section)
                         }
                     }
                     .toolbar {
@@ -315,7 +321,12 @@ struct ContentView: View {
             }
             Button("Keep Editing", role: .cancel) { pendingRootAction = nil; pendingWorkspaceChange = false; pendingWorkspaceToForget = nil }
         } message: { Text("Save your changes before leaving this editor, or discard them. Removing a workspace only removes it from this app; its folder and files stay where they are.") }
-        .task { session.restore() }
+        .task {
+            if section == "Websites & Social Accounts" {
+                section = ManagementSection.websites.rawValue
+            }
+            session.restore()
+        }
         .alert("Workspace", isPresented: Binding(get: { session.error != nil }, set: { if !$0 { session.error = nil } })) {
             Button("OK") { session.error = nil }
         } message: { Text(session.error ?? "") }
@@ -336,12 +347,12 @@ struct ContentView: View {
             if value == "Apps" { appsOverviewGeneration += 1 }
         case .content(let id): section = "Marketing Content"; selectedAppID = nil; marketingSelectionID = id
         case .management(let selection):
-            section = selection.type == .app ? "Apps" : "Websites & Social Accounts"
+            section = selection.type.section.rawValue
             selectedAppID = selection.type == .app ? selection.id : nil
             managementSelectionRequest = selection
         case .createContent(let kind): section = "Marketing Content"; selectedAppID = nil; contentCreateRequest = kind
         case .createManagement(let kind):
-            section = kind == .app ? "Apps" : "Websites & Social Accounts"
+            section = kind.section.rawValue
             selectedAppID = nil
             managementCreateRequest = kind
         }
@@ -358,7 +369,7 @@ struct ContentView: View {
     }
 
     private func requestCreateManagement(_ kind: ManagementCreateRequest) {
-        let target = kind == .app ? "Apps" : "Websites & Social Accounts"
+        let target = kind.section.rawValue
         if section == target { managementCreateRequest = kind }
         else { requestRootAction(.createManagement(kind)) }
     }
@@ -371,7 +382,7 @@ struct ContentView: View {
             if section == "Marketing Content" { marketingSelectionID = id }
             else { requestRootAction(.content(id)) }
         case .management(let selection):
-            let target = selection.type == .app ? "Apps" : "Websites & Social Accounts"
+            let target = selection.type.section.rawValue
             if section == target {
                 managementSelectionRequest = selection
             }

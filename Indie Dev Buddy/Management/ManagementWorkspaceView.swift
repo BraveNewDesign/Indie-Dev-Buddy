@@ -2,13 +2,17 @@ import SwiftUI
 import AppKit
 import UniformTypeIdentifiers
 
-enum ManagementInitialTab: Equatable {
-    case apps
-    case websitesAndSocialAccounts
-}
-
 enum ManagementRecordType: Equatable {
     case app, identity, website, socialAccount
+
+    var section: ManagementSection {
+        switch self {
+        case .app: .apps
+        case .identity: .identities
+        case .website: .websites
+        case .socialAccount: .socialAccounts
+        }
+    }
 }
 
 struct ManagementRecordSelection: Equatable {
@@ -18,33 +22,40 @@ struct ManagementRecordSelection: Equatable {
 
 enum ManagementCreateRequest: Equatable {
     case app, website, socialAccount
+
+    var section: ManagementSection {
+        switch self {
+        case .app: .apps
+        case .website: .websites
+        case .socialAccount: .socialAccounts
+        }
+    }
 }
 
-private enum ManagementSection: String, CaseIterable, Identifiable, Equatable {
+enum ManagementSection: String {
     case apps = "Apps"
     case identities = "Identities"
     case websites = "Websites"
     case socialAccounts = "Social Accounts"
-    var id: String { rawValue }
 }
 
 /// Reusable management surface for local workspace records. The host owns refresh/reload;
 /// this view writes records explicitly when the user presses Save.
 struct ManagementWorkspaceView: View {
-    let initialTab: ManagementInitialTab
+    let section: ManagementSection
     let snapshot: WorkspaceSnapshot
     let store: WorkspaceStore
     let onSnapshotChanged: () -> Void
     let onReloadSnapshot: () async -> Void
     let onUnsavedEditsChanged: (Bool) -> Void
     let onOpenMarketingContent: (String) -> Void
+    var onOpenRecord: (ManagementRecordSelection) -> Void = { _ in }
     var selectionRequest: ManagementRecordSelection? = nil
     var createRequest: ManagementCreateRequest? = nil
     var onExternalRequestHandled: () -> Void = {}
     var restoredAppID: String?
     var onAppSelectionChange: (String?) -> Void = { _ in }
 
-    @State private var section: ManagementSection
     @State private var selectedID: String?
     @State private var ownerFilterID = "all"
     @State private var creating = false
@@ -59,30 +70,25 @@ struct ManagementWorkspaceView: View {
     @State private var confirmingDelete = false
     @State private var releaseReferences: [ComposerReleaseReference] = []
 
-    init(initialTab: ManagementInitialTab, snapshot: WorkspaceSnapshot, store: WorkspaceStore, onSnapshotChanged: @escaping () -> Void, onReloadSnapshot: @escaping () async -> Void = {}, onUnsavedEditsChanged: @escaping (Bool) -> Void = { _ in }, onOpenMarketingContent: @escaping (String) -> Void, selectionRequest: ManagementRecordSelection? = nil, createRequest: ManagementCreateRequest? = nil, onExternalRequestHandled: @escaping () -> Void = {}, restoredAppID: String? = nil, onAppSelectionChange: @escaping (String?) -> Void = { _ in }) {
-        self.initialTab = initialTab
+    init(section: ManagementSection, snapshot: WorkspaceSnapshot, store: WorkspaceStore, onSnapshotChanged: @escaping () -> Void, onReloadSnapshot: @escaping () async -> Void = {}, onUnsavedEditsChanged: @escaping (Bool) -> Void = { _ in }, onOpenMarketingContent: @escaping (String) -> Void, onOpenRecord: @escaping (ManagementRecordSelection) -> Void = { _ in }, selectionRequest: ManagementRecordSelection? = nil, createRequest: ManagementCreateRequest? = nil, onExternalRequestHandled: @escaping () -> Void = {}, restoredAppID: String? = nil, onAppSelectionChange: @escaping (String?) -> Void = { _ in }) {
+        self.section = section
         self.snapshot = snapshot
         self.store = store
         self.onSnapshotChanged = onSnapshotChanged
         self.onReloadSnapshot = onReloadSnapshot
         self.onUnsavedEditsChanged = onUnsavedEditsChanged
         self.onOpenMarketingContent = onOpenMarketingContent
+        self.onOpenRecord = onOpenRecord
         self.selectionRequest = selectionRequest
         self.createRequest = createRequest
         self.onExternalRequestHandled = onExternalRequestHandled
         self.restoredAppID = restoredAppID
         self.onAppSelectionChange = onAppSelectionChange
-        _section = State(initialValue: initialTab == .apps ? .apps : .websites)
-    }
-
-    // Keeps call sites concise when the host already has sidebar section labels.
-    init(snapshot: WorkspaceSnapshot, store: WorkspaceStore, onSnapshotChanged: @escaping () -> Void, initialTab: String, onUnsavedEditsChanged: @escaping (Bool) -> Void = { _ in }, onOpenMarketingContent: @escaping (String) -> Void) {
-        self.init(initialTab: initialTab == "Apps" ? .apps : .websitesAndSocialAccounts, snapshot: snapshot, store: store, onSnapshotChanged: onSnapshotChanged, onUnsavedEditsChanged: onUnsavedEditsChanged, onOpenMarketingContent: onOpenMarketingContent)
     }
 
     var body: some View {
         Group {
-            if initialTab == .apps {
+            if section == .apps {
                 if selectedID != nil || creating {
                     detailContent
                         .toolbar {
@@ -97,22 +103,12 @@ struct ManagementWorkspaceView: View {
                         .task { releaseReferences = await workspaceReleaseReferences(apps: snapshot.apps, store: store) }
                 }
             } else {
-                VStack(spacing: 0) {
-                    Picker("Record type", selection: Binding(get: { section }, set: requestSection)) {
-                        ForEach(availableSections) { Text($0.rawValue).tag($0) }
-                    }
-                    .pickerStyle(.segmented)
-                    .labelsHidden()
-                    .frame(maxWidth: 420)
-                    .padding(12)
-                    Divider()
-                    HSplitView {
-                        recordList.frame(minWidth: 200, idealWidth: 255, maxWidth: 360)
-                        detailContent
-                            .frame(minWidth: 300, maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-                    }
+                HSplitView {
+                    recordList.frame(minWidth: 200, idealWidth: 255, maxWidth: 360)
+                    detailContent
+                        .frame(minWidth: 300, maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                 }
-                .navigationTitle("Websites & Social Accounts")
+                .navigationTitle(section.rawValue)
             }
         }
         .toolbar {
@@ -170,13 +166,13 @@ struct ManagementWorkspaceView: View {
             if let createRequest {
                 createExternally(createRequest)
                 onExternalRequestHandled()
-            } else if selectionRequest == nil, initialTab == .apps, selectedID == nil,
+            } else if selectionRequest == nil, section == .apps, selectedID == nil,
                       let restoredAppID, snapshot.apps.contains(where: { $0.id == restoredAppID }) {
                 selectedID = restoredAppID
             }
         }
         .onChange(of: selectedID) { _, id in
-            if initialTab == .apps { onAppSelectionChange(id) }
+            if section == .apps { onAppSelectionChange(id) }
         }
         .task(id: selectedID) { await loadSelectedRevision() }
     }
@@ -246,10 +242,6 @@ struct ManagementWorkspaceView: View {
             }
 
         }
-    }
-
-    private var availableSections: [ManagementSection] {
-        initialTab == .apps ? [.apps] : [.identities, .websites, .socialAccounts]
     }
 
     private var singularName: String {
@@ -400,12 +392,12 @@ struct ManagementWorkspaceView: View {
                     }
                     ForEach(websites) { website in
                         Button(website.name, systemImage: "globe") {
-                            requestNavigation(.record(.websites, website.id))
+                            onOpenRecord(ManagementRecordSelection(type: .website, id: website.id))
                         }.buttonStyle(.link)
                     }
                     ForEach(accounts) { account in
                         Button([account.platform, account.handle].compactMap { $0 }.joined(separator: " · "), systemImage: "bubble.left.and.bubble.right") {
-                            requestNavigation(.record(.socialAccounts, account.id))
+                            onOpenRecord(ManagementRecordSelection(type: .socialAccount, id: account.id))
                         }.buttonStyle(.link)
                     }
                 }
@@ -431,33 +423,13 @@ struct ManagementWorkspaceView: View {
     private func beginCreate() { requestNavigation(.create) }
 
     private func selectExternally(_ request: ManagementRecordSelection) {
-        let target: ManagementSection
-        switch request.type {
-        case .app: target = .apps
-        case .identity: target = .identities
-        case .website: target = .websites
-        case .socialAccount: target = .socialAccounts
-        }
-        requestNavigation(.record(target, request.id))
+        guard request.type.section == section else { return }
+        requestNavigation(.record(request.id))
     }
 
     private func createExternally(_ request: ManagementCreateRequest) {
-        switch request {
-        case .app:
-            guard initialTab == .apps else { return }
-            requestNavigation(.createInSection(.apps))
-        case .website:
-            guard initialTab == .websitesAndSocialAccounts else { return }
-            requestNavigation(.createInSection(.websites))
-        case .socialAccount:
-            guard initialTab == .websitesAndSocialAccounts else { return }
-            requestNavigation(.createInSection(.socialAccounts))
-        }
-    }
-
-    private func requestSection(_ value: ManagementSection) {
-        guard value != section else { return }
-        requestNavigation(.section(value))
+        guard request.section == section else { return }
+        beginCreate()
     }
 
     private func requestSelection(_ value: String?) {
@@ -483,14 +455,11 @@ struct ManagementWorkspaceView: View {
 
     private func applyNavigation(_ value: PendingManagementNavigation) {
         switch value {
-        case .section(let next): section = next; selectedID = nil; creating = false
         case .selection(let next): selectedID = next; creating = false
-        case .record(let target, let id):
-            section = target
+        case .record(let id):
             selectedID = id
             creating = false
-            if target == .websites || target == .socialAccounts { ownerFilterID = "all" }
-        case .createInSection(let target): section = target; selectedID = nil; creating = true
+            if section == .websites || section == .socialAccounts { ownerFilterID = "all" }
         case .create: selectedID = nil; creating = true
         case .ownerFilter(let value): ownerFilterID = value; selectedID = nil; creating = false
         }
@@ -677,10 +646,8 @@ struct ManagementWorkspaceView: View {
 }
 
 private enum PendingManagementNavigation {
-    case section(ManagementSection)
     case selection(String?)
-    case record(ManagementSection, String)
-    case createInSection(ManagementSection)
+    case record(String)
     case create
     case ownerFilter(String)
 }
