@@ -281,7 +281,6 @@ struct ContentRecordEditor: View {
     @State private var edited: ContentRecord?
     @State private var variantText: [String: String] = [:]
     @State private var variantRevisions: [String: String] = [:]
-    @State private var releaseReferences: [ComposerReleaseReference] = []
     @State private var error: String?
     @State private var loaded = false
     @State private var socialComposerHasUnsavedChanges = false
@@ -330,7 +329,6 @@ struct ContentRecordEditor: View {
                         snapshot: snapshot, content: edited,
                         contentFolderURL: store.rootURL.appendingPathComponent(path),
                         originalText: bodyText, customizedText: variantText,
-                        releases: releaseReferences,
                         characterGuidelines: ["threads": 500, "instagram": 2200, "x": 280, "facebook": 63206, "linkedin": 3000],
                         requestedNavigationID: $requestedNavigationID,
                         onSave: saveSocial, onOpenRelated: open,
@@ -400,21 +398,6 @@ struct ContentRecordEditor: View {
                         }
                         .accessibilityLabel("Apps mentioned")
                         .accessibilityValue(appAssociationNames(for: value.wrappedValue.appIds))
-                        Picker("Related release", selection: Binding(get: { value.wrappedValue.releaseId }, set: { value.wrappedValue.releaseId = $0 })) {
-                            Text("None").tag(String?.none)
-                            ForEach(releaseReferences.filter { $0.id == value.wrappedValue.releaseId || value.wrappedValue.appIds.isEmpty || value.wrappedValue.appIds.contains($0.appID) }) { release in
-                                Text(release.displayName).tag(Optional(release.id))
-                            }
-                        }
-                        if let releaseID = value.wrappedValue.releaseId, !releaseReferences.contains(where: { $0.id == releaseID }) {
-                            Label("The linked release is unavailable. Choose another release or clear this association.", systemImage: "exclamationmark.triangle.fill")
-                                .font(.caption).foregroundStyle(.orange)
-                        } else if let releaseID = value.wrappedValue.releaseId,
-                                  let release = releaseReferences.first(where: { $0.id == releaseID }),
-                                  !value.wrappedValue.appIds.isEmpty, !value.wrappedValue.appIds.contains(release.appID) {
-                            Label("This release belongs to an app not selected above. Keep the association or select its app.", systemImage: "exclamationmark.triangle.fill")
-                                .font(.caption).foregroundStyle(.orange)
-                        }
                         if record.kind == .blog {
                             Picker("Blog website", selection: Binding(get: { value.wrappedValue.websiteId ?? "" }, set: { value.wrappedValue.websiteId = $0.isEmpty ? nil : $0 })) {
                                 Text("None").tag(""); ForEach(snapshot.websites.filter(\.blogEnabled)) { Text($0.name).tag($0.id) }
@@ -483,7 +466,6 @@ struct ContentRecordEditor: View {
     }
     private func load() async {
         do {
-            releaseReferences = await workspaceReleaseReferences(apps: snapshot.apps, store: store)
             let base = store.rootURL.appendingPathComponent("Content")
             let dirs = try FileManager.default.contentsOfDirectory(at: base, includingPropertiesForKeys: nil)
             for dir in dirs {
@@ -560,7 +542,6 @@ struct ContentRecordEditor: View {
         isSaving = true
         item.title = draft.title; item.includeSourceLink = draft.includeArticleLink
         item.appIds = draft.appIDs
-        item.releaseId = draft.releaseID
         item.plannedDate = draft.plannedDate
         item.status = ContentStatus(rawValue: draft.status.lowercased()) ?? .draft
         Task { do {
@@ -693,7 +674,7 @@ struct ContentRecordEditor: View {
         }
     }
     private func createRelated(_ source: ContentRecord) {
-        let post = ContentRecord(kind: .social, title: "\(source.title) — Social", appIds: source.appIds, sourceContentId: source.id, releaseId: source.releaseId, originalBodyPath: "original.txt")
+        let post = ContentRecord(kind: .social, title: "\(source.title) — Social", appIds: source.appIds, sourceContentId: source.id, originalBodyPath: "original.txt")
         Task { do {
             let folder = "Content/\(post.id)"
             _ = try await store.write(Data(), relativePath: "\(folder)/original.txt")

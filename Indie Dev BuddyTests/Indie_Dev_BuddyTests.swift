@@ -222,7 +222,7 @@ struct Indie_Dev_BuddyTests {
         func draft() -> ComposerDraft {
             ComposerDraft(
                 title: "Post", originalText: "Shared text", selectedAccountIDs: ["enabled", "disabled"],
-                appIDs: [], releaseID: nil, customizedText: [:], destinationStatuses: [:], destinationURLs: [:],
+                appIDs: [], customizedText: [:], destinationStatuses: [:], destinationURLs: [:],
                 plannedDate: nil, destinationPublicationDates: [:], sharedMediaPaths: [],
                 destinationMediaOverrides: [:], preservedDestinationIDs: [], includeArticleLink: false, status: "Draft"
             )

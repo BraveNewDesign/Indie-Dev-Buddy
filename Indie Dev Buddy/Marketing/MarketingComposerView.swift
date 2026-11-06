@@ -53,17 +53,6 @@ struct ComposerArticleReference: Identifiable, Hashable {
     let publishedURL: URL?
 }
 
-struct ComposerReleaseReference: Identifiable, Hashable {
-    let id: String
-    let appID: String
-    let appName: String
-    let version: String
-    let status: String
-    let releaseDate: Date?
-
-    var displayName: String { "\(appName) · \(version) · \(status)" }
-}
-
 struct ComposerRelatedItem: Identifiable, Hashable {
     let id: String
     let title: String
@@ -77,7 +66,6 @@ struct MarketingComposerView: View {
     let accounts: [ComposerSocialAccount]
     let article: ComposerArticleReference?
     let hasUnavailableSource: Bool
-    let releases: [ComposerReleaseReference]
     let relatedItems: [ComposerRelatedItem]
     let unavailableDestinationIDs: Set<String>
     let characterGuidelines: [String: Int]
@@ -89,7 +77,6 @@ struct MarketingComposerView: View {
 
     @State private var title = ""
     @State private var selectedAppIDs = Set<String>()
-    @State private var selectedReleaseID: String?
     @State private var originalText = ""
     @State private var selectedAccountIDs = Set<String>()
     @State private var customizedText: [String: String] = [:]
@@ -155,7 +142,7 @@ struct MarketingComposerView: View {
     }
     private var currentDraft: ComposerDraft {
         ComposerDraft(title: title, originalText: originalText, selectedAccountIDs: selectedAccountIDs,
-                      appIDs: Array(selectedAppIDs).sorted(), releaseID: selectedReleaseID,
+                      appIDs: Array(selectedAppIDs).sorted(),
                       customizedText: customizedText, destinationStatuses: destinationStatuses,
                       destinationURLs: destinationURLs,
                       plannedDate: plannedDate,
@@ -336,22 +323,6 @@ struct MarketingComposerView: View {
                 .contentShape(Rectangle())
             }
             .menuStyle(.borderlessButton)
-            Picker("Related release", selection: $selectedReleaseID) {
-                Text("None").tag(String?.none)
-                ForEach(releases.filter { $0.id == selectedReleaseID || selectedAppIDs.isEmpty || selectedAppIDs.contains($0.appID) }) { release in
-                    Text(release.displayName).tag(Optional(release.id))
-                }
-            }
-            .help("Associate this content with a release. The link uses the release's stable ID.")
-            if let selectedReleaseID, !releases.contains(where: { $0.id == selectedReleaseID }) {
-                Label("The linked release is unavailable. Choose another release or clear this association.", systemImage: "exclamationmark.triangle.fill")
-                    .font(.caption).foregroundStyle(.orange)
-            } else if let selectedReleaseID,
-                      let selectedRelease = releases.first(where: { $0.id == selectedReleaseID }),
-                      !selectedAppIDs.isEmpty, !selectedAppIDs.contains(selectedRelease.appID) {
-                Label("This release belongs to an app not selected above. Keep the association or select its app.", systemImage: "exclamationmark.triangle.fill")
-                    .font(.caption).foregroundStyle(.orange)
-            }
             Toggle("Planned date", isOn: plannedDatePresenceBinding)
             if plannedDate != nil {
                 DatePicker("Planned", selection: plannedDateBinding, displayedComponents: .date)
@@ -904,7 +875,6 @@ struct ComposerDraft: Equatable {
     var originalText: String
     var selectedAccountIDs: Set<String>
     var appIDs: [String]
-    var releaseID: String?
     var customizedText: [String: String]
     var destinationStatuses: [String: String]
     var destinationURLs: [String: String]
@@ -931,7 +901,6 @@ extension MarketingComposerView {
         originalText: String,
         customizedText: [String: String] = [:],
         article: ComposerArticleReference? = nil,
-        releases: [ComposerReleaseReference] = [],
         characterGuidelines: [String: Int] = [:],
         requestedNavigationID: Binding<String?>,
         onSave: @escaping (ComposerDraft, @escaping (Bool) -> Void) -> Void,
@@ -949,7 +918,6 @@ extension MarketingComposerView {
             accounts: snapshot.socialAccounts.map { ComposerSocialAccount(record: $0, snapshot: snapshot) },
             article: article ?? Self.sourceArticle(for: content, snapshot: snapshot),
             hasUnavailableSource: content.sourceContentId.map { snapshot.contentByID[$0] == nil } ?? false,
-            releases: releases,
             relatedItems: related.map {
                 ComposerRelatedItem(id: $0.id, title: $0.title, kind: $0.kind.rawValue.capitalized, status: $0.status.rawValue.capitalized)
             },
@@ -963,7 +931,6 @@ extension MarketingComposerView {
         )
         _title = State(initialValue: content.title)
         _selectedAppIDs = State(initialValue: Set(content.appIds))
-        _selectedReleaseID = State(initialValue: content.releaseId)
         _originalText = State(initialValue: originalText)
         _includeArticleLink = State(initialValue: content.includeSourceLink)
         _draftStatus = State(initialValue: content.status.rawValue.capitalized)
@@ -985,7 +952,7 @@ extension MarketingComposerView {
         _customMediaAccountIDs = State(initialValue: Set(content.destinations.compactMap { $0.mediaPaths == nil ? nil : $0.accountId }))
         _savedDraftSnapshot = State(initialValue: ComposerDraft(
             title: content.title, originalText: originalText,
-            selectedAccountIDs: selectableIDs, appIDs: content.appIds, releaseID: content.releaseId,
+            selectedAccountIDs: selectableIDs, appIDs: content.appIds,
             customizedText: customizedText,
             destinationStatuses: Dictionary(content.destinations.map { ($0.accountId, $0.status.rawValue.capitalized) }, uniquingKeysWith: { _, latest in latest }),
             destinationURLs: Dictionary(content.destinations.compactMap { destination in destination.publishedURL.map { (destination.accountId, $0.absoluteString) } }, uniquingKeysWith: { _, latest in latest }),

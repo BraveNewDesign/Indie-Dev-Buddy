@@ -68,7 +68,6 @@ struct ManagementWorkspaceView: View {
     @State private var revisionMismatch = false
     @State private var editorGeneration = 0
     @State private var confirmingDelete = false
-    @State private var releaseReferences: [ComposerReleaseReference] = []
 
     init(section: ManagementSection, snapshot: WorkspaceSnapshot, store: WorkspaceStore, onSnapshotChanged: @escaping () -> Void, onReloadSnapshot: @escaping () async -> Void = {}, onUnsavedEditsChanged: @escaping (Bool) -> Void = { _ in }, onOpenMarketingContent: @escaping (String) -> Void, onOpenRecord: @escaping (ManagementRecordSelection) -> Void = { _ in }, selectionRequest: ManagementRecordSelection? = nil, createRequest: ManagementCreateRequest? = nil, onExternalRequestHandled: @escaping () -> Void = {}, restoredAppID: String? = nil, onAppSelectionChange: @escaping (String?) -> Void = { _ in }) {
         self.section = section
@@ -100,7 +99,6 @@ struct ManagementWorkspaceView: View {
                         }
                 } else {
                     recordList.navigationTitle("Apps")
-                        .task { releaseReferences = await workspaceReleaseReferences(apps: snapshot.apps, store: store) }
                 }
             } else {
                 HSplitView {
@@ -228,11 +226,6 @@ struct ManagementWorkspaceView: View {
                             }
                         }
                         Spacer(minLength: 8)
-                        if let release = releaseReferences.first(where: { $0.appID == row.id }) {
-                            Text(release.version)
-                                .font(.subheadline.monospacedDigit())
-                                .help(release.displayName + " · " + release.status)
-                        }
                         if section == .apps {
                             Image(systemName: "chevron.right").font(.caption).foregroundStyle(.secondary)
                                 .accessibilityHidden(true)
@@ -735,7 +728,6 @@ private struct AppRecordEditor: View {
     @State private var detailTab = "Overview"
     @State private var editingOverview = false
     @State private var overviewIsDirty = false
-    @State private var releaseIsDirty = false
     @State private var fileMessage: String?
 
     var body: some View {
@@ -746,7 +738,6 @@ private struct AppRecordEditor: View {
 
             Picker("App detail", selection: $detailTab) {
                 Text("Overview").tag("Overview")
-                Text("Releases").tag("Releases")
                 Text("Marketing").tag("Marketing")
                 Text("Files").tag("Files")
             }
@@ -767,22 +758,10 @@ private struct AppRecordEditor: View {
                     .opacity(detailTab == "Overview" ? 1 : 0)
                     .allowsHitTesting(detailTab == "Overview")
                     .accessibilityHidden(detailTab != "Overview")
-                if let appFolderRelativePath {
-                    ReleasesView(appID: record?.id ?? draftID, appName: name.isEmpty ? "App" : name, appFolderRelativePath: appFolderRelativePath, workspaceStore: workspaceStore, content: snapshot.content, onOpenContent: onOpenMarketingContent, onDirtyStateChange: reportReleaseDirty)
-                        .id(record?.id ?? draftID)
-                        .opacity(detailTab == "Releases" ? 1 : 0)
-                        .allowsHitTesting(detailTab == "Releases")
-                        .accessibilityHidden(detailTab != "Releases")
-                } else {
-                    ContentUnavailableView("Save App First", systemImage: "tag", description: Text("Save the app overview before adding releases."))
-                        .opacity(detailTab == "Releases" ? 1 : 0)
-                        .allowsHitTesting(detailTab == "Releases")
-                        .accessibilityHidden(detailTab != "Releases")
-                }
                 if let appID = record?.id {
                     AppMarketingContentPanel(
                         appID: appID, appName: name, snapshot: snapshot, store: workspaceStore,
-                        actionsEnabled: !overviewIsDirty && !releaseIsDirty,
+                        actionsEnabled: !overviewIsDirty,
                         onOpen: onOpenMarketingContent, onCreated: onSnapshotChanged
                     )
                     .opacity(detailTab == "Marketing" ? 1 : 0)
@@ -902,12 +881,7 @@ private struct AppRecordEditor: View {
 
     private func reportOverviewDirty(_ value: Bool) {
         overviewIsDirty = value
-        onDirtyChange(overviewIsDirty || releaseIsDirty)
-    }
-
-    private func reportReleaseDirty(_ value: Bool) {
-        releaseIsDirty = value
-        onDirtyChange(overviewIsDirty || releaseIsDirty)
+        onDirtyChange(overviewIsDirty)
     }
 
     private var appFilesPanel: some View {
@@ -1084,7 +1058,7 @@ private struct AppRecordEditor: View {
         }
     }
 
-    /// Resolve by stable record ID so renaming the app folder or title does not strand releases.
+    /// Resolve the app's workspace folder by stable record ID so folder names can change safely.
     private var appFolderRelativePath: String? {
         guard record != nil else { return nil }
         let base = workspaceStore.rootURL.appendingPathComponent("Apps", isDirectory: true)
@@ -1722,7 +1696,7 @@ private struct AppMarketingContentPanel: View {
                 .disabled(!actionsEnabled || isCreating)
             }
             if !actionsEnabled {
-                Label("Save or discard app and release changes before opening or creating marketing content.", systemImage: "exclamationmark.triangle")
+                Label("Save or discard app changes before opening or creating marketing content.", systemImage: "exclamationmark.triangle")
                     .font(.callout).foregroundStyle(.orange)
             }
             if records.isEmpty {

@@ -6,6 +6,8 @@
 
 The product specification remains the acceptance authority. This file describes the implementation sequence; it is not a release-readiness claim.
 
+**Current scope adjustment:** App release/version tracking is disabled in the UI, including version summaries, release views, and content-to-release links. Existing release files and legacy content references are preserved but are not loaded into the interface.
+
 ## Acceptance review — 2026-11-06
 
 The code implements the three milestone slices, but the release gates in

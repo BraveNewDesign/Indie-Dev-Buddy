@@ -4,7 +4,9 @@
 **Audience:** Solo/independent Apple-platform app developers who build, release, and market their own apps.  
 **Primary goal:** Make it easy to find, connect, edit, and reuse everything *outside the code editor* involved in running and promoting an indie app, without a backend, account setup, or custom agent integration.
 
-> **Product promise:** Your apps, websites, social accounts, releases, files, and marketing content in one understandable, local-first workspace.
+> **Product promise:** Your apps, websites, social accounts, files, and marketing content in one understandable, local-first workspace.
+
+**Deferred feature:** App release/version tracking is currently disabled in the interface. The app does not show version lists, latest versions, release views, or content-to-release links. Existing release files and legacy `releaseId` fields remain untouched for compatibility.
 
 ### Existing Xcode project and code locations
 
@@ -26,8 +28,8 @@ The product is **an app-development and marketing workspace**, **not** a general
 
 1. **Recognizable, explicit navigation.** Use plain labels such as **Apps**, **Marketing Content**, **Websites & Social Accounts**, and **Files**. Avoid unexplained labels such as “Profiles,” “Spaces,” “Nodes,” and “Destinations” in the UI. Every important section and action should be discoverable without hunting in contextual menus.
 2. **One fact, one record.** Store every app, identity, website, and social account once. Show it in multiple relevant views through references; do not create duplicate copies for each app or post.
-3. **Apps are the center.** App pages collect release notes, website pages, App Store details, source-project locations, assets, and associated marketing. Global sections let users work across all apps.
-4. **One source, optional branches.** A blog article, release announcement, or post can generate related content. A social post can use the same original text for several accounts and selectively customize individual account versions. Changes to one custom version never overwrite the original or other versions.
+3. **Apps are the center.** App pages collect website pages, App Store details, source-project locations, assets, and associated marketing. Global sections let users work across all apps.
+4. **One source, optional branches.** A blog article or post can generate related content. A social post can use the same original text for several accounts and selectively customize individual account versions. Changes to one custom version never overwrite the original or other versions.
 5. **Files are the source of truth.** Every user-authored record lives in a user-selected, human-readable filesystem workspace. The UI reads/writes those files; an external AI coding agent can do the same using ordinary filesystem access. No MCP, custom CLI, embedded AI, server, or API is needed.
 6. **Drafting, not posting.** The app helps prepare and review content; it **does not post to websites or social networks**. Copy, open destination, and manually mark as published. Do not show a button simply labeled “Publish” that falsely implies the app can publish.
 7. **Warn, do not block.** Character-length guidance and publish-readiness hints must not prevent editing, saving, or copying. They are informational, approximate, and editable as platform policies change.
@@ -44,11 +46,10 @@ Use a small fixed model. Technical names may differ internally, but user-facing 
 | Record | Purpose | Key relationships |
 |---|---|---|
 | **Identity** | A person or business/brand, e.g. “Shawn” or “Brave New Design.” | Owns apps, websites, social accounts. |
-| **App** | An Apple app, e.g. Dictate Bar or Pueblo CRM. | Has a primary developer identity; may itself own social accounts or a dedicated website; connects to releases, website links, content, assets. |
+| **App** | An Apple app, e.g. Dictate Bar or Pueblo CRM. | Has a primary developer identity; may itself own social accounts or a dedicated website; connects to website links, content, assets. |
 | **Website** | A domain/site, recorded **once**, e.g. `bravenewdesign.com` or `pueblocrm.com`. | Has an owner (identity or app). Can be linked to many apps and optionally be a blog publishing destination. |
 | **App Website Link** | A particular page on a website serving an app. | References app, website, URL and purpose (product, support, privacy, docs, etc.). One may be marked primary app URL. |
 | **Social Account** | A configured account on one platform, e.g. Brave New Design's Threads account. | Platform, handle/profile URL, owner (identity or app), enabled flag. Posts reference its ID. |
-| **Release** | A version of an app. | Version, status/date, notes or linked changelog, release-specific assets/content. |
 | **Marketing Content** | Blog article, social post, or general marketing draft. | App (optional), website/blog destination or social destinations, status, attachments, source/related content, published URL(s). |
 | **Post Version** | A customized version of a social post for **one social account**. | Belongs to a marketing content record and account; otherwise account uses shared original text/assets. |
 | **Asset** | Image, video, PDF, or other file. | Stored alongside an app/content item or in shared files, referenced by relative path. |
@@ -81,14 +82,13 @@ same unsaved-change rules as other navigation. The app header and native segment
 control stay visible above the active tab. Websites & Social Accounts can retain
 a separate record list beside its editor for browsing and comparison.
 
-A compact, scannable list/grid showing icon, name, platforms, release state, latest known version, and summary of related marketing work. No fabricated analytics or activity numbers. New app action prominent.
+A compact, scannable list/grid showing icon, name, platforms, and summary of related marketing work. No fabricated analytics or activity numbers. New app action prominent.
 
 ### App details
 
-Stable header with app icon, name, developer identity, platforms, and development/release state. Use **Overview / Releases / Marketing / Files** as explicit tabs or segmented navigation.
+Stable header with app icon, name, developer identity, and platforms. Use **Overview / Marketing / Files** as explicit tabs or segmented navigation.
 
 - **Overview:** description, bundle ID(s) (optional), Xcode project location, repository URL, App Store/TestFlight URLs, primary app URL and other website links (support/privacy/docs), and recently related items. Open/reveal links in the correct external app.
-- **Releases:** chronological version list with planned/released status, version/date, changelog Markdown **or external changelog file reference**, assets, and associated marketing content. No automatic App Store sync.
 - **Marketing:** all blog/social content associated with the app, grouped related items where useful; New Marketing Post and New Blog Article actions.
 - **Files:** app assets and linked external project/changelog locations. **Never copy an entire Xcode project into this workspace by default.** Let the user choose a project directory or `.xcodeproj`/`.xcworkspace`; store a reference with a visible human-readable path and a security-scoped bookmark for reopening.
 
@@ -102,14 +102,14 @@ A **website** is a blog destination only when the user has enabled/configured bl
 
 ### Marketing Content list and related-content detail
 
-Show type, title, app, destination/owner, and status. Grouping by a release, blog original, or content family is available, but the user can always see individual content records. A related-content detail shows **Original / Created From**, **Other Related Content**, each account variant and publication state. Clicking any item navigates to its editor. Relationships should remain visible when a related item is opened.
+Show type, title, app, destination/owner, and status. Grouping by a blog original or content family is available, but the user can always see individual content records. A related-content detail shows **Original / Created From**, **Other Related Content**, each account variant and publication state. Clicking any item navigates to its editor. Relationships should remain visible when a related item is opened.
 
 ### Composer layout (most important screen)
 
 Clearly divide: (a) title + metadata; (b) original editable body; (c) eligible destination accounts; (d) selected account's preview and any customization. On a large window, place previews alongside the editor. On a smaller window, use a clearly labeled Preview toggle/tab instead of hidden inspectors.
 
 - **Blog article:** title, destination website, Markdown body, optional excerpt, featured image/files, app(s) mentioned, status and published URL; **Create Related Social Post** is prominent. Blog text remains its own original article; do not replace it with the social summary.
-- **Social post:** internal title, app association, optional source blog/post/release, **shared original text**, images/files, selected social accounts, optional customized text/media for each account, per-account preview, character guidance, copy controls, and per-account status + published URL.
+- **Social post:** internal title, app association, optional source blog/post, **shared original text**, images/files, selected social accounts, optional customized text/media for each account, per-account preview, character guidance, copy controls, and per-account status + published URL.
 - A new social post may start with one shared message for all chosen accounts. Choosing **Customize for this account** creates a branch **initially copied** from the shared text; editing the branch does not change the original. **Use original instead** asks for confirmation if customized edits will be discarded.
 - Original edits update accounts still using the original. They **never overwrite** customized versions. Custom versions display “Based on original” and offer **View Original / Copy from Original**.
 - Account rows always identify **platform + username + owner**, e.g. `Threads · @example · Brave New Design`. Avoid an unlabeled icon-only channel row.
@@ -136,7 +136,7 @@ Offer clear actions: **Copy Text**, **Copy Image** or **Copy/Drag Media**, **Ope
 
 **Example A — identical holiday message:** Create one social post, select business, personal, and app-specific social accounts. All initially use the shared original. Copy each account's effective text without creating four duplicate drafts.
 
-**Example B — app update:** Create one “Dictate Bar 1.3 release” social post. Business Threads uses a polished business version, personal Threads uses a conversational first-person version, LinkedIn uses the original, Instagram uses a shorter customized version and its own images. All remain in one post record.
+**Example B — app update:** Create one “Dictate Bar update” social post. Business Threads uses a polished business version, personal Threads uses a conversational first-person version, LinkedIn uses the original, Instagram uses a shorter customized version and its own images. All remain in one post record.
 
 **Example C — long article to social:** Write a blog article for Brave New Design, associated with Dictate Bar. Choose **Create Related Social Post**. The social item links to the article and can start with user-selected excerpt/text (or an empty draft). It need not copy the entire long article, and no AI summarization is implied. The user edits a social-specific message and selects accounts. The blog article can have its own publication status/URL; derived social posts and their per-account variants retain a visible **Created from [article]** relationship.
 
@@ -159,7 +159,7 @@ Indie Dev Buddy Workspace/
 ├── Apps/
 │   └── dictate-bar/
 │       ├── record.json
-│       ├── Releases/1.3/record.json
+│       ├── Releases/1.3/record.json  # legacy release data; not currently surfaced
 │       └── Assets/
 ├── Websites/
 │   └── bravenewdesign/record.json

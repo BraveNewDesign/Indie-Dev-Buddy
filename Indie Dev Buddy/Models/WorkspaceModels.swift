@@ -150,8 +150,8 @@ nonisolated public struct ContentRecord: Codable, Sendable, Identifiable, Equata
     public var appIds: [String]
     public var websiteId: String?
     public var sourceContentId: String?
-    /// Stable association to an app release. Release display names are resolved from the
-    /// Release record at read time so version edits never require rewriting marketing records.
+    /// Legacy association retained so existing workspace records remain readable.
+    /// The current UI does not create, resolve, or display release associations.
     public var releaseId: String?
     public var relatedGroupId: String?
     public var originalBodyPath: String?
