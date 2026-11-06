@@ -16,9 +16,23 @@ indiedevbuddy create blog --workspace "$workspace" --title "Launch notes" --body
 indiedevbuddy read content "$id" --workspace "$workspace"
 indiedevbuddy update "$id" --workspace "$workspace" --revision "$revision" \
   --body-file revised.md --body-revision "$body_revision"
+indiedevbuddy save-record accounts "$account_id" --workspace "$workspace" \
+  --record-file account.json --revision "$revision"
+indiedevbuddy delete content "$id" --workspace "$workspace" --revision "$revision"
+indiedevbuddy files --workspace "$workspace" --path Content
+indiedevbuddy mkdir --workspace "$workspace" --path Inbox/Research
+indiedevbuddy import-file --workspace "$workspace" --source notes.pdf --path Inbox/Research/notes.pdf
+indiedevbuddy rename --workspace "$workspace" --path Inbox/Research/notes.pdf --name brief.pdf
+indiedevbuddy trash --workspace "$workspace" --path Inbox/Research/brief.pdf --confirm yes
 indiedevbuddy validate --workspace "$workspace"
 ```
 
 Use the path from `workspaces` and the ID and revisions from `read`. The app can register an existing workspace by opening it once. If macOS restricts access to the previous sandbox's registry, open the workspace again to register it for this build.
 
-Updates accept the title and original body. Validation checks the manifest, supported record categories, their relationships, and referenced bodies and assets. Each update returns a backup directory containing the previous bytes of the files it replaced, arranged by their original workspace-relative paths. Recover a draft by using those files as input for an update against its current revisions. The GUI and CLI coordinate their saves. Each file is replaced atomically, and the backups also allow recovery if a process stops during a multi-file update.
+`read` returns the complete record and its revision. For content it also returns the original body and body revision, plus `relatedFiles` entries for destination variants and media with their workspace-relative paths and revisions. Text variants include their text; binary media include the hash only.
+
+`save-record <category> ID --record-file FILE` creates a model record when there is no `--revision`. To edit an existing record, pass the current record revision from `read`. The JSON must contain the same stable UUID as `ID`; model fields, relationships, statuses, URLs, and referenced assets are validated before persistence. For content, pair each `--file WORKSPACE_PATH=SOURCE_FILE` with `--file-revision WORKSPACE_PATH=HASH` (or `new` for a new path). File writes are limited to paths referenced by the new content record and are batched atomically with its record update. This supports destination and account changes, per-destination status, publication URL/date, body variants, media references, and media payload replacement. The output returns the changed record, new record revision, changed related file revisions, and a `backupDirectory` for updates. `delete <category> ID --revision HASH` permanently deletes that record's folder and requires the latest revision; inspect the ID with `list`/`read` before using it.
+
+`files` lists one workspace folder at a time and returns regular-file revisions. All file paths are relative to the workspace. `import-file` refuses to overwrite and accepts regular files only. `rename` stays in the same folder. `trash` follows the GUI's reversible Trash action and requires `--confirm yes`; `remove` is permanent and also requires explicit confirmation. Both protect workspace marker files, reject symbolic links, and enforce workspace containment. `create-workspace PATH` creates the standard layout and registers it; `register-workspace PATH` validates and registers an existing workspace; `forget-workspace PATH` removes only the app's registration, leaving workspace files intact.
+
+All commands return JSON on stdout; errors return JSON on stderr and exit nonzero. Validation issues return JSON and exit 2. Backups mirror the replaced paths under the returned backup directory. `CLI_CAPABILITY_MATRIX.md` lists GUI and CLI coverage, including current limitations. The CLI does not publish or schedule to external services, and the content status model does not have a `scheduled` value.

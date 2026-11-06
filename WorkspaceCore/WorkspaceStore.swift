@@ -126,6 +126,121 @@ public actor WorkspaceStore {
         }
     }
 
+    public func listItems(relativePath: String = "") throws -> [WorkspaceFileListItem] {
+        try withWorkspaceLock(exclusive: false) {
+            if !relativePath.isEmpty { try rejectSymbolicLinks(relativePath) }
+            let directory = relativePath.isEmpty ? rootURL : try safeURL(relativePath)
+            guard try directory.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey]).isDirectory == true,
+                  (try? directory.resourceValues(forKeys: [.isSymbolicLinkKey]).isSymbolicLink) != true else {
+                throw WorkspaceStoreError.invalidRelativePath(relativePath)
+            }
+            return try fileManager.contentsOfDirectory(at: directory, includingPropertiesForKeys: [.isDirectoryKey, .isSymbolicLinkKey])
+                .sorted { $0.lastPathComponent.localizedCaseInsensitiveCompare($1.lastPathComponent) == .orderedAscending }
+                .compactMap { url in
+                    guard (try? url.resourceValues(forKeys: [.isSymbolicLinkKey]).isSymbolicLink) != true else { return nil }
+                    let values = try url.resourceValues(forKeys: [.isDirectoryKey, .isRegularFileKey])
+                    let path = relativePath.isEmpty ? url.lastPathComponent : "\(relativePath)/\(url.lastPathComponent)"
+                    let revision = values.isRegularFile == true ? (try? Data(contentsOf: url)).map(Self.revision) : nil
+                    return WorkspaceFileListItem(name: url.lastPathComponent, path: path, isDirectory: values.isDirectory ?? false, revision: revision)
+                }
+        }
+    }
+
+    public func createFolder(relativePath: String) throws {
+        try withWorkspaceLock {
+            try rejectSymbolicLinks(relativePath)
+            let url = try safeURL(relativePath)
+            let parent = url.deletingLastPathComponent()
+            guard try parent.resourceValues(forKeys: [.isDirectoryKey]).isDirectory == true,
+                  !fileManager.fileExists(atPath: url.path), url.lastPathComponent != "." else {
+                throw WorkspaceStoreError.invalidRelativePath(relativePath)
+            }
+            try fileManager.createDirectory(at: url, withIntermediateDirectories: false)
+        }
+    }
+
+    public func importFile(from sourceURL: URL, to relativePath: String) throws -> String {
+        let values = try sourceURL.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey])
+        guard values.isRegularFile == true, values.isSymbolicLink != true else { throw WorkspaceCommandError("Only regular, non-symbolic-link files can be imported.") }
+        try rejectSymbolicLinks(relativePath)
+        let target = try safeURL(relativePath)
+        let parent = target.deletingLastPathComponent()
+        guard try parent.resourceValues(forKeys: [.isDirectoryKey]).isDirectory == true,
+              !["record.json", "workspace.json", "agents.md"].contains(target.lastPathComponent.lowercased()) else {
+            throw WorkspaceStoreError.invalidRelativePath(relativePath)
+        }
+        return try write(Data(contentsOf: sourceURL), relativePath: relativePath, expectedRevision: nil)
+    }
+
+    public func renameItem(relativePath: String, newName: String) throws -> String {
+        try withWorkspaceLock {
+            try rejectSymbolicLinks(relativePath)
+            let name = newName.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !name.isEmpty, name != ".", name != "..", !name.contains("/"), !name.contains("\\"), !name.contains(":") else {
+                throw WorkspaceStoreError.invalidRelativePath(newName)
+            }
+            let source = try manageableURL(relativePath)
+            guard !["record.json", "workspace.json", "agents.md"].contains(name.lowercased()) else { throw WorkspaceStoreError.invalidRelativePath(newName) }
+            guard fileManager.fileExists(atPath: source.path),
+                  (try? source.resourceValues(forKeys: [.isSymbolicLinkKey]).isSymbolicLink) != true else {
+                throw WorkspaceStoreError.invalidRelativePath(relativePath)
+            }
+            let targetPath = "\((relativePath as NSString).deletingLastPathComponent)/\(name)"
+            let target = try safeURL(targetPath)
+            guard !fileManager.fileExists(atPath: target.path) else { throw WorkspaceCommandError("A workspace item already exists at \(targetPath).") }
+            try fileManager.moveItem(at: source, to: target)
+            return targetPath
+        }
+    }
+
+    public func removeManagedItem(relativePath: String) throws {
+        try withWorkspaceLock {
+            let url = try manageableURL(relativePath)
+            try rejectSymbolicLinks(relativePath)
+            guard url.path != rootURL.path, fileManager.fileExists(atPath: url.path) else {
+                throw WorkspaceStoreError.invalidRelativePath(relativePath)
+            }
+            try fileManager.removeItem(at: url)
+        }
+    }
+
+    public func trashManagedItem(relativePath: String) throws {
+        try withWorkspaceLock {
+            let url = try manageableURL(relativePath)
+            try rejectSymbolicLinks(relativePath)
+            guard fileManager.fileExists(atPath: url.path) else { throw WorkspaceStoreError.invalidRelativePath(relativePath) }
+            try fileManager.trashItem(at: url, resultingItemURL: nil)
+        }
+    }
+
+    func rejectSymbolicLinks(_ relativePath: String) throws {
+        var current = rootURL
+        for component in relativePath.split(separator: "/") {
+            current.appendPathComponent(String(component))
+            if (try? current.resourceValues(forKeys: [.isSymbolicLinkKey]).isSymbolicLink) == true {
+                throw WorkspaceStoreError.invalidRelativePath(relativePath)
+            }
+        }
+    }
+
+    private func manageableURL(_ relativePath: String) throws -> URL {
+        let canonicalPath = String(relativePath.drop(while: { $0 == "/" }).reversed().drop(while: { $0 == "/" }).reversed())
+        let components = canonicalPath.split(separator: "/", omittingEmptySubsequences: false)
+        guard !canonicalPath.isEmpty, !relativePath.hasPrefix("/"), !relativePath.contains("\\"),
+              components.count > 1, components.allSatisfy({ !$0.isEmpty && $0 != "." && $0 != ".." }),
+              let name = components.last,
+              !["record.json", "workspace.json", "agents.md"].contains(name.lowercased()) else {
+            throw WorkspaceStoreError.invalidRelativePath(relativePath)
+        }
+        let resolved = try safeURL(canonicalPath)
+        let rootPrefix = rootURL.path.hasSuffix("/") ? rootURL.path : rootURL.path + "/"
+        let depth = resolved.path.dropFirst(rootPrefix.count).split(separator: "/").count
+        guard resolved.path.hasPrefix(rootPrefix), resolved.path != rootURL.path, depth > 1 else {
+            throw WorkspaceStoreError.invalidRelativePath(relativePath)
+        }
+        return resolved
+    }
+
     /// Atomic same-volume replacement. A non-nil expectedRevision enables optimistic conflict detection.
     /// Pass nil only for creating a new file; existing files then produce a conflict.
     @discardableResult

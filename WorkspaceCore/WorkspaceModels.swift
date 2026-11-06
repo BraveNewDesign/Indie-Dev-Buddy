@@ -238,6 +238,19 @@ nonisolated public struct OpaqueWorkspaceRecord: Sendable, Identifiable {
     public let reason: String
 }
 
+nonisolated public struct WorkspaceFileListItem: Sendable {
+    public let name: String
+    public let path: String
+    public let isDirectory: Bool
+    public let revision: String?
+    public init(name: String, path: String, isDirectory: Bool, revision: String? = nil) {
+        self.name = name
+        self.path = path
+        self.isDirectory = isDirectory
+        self.revision = revision
+    }
+}
+
 nonisolated public struct WorkspaceFileError: Sendable, Identifiable {
     public var id: String { path }
     public let path: String

@@ -1,0 +1,25 @@
+# macOS metadata
+.DS_Store
+
+# Xcode build products and per-user state
+DerivedData/
+**/DerivedData/
+build/
+**/build/
+*.xcuserstate
+xcuserdata/
+**/xcuserdata/
+
+# Swift Package Manager local build state
+.build/
+**/.build/
+.swiftpm/xcode/package.xcworkspace/xcuserdata/
+
+# Compiler and profiling output
+*.profraw
+*.profdata
+*.hmap
+
+# Xcode-generated archives and debug symbols
+*.xcarchive/
+*.dSYM/

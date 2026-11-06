@@ -26,10 +26,153 @@ nonisolated struct WorkspaceRecordRead: Sendable {
     let revision: String
     var body: String?
     var bodyRevision: String?
+    var relatedFiles: [WorkspaceFileRead] = []
     var backupDirectory: String?
 }
 
+nonisolated struct WorkspaceFileRead: Sendable {
+    let path: String
+    let revision: String
+    let text: String?
+}
+
 extension WorkspaceStore {
+    /// Saves a model-backed workspace record by stable ID. `expectedRevision == nil` is
+    /// reserved for creation; updates must present the revision observed by `read`.
+    func saveRecord(_ kind: WorkspaceRecordKind, id: String, json: Data, expectedRevision: String?, fileWrites: [WorkspaceWriteOperation] = []) throws -> WorkspaceRecordRead {
+        try withWorkspaceLock {
+            guard UUID(uuidString: id) != nil else { throw WorkspaceCommandError("Record IDs must be UUIDs.") }
+            let snapshot = try load(installAgentGuidance: false)
+            let path = snapshot.recordPaths[kind.directory]?[id] ?? "\(kind.directory)/\(id)/record.json"
+            let existing = snapshot.recordPaths[kind.directory]?[id] != nil
+            if existing && expectedRevision == nil { throw WorkspaceCommandError("Updating a record requires its current --revision from read.") }
+            if !existing && expectedRevision != nil { throw WorkspaceCommandError("Cannot update missing \(kind.rawValue) record \(id).") }
+            let current = existing ? try read(relativePath: path) : nil
+            guard current?.revision == expectedRevision else {
+                throw WorkspaceStoreError.conflict(path: path, currentRevision: current?.revision)
+            }
+            guard var object = try JSONSerialization.jsonObject(with: json) as? [String: Any],
+                  object["id"] as? String == id,
+                  (object["schemaVersion"] as? Int ?? 1) == 1 else {
+                throw WorkspaceCommandError("Record JSON must be a schema 1 object whose id matches \(id).")
+            }
+            object["schemaVersion"] = 1
+            let normalized = try JSONSerialization.data(withJSONObject: object, options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes])
+            let preservedDestinationIDs: Set<String>
+            if kind == .content, let current,
+               let old = try? decoder.decode(ContentRecord.self, from: current.data) {
+                preservedDestinationIDs = Set(old.destinations.map(\.accountId))
+            } else {
+                preservedDestinationIDs = []
+            }
+            var allowedFilePaths = Set<String>()
+            if kind == .content {
+                let content = try decoder.decode(ContentRecord.self, from: normalized)
+                let folder = (path as NSString).deletingLastPathComponent
+                for reference in content.destinations.compactMap(\.bodyPath) + content.mediaPaths + content.destinations.flatMap({ $0.mediaPaths ?? [] }) {
+                    allowedFilePaths.insert(try contentFile(reference, recordPath: path))
+                }
+                let originalBody = try contentFile(content.originalBodyPath ?? "original.txt", recordPath: path)
+                guard !fileWrites.contains(where: { $0.relativePath == originalBody }) else {
+                    throw WorkspaceCommandError("Original body changes must use update with its --body-revision.")
+                }
+                guard fileWrites.allSatisfy({ allowedFilePaths.contains($0.relativePath) && $0.relativePath.hasPrefix(folder + "/") }) else {
+                    throw WorkspaceCommandError("Content file writes must target a referenced destination variant or media file inside the content folder.")
+                }
+            } else if !fileWrites.isEmpty {
+                throw WorkspaceCommandError("Related file writes are supported only for content records.")
+            }
+            try validateRecord(kind, json: normalized, path: path, snapshot: snapshot, preservedDestinationIDs: preservedDestinationIDs,
+                               pendingFiles: Dictionary(fileWrites.map { ($0.relativePath, $0.data) }, uniquingKeysWith: { first, _ in first }))
+            let backup = existing ? ".indiedevbuddy/backups/\(UUID().uuidString.lowercased())" : nil
+            var operations = fileWrites
+            operations.append(.init(data: normalized, relativePath: path, expectedRevision: expectedRevision))
+            let revisions = try applyWrites(operations, backupDirectory: backup)
+            let revision = revisions[revisions.count - 1]
+            var result = WorkspaceRecordRead(path: path, data: normalized, revision: revision, backupDirectory: backup)
+            if kind == .content, let record = try? decoder.decode(ContentRecord.self, from: normalized),
+               let body = try originalBody(for: record, recordPath: path) {
+                result.body = body.text
+                result.bodyRevision = body.revision
+            }
+            if kind == .content, let record = try? decoder.decode(ContentRecord.self, from: normalized) {
+                result.relatedFiles = contentRelatedFiles(record, recordPath: path)
+            }
+            return result
+        }
+    }
+
+    func deleteRecord(_ kind: WorkspaceRecordKind, id: String, expectedRevision: String) throws -> String {
+        try withWorkspaceLock {
+            let snapshot = try load(installAgentGuidance: false)
+            guard let path = snapshot.recordPaths[kind.directory]?[id] else { throw WorkspaceCommandError("No readable \(kind.rawValue) record with ID \(id).") }
+            try rejectSymbolicLinks(path)
+            let current = try read(relativePath: path)
+            guard current.revision == expectedRevision else {
+                throw WorkspaceStoreError.conflict(path: path, currentRevision: current.revision)
+            }
+            let folder = (path as NSString).deletingLastPathComponent
+            let folderURL = try safeURL(folder)
+            guard folderURL.path != rootURL.path else { throw WorkspaceStoreError.invalidRelativePath(folder) }
+            try rejectSymbolicLinks(folder)
+            try FileManager.default.removeItem(at: folderURL)
+            return folder
+        }
+    }
+
+    private func validateRecord(_ kind: WorkspaceRecordKind, json: Data, path: String, snapshot: WorkspaceSnapshot,
+                                preservedDestinationIDs: Set<String>, pendingFiles: [String: Data] = [:]) throws {
+        switch kind {
+        case .identities:
+            let record = try decoder.decode(IdentityRecord.self, from: json)
+            guard !record.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw WorkspaceCommandError("Identity name must not be empty.") }
+            try validateAsset(record.photoPath)
+        case .apps:
+            let record = try decoder.decode(AppRecord.self, from: json)
+            guard !record.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw WorkspaceCommandError("App name must not be empty.") }
+            if let id = record.developerIdentityId, snapshot.identities.filter({ $0.id == id }).count != 1 { throw WorkspaceCommandError("Unknown or ambiguous identity ID \(id).") }
+            for link in record.websiteLinks {
+                guard snapshot.websites.filter({ $0.id == link.websiteId }).count == 1 else { throw WorkspaceCommandError("Unknown or ambiguous website ID \(link.websiteId).") }
+                if let url = link.url { try validateWebURL(url, field: "Website link URL") }
+            }
+            if let url = record.repositoryURL { try validateWebURL(url, field: "Repository URL") }
+            if let url = record.appStoreURL { try validateWebURL(url, field: "App Store URL") }
+            if let url = record.testFlightURL { try validateWebURL(url, field: "TestFlight URL") }
+            try validateAsset(record.iconPath.map { "\((path as NSString).deletingLastPathComponent)/\($0)" })
+        case .websites:
+            let record = try decoder.decode(WebsiteRecord.self, from: json)
+            guard !record.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw WorkspaceCommandError("Website name must not be empty.") }
+            let owners = record.owner.type == .app ? snapshot.apps.map(\.id) : snapshot.identities.map(\.id)
+            guard owners.filter({ $0 == record.owner.id }).count == 1 else { throw WorkspaceCommandError("Unknown \(record.owner.type.rawValue) owner \(record.owner.id).") }
+            try validateWebURL(record.baseURL, field: "Website base URL")
+            if let url = record.blogIndexURL { try validateWebURL(url, field: "Blog index URL") }
+        case .accounts:
+            let record = try decoder.decode(SocialAccountRecord.self, from: json)
+            guard !record.platform.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw WorkspaceCommandError("Social account platform must not be empty.") }
+            guard let owner = record.owner else { throw WorkspaceCommandError("Social accounts require an identity or app owner.") }
+            let owners = owner.type == .app ? snapshot.apps.map(\.id) : snapshot.identities.map(\.id)
+            guard owners.filter({ $0 == owner.id }).count == 1 else { throw WorkspaceCommandError("Unknown \(owner.type.rawValue) owner \(owner.id).") }
+            guard record.handle?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false || record.profileURL != nil else { throw WorkspaceCommandError("Social accounts require a handle or profile URL.") }
+            if let url = record.profileURL { try validateWebURL(url, field: "Social profile URL") }
+            try validateAsset(record.avatarPath)
+        case .content:
+            let record = try decoder.decode(ContentRecord.self, from: json)
+            try validateContent(record, path: path, in: snapshot, pendingFiles: pendingFiles, preservedUnavailableAccountIDs: preservedDestinationIDs)
+        }
+    }
+
+    private func validateAsset(_ path: String?) throws {
+        guard let path else { return }
+        let url = try safeURL(path)
+        guard try url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile == true else { throw WorkspaceCommandError("Expected an asset file at \(path).") }
+    }
+
+    private func validateWebURL(_ url: URL, field: String) throws {
+        guard let scheme = url.scheme?.lowercased(), ["http", "https"].contains(scheme), url.host != nil else {
+            throw WorkspaceCommandError("\(field) must be an absolute http or https URL.")
+        }
+    }
+
     func readRecord(_ kind: WorkspaceRecordKind, id: String) throws -> WorkspaceRecordRead {
         try withWorkspaceLock(exclusive: false) {
             let snapshot = try load(installAgentGuidance: false)
@@ -37,7 +180,8 @@ extension WorkspaceStore {
         }
     }
 
-    private func readRecord(_ kind: WorkspaceRecordKind, id: String, in snapshot: WorkspaceSnapshot) throws -> WorkspaceRecordRead {
+    private func readRecord(_ kind: WorkspaceRecordKind, id: String, in snapshot: WorkspaceSnapshot,
+                            includeRelatedFiles: Bool = true) throws -> WorkspaceRecordRead {
         guard !snapshot.errors.contains(where: { $0.path == kind.errorLabel }) else {
             throw WorkspaceCommandError("Resolve duplicate IDs in \(kind.rawValue) before reading by ID.")
         }
@@ -56,6 +200,7 @@ extension WorkspaceStore {
                 result.body = body.text
                 result.bodyRevision = body.revision
             }
+            if includeRelatedFiles { result.relatedFiles = contentRelatedFiles(content, recordPath: path) }
         }
         return result
     }
@@ -84,7 +229,7 @@ extension WorkspaceStore {
                        expectedBodyRevision: String?) throws -> WorkspaceRecordRead {
         try withWorkspaceLock {
             let snapshot = try load(installAgentGuidance: false)
-            let current = try readRecord(.content, id: id, in: snapshot)
+            let current = try readRecord(.content, id: id, in: snapshot, includeRelatedFiles: false)
             guard current.revision == expectedRevision else {
                 throw WorkspaceStoreError.conflict(path: current.path, currentRevision: current.revision)
             }
@@ -189,7 +334,8 @@ extension WorkspaceStore {
     }
 
     private func validateContent(_ record: ContentRecord, path: String, in snapshot: WorkspaceSnapshot,
-                                 pendingBody: String? = nil) throws {
+                                 pendingBody: String? = nil, pendingFiles: [String: Data] = [:],
+                                 preservedUnavailableAccountIDs: Set<String> = []) throws {
         guard record.schemaVersion == 1, !record.id.isEmpty,
               !record.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             throw WorkspaceCommandError("Content requires schema 1, a stable ID, and a non-empty title.")
@@ -206,6 +352,7 @@ extension WorkspaceStore {
                 throw WorkspaceCommandError("Website \(id) is missing, ambiguous, or does not have a blog enabled.")
             }
         }
+        if let url = record.publishedURL { try validateWebURL(url, field: "Published URL") }
         var visited = Set([record.id])
         var source = record.sourceContentId
         let sources = Dictionary(grouping: snapshot.content, by: \.id)
@@ -221,21 +368,26 @@ extension WorkspaceStore {
         }
         let unavailable = snapshot.socialDestinationSelection(for: record).unavailableAccountIDs
         let ambiguous = Set(accounts.filter { id in snapshot.socialAccounts.filter { $0.id == id }.count > 1 })
-        let invalidAccounts = unavailable.union(ambiguous)
+        let invalidAccounts = unavailable.subtracting(preservedUnavailableAccountIDs).union(ambiguous)
         guard invalidAccounts.isEmpty else {
             throw WorkspaceCommandError("Unavailable or ambiguous destination accounts: \(invalidAccounts.sorted().joined(separator: ", ")).")
         }
         if pendingBody == nil { _ = try originalBody(for: record, recordPath: path) }
         for destination in record.destinations {
+            if let url = destination.publishedURL { try validateWebURL(url, field: "Destination published URL") }
             if let variant = destination.bodyPath {
                 let file = try contentFile(variant, recordPath: path)
-                _ = try readText(file)
+                if let pending = pendingFiles[file] {
+                    guard String(data: pending, encoding: .utf8) != nil else { throw WorkspaceCommandError("Destination variant \(file) must be UTF-8 text.") }
+                } else { _ = try readText(file) }
             }
         }
         for media in record.mediaPaths + record.destinations.flatMap({ $0.mediaPaths ?? [] }) {
             let file = try contentFile(media, recordPath: path)
-            guard try safeURL(file).resourceValues(forKeys: [.isRegularFileKey]).isRegularFile == true else {
-                throw WorkspaceCommandError("Expected a media file at \(file).")
+            if pendingFiles[file] == nil {
+                guard try safeURL(file).resourceValues(forKeys: [.isRegularFileKey]).isRegularFile == true else {
+                    throw WorkspaceCommandError("Expected a media file at \(file).")
+                }
             }
         }
     }
@@ -254,6 +406,17 @@ extension WorkspaceStore {
             throw WorkspaceCommandError("\(path) is not UTF-8 text.")
         }
         return (text, file.revision)
+    }
+
+    private func contentRelatedFiles(_ record: ContentRecord, recordPath: String) -> [WorkspaceFileRead] {
+        let references = Set(record.destinations.compactMap(\.bodyPath) + record.mediaPaths + record.destinations.flatMap { $0.mediaPaths ?? [] })
+        let variantReferences = Set(record.destinations.compactMap(\.bodyPath))
+        return references.sorted().compactMap { reference in
+            guard let path = try? contentFile(reference, recordPath: recordPath),
+                  let file = try? read(relativePath: path) else { return nil }
+            let text = variantReferences.contains(reference) ? String(data: file.data, encoding: .utf8) : nil
+            return WorkspaceFileRead(path: path, revision: file.revision, text: text)
+        }
     }
 
     private func contentFile(_ name: String, recordPath: String) throws -> String {
