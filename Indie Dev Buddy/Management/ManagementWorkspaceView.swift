@@ -866,12 +866,14 @@ private struct AppRecordEditor: View {
                 }
             }
             Section("Links") {
-                if let url = record?.appStoreURL { Link("App Store", destination: url) }
-                if let url = record?.testFlightURL { Link("TestFlight", destination: url) }
-                if let url = record?.repositoryURL { Link("Repository", destination: url) }
+                if let url = record?.appStoreURL { Link("App Store Listing", destination: url) }
+                if let url = record?.testFlightURL { Link("TestFlight Beta", destination: url) }
+                if let url = record?.repositoryURL { Link("Source Code Repository", destination: url) }
                 ForEach(links) { link in
                     let website = websites.first { $0.id == link.websiteId }
-                    let label = website?.name ?? link.purpose.capitalized
+                    let websiteName = website?.name ?? "Website"
+                    let purpose = websiteLinkPurposeLabel(link.purpose)
+                    let label = "\(websiteName) — \(purpose)"
                     if let url = link.url ?? website?.baseURL {
                         Link(label, destination: url)
                     } else {
@@ -886,6 +888,16 @@ private struct AppRecordEditor: View {
         .formStyle(.grouped)
         .frame(maxWidth: 760)
         .frame(maxWidth: .infinity)
+    }
+
+    private func websiteLinkPurposeLabel(_ purpose: String) -> String {
+        switch purpose.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "product": "Product page"
+        case "support": "Support page"
+        case "privacy": "Privacy policy"
+        case "docs", "documentation": "Documentation"
+        default: purpose.capitalized
+        }
     }
 
     private func reportOverviewDirty(_ value: Bool) {

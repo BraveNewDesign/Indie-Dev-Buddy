@@ -404,14 +404,13 @@ struct Indie_Dev_BuddyTests {
         let store = WorkspaceStore(rootURL: root)
         _ = try await store.createWorkspace(at: root)
 
-        let guide = try String(contentsOf: root.appendingPathComponent("AGENTS.md"), encoding: .utf8)
-        #expect(guide.contains("Content body/media paths are relative to the content folder"))
-        #expect(guide.contains("iconPath` is relative to the app folder"))
-        #expect(guide.contains("release notes/assets are relative to that release folder"))
-        #expect(guide.contains("avatarPath` is relative to the workspace root"))
-        #expect(guide.contains("app-link-dictate-bar-product"))
-        #expect(guide.contains("mediaPaths: null"))
-        #expect(guide.contains("not crash recovery or a transaction"))
+        let guide = try String(contentsOf: root.appendingPathComponent("docs/DATA_FORMAT.md"), encoding: .utf8)
+        #expect(guide.contains("relative to that content record's folder"))
+        #expect(guide.contains("relative to the app folder"))
+        #expect(guide.contains("relative to the release folder"))
+        #expect(guide.contains("relative to the workspace root"))
+        #expect(guide.contains("inherits the content's media"))
+        #expect(guide.contains("not assume a multi-file update is atomic"))
     }
 
     @Test func missingWorkspaceCategoryProducesActionableLoadError() async throws {

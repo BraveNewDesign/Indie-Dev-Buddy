@@ -70,14 +70,9 @@ public actor WorkspaceStore {
         for path in ["Identities", "Apps", "Websites", "SocialAccounts", "Content", "Inbox", "Shared Files"] {
             try fileManager.createDirectory(at: root.appendingPathComponent(path), withIntermediateDirectories: true)
         }
-        // Exclusive creation ensures another process or a pre-existing file is never replaced.
-        try writeExclusively(Data(Self.agentInstructions.utf8), to: root.appendingPathComponent("AGENTS.md"))
-        do { try writeExclusively(encoder.encode(manifest), to: root.appendingPathComponent("workspace.json")) }
-        catch {
-            // Roll back only the marker created above; never remove user data.
-            try? fileManager.removeItem(at: root.appendingPathComponent("AGENTS.md"))
-            throw error
-        }
+        // The manifest is the workspace marker; never replace an existing file.
+        try writeExclusively(encoder.encode(manifest), to: root.appendingPathComponent("workspace.json"))
+        installGuidance(at: root)
         return manifest
     }
 
@@ -86,6 +81,7 @@ public actor WorkspaceStore {
         guard let manifestData = try? Data(contentsOf: manifestURL) else { throw WorkspaceStoreError.notWorkspace }
         let manifest = try decoder.decode(WorkspaceManifest.self, from: manifestData)
         guard manifest.schemaVersion == 1 else { throw WorkspaceStoreError.unsupportedSchema(manifest.schemaVersion) }
+        installGuidance(at: rootURL)
         var errors: [WorkspaceFileError] = []
         var opaque: [OpaqueWorkspaceRecord] = []
         let identities: [IdentityRecord] = scan("Identities", errors: &errors, opaque: &opaque)
@@ -354,7 +350,11 @@ public actor WorkspaceStore {
             if errno == EEXIST { throw WorkspaceStoreError.workspaceAlreadyExists }
             throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
         }
-        defer { close(fd) }
+        var completed = false
+        defer {
+            close(fd)
+            if !completed { unlink(url.path) }
+        }
         try data.withUnsafeBytes { buffer in
             guard let base = buffer.baseAddress else { return }
             var offset = 0
@@ -365,125 +365,41 @@ public actor WorkspaceStore {
             }
         }
         guard fsync(fd) == 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
+        completed = true
     }
 
-    private static let agentInstructions = """
-    # Indie Dev Buddy Workspace
-
-    This workspace is the source of truth. Records are ordinary UTF-8 JSON, Markdown, and text files. Do not store credentials, tokens, or secrets here. Keep names in their owning records and reference records elsewhere by stable `id`; do not use folder names as IDs.
-
-    ## Layout
-
-    - `workspace.json`: workspace metadata (`schemaVersion`, `id`, `name`).
-    - `Identities/<slug>/record.json`
-    - `Apps/<slug>/record.json` (plus optional `Assets/` and `Releases/<version>/record.json`).
-    - Each release can keep `notes.md` next to `Releases/<version>/record.json`.
-    - `Websites/<slug>/record.json`
-    - `SocialAccounts/<slug>/record.json`
-    - `Content/<slug>/record.json`, with body text in the path named by `originalBodyPath` and optional `Variants/` and `Assets/` files.
-    - `Inbox/` and `Shared Files/` for user-managed material.
-
-    JSON keys use the Swift property names below. `schemaVersion` is `1` for records this app understands. Every record requires `schemaVersion` and a stable, unique `id`. Required fields are shown; optional fields may be omitted or set to `null`. Dates are ISO-8601 strings. URLs are strings. Relative paths use `/` and must stay inside the workspace. Content body/media paths are relative to the content folder; `iconPath` is relative to the app folder; release notes/assets are relative to that release folder; `avatarPath` is relative to the workspace root.
-
-    ## Record examples
-
-    Identity (`Identities/brave-new-design/record.json`):
-
-    ```json
-    { "schemaVersion": 1, "id": "identity-bnd", "name": "Brave New Design", "kind": "business" }
-    ```
-
-    App (`Apps/dictate-bar/record.json`):
-
-    ```json
-    {
-      "schemaVersion": 1, "id": "app-dictate-bar", "name": "Dictate Bar",
-      "iconPath": "Assets/app-icon.png",
-      "description": "Voice dictation for macOS.", "bundleIDs": ["com.example.DictateBar"],
-      "developmentStatus": "released", "testFlightURL": "https://testflight.apple.com/join/example",
-      "developerIdentityId": "identity-bnd", "platforms": ["macOS"],
-      "projectPath": "/Users/example/Projects/DictateBar",
-      "repositoryURL": "https://example.com/dictate-bar", "appStoreURL": null,
-      "websiteLinks": [
-        { "id": "app-link-dictate-bar-product", "websiteId": "website-bnd", "purpose": "product", "url": "https://example.com/software/dictate-bar", "isPrimary": true }
-      ]
+    /// Guidance is optional to workspace access. Each file is installed independently,
+    /// with exclusive creation so existing or concurrently created instructions survive.
+    private func installGuidance(at root: URL) {
+        for (path, content) in WorkspaceGuidance.files {
+            let destination = root.appendingPathComponent(path).standardizedFileURL
+            guard !fileManager.fileExists(atPath: destination.path) else { continue }
+            do {
+                let parent = destination.deletingLastPathComponent()
+                // Resolve existing ancestors before and after creation, including a symlinked
+                // parent when the final file does not yet exist.
+                guard parent.resolvingSymlinksInPath().path == root.path || parent.resolvingSymlinksInPath().path.hasPrefix(root.path + "/") else { continue }
+                try fileManager.createDirectory(at: parent, withIntermediateDirectories: true)
+                let resolvedParent = parent.resolvingSymlinksInPath()
+                guard resolvedParent.path == root.path || resolvedParent.path.hasPrefix(root.path + "/") else { continue }
+                try writeExclusively(Data(content.utf8), to: resolvedParent.appendingPathComponent(destination.lastPathComponent))
+            } catch {
+                // A read-only workspace, conflicting path, or concurrent creator must not block loading.
+            }
+        }
+        // Future guidance versions can place a new reference alongside an older marked
+        // document; the original, including any user edits, is never replaced.
+        let format = root.appendingPathComponent("docs/DATA_FORMAT.md")
+        if let text = try? String(contentsOf: format, encoding: .utf8),
+           let range = text.range(of: #"<!-- Indie Dev Buddy guidance version: ([0-9]+) -->"#, options: .regularExpression),
+           let version = Int(text[range].filter(\.isNumber)), version < WorkspaceGuidance.version,
+           let reference = WorkspaceGuidance.files.first(where: { $0.path == "docs/DATA_FORMAT.md" })?.contents {
+            let path = "docs/DATA_FORMAT.v\(WorkspaceGuidance.version).md"
+            let destination = root.appendingPathComponent(path).standardizedFileURL
+            let parent = destination.deletingLastPathComponent().resolvingSymlinksInPath()
+            if parent.path.hasPrefix(root.path + "/"), !fileManager.fileExists(atPath: destination.path) {
+                try? writeExclusively(Data(reference.utf8), to: parent.appendingPathComponent(destination.lastPathComponent))
+            }
+        }
     }
-    ```
-
-    Website (`Websites/brave-new-design/record.json`):
-
-    ```json
-    {
-      "schemaVersion": 1, "id": "website-bnd", "name": "Brave New Design",
-      "owner": { "type": "identity", "id": "identity-bnd" },
-      "baseURL": "https://example.com", "blogEnabled": true, "blogIndexURL": "https://example.com/blog"
-    }
-    ```
-
-    Social account (`SocialAccounts/threads-business/record.json`):
-
-    ```json
-    {
-      "schemaVersion": 1, "id": "account-threads-business", "platform": "threads",
-      "owner": { "type": "identity", "id": "identity-bnd" },
-      "handle": "@example", "profileURL": "https://threads.net/@example",
-      "avatarPath": null, "enabled": true
-    }
-    ```
-
-    `avatarPath` is an optional workspace-relative image path (for example,
-    `SocialAccounts/threads-business/Assets/avatar-example.png`). Clearing or replacing
-    it does not delete the previous file.
-
-    Content (`Content/dictate-bar-update/record.json`):
-
-    ```json
-    {
-      "schemaVersion": 1, "id": "content-update-social", "kind": "social",
-      "title": "Dictate Bar update", "appIds": ["app-dictate-bar"], "websiteId": null,
-      "sourceContentId": "content-update-blog", "releaseId": "release-dictate-bar-1-3",
-      "plannedDate": "2026-11-12T15:00:00Z", "relatedGroupId": null,
-      "originalBodyPath": "original.txt", "excerpt": null, "includeSourceLink": true,
-      "status": "draft", "publishedURL": null,
-      "destinations": [
-        { "accountId": "account-threads-business", "bodyPath": null, "status": "draft",
-          "publishedURL": null, "publishedDate": "2026-11-13T18:30:00Z", "mediaPaths": null },
-        { "accountId": "account-threads-personal", "bodyPath": "Variants/threads-personal.txt",
-          "status": "draft", "publishedURL": null, "publishedDate": null,
-          "mediaPaths": ["Assets/personal-image.png"] }
-      ],
-      "mediaPaths": ["Assets/announcement.png"]
-    }
-    ```
-
-    Release (`Apps/dictate-bar/Releases/1.3/record.json`):
-
-    ```json
-    {
-      "schemaVersion": 1, "id": "release-dictate-bar-1-3", "appId": "app-dictate-bar",
-      "version": "1.3", "status": "released", "releaseDate": "2026-11-05T12:00:00Z",
-      "notesPath": "notes.md", "assetPaths": ["Assets/release-banner.png"],
-      "externalChangelogPath": "/Users/example/Projects/DictateBar/CHANGELOG.md"
-    }
-    ```
-
-    Release `status` is `planned` or `released`. `releaseDate` is optional and may be `null`. `notesPath` is a Markdown file path relative to that release's folder (normally `notes.md`). `assetPaths` is an optional array of paths relative to that release's folder; release assets are copied into its `Assets/` directory. `externalChangelogPath` is an optional readable filesystem path; it is a reference and the app does not copy or modify that file. Release folders are under the app folder and commonly use the version as their name.
-
-    `iconPath` is an optional path relative to the app folder for the app's icon image, normally under `Assets/`. The app copies selected artwork into the workspace and keeps the original source file unchanged.
-
-    App `developmentStatus` is one of `development`, `beta`, `released`, `maintenance`, or `archived`. `description`, `bundleIDs`, `developmentStatus`, and `testFlightURL` are optional and may be omitted or `null`.
-
-    Supported `kind` values: `blog`, `social`, `idea`. Supported statuses: `idea`, `draft`, `ready`, `published`. `releaseId` is an optional stable ID reference to a release record; it is not a folder name or version string. `plannedDate` is an optional ISO-8601 date for the content schedule. A destination's `publishedDate` is optional and records the manually entered publication date for that account. A destination with `bodyPath: null` uses the current `originalBodyPath` contents live; it is not a snapshot. A non-null destination body path is a customized branch. Editing a branch must not edit the original or other branches. `mediaPaths: null` on a destination inherits the record's `mediaPaths`; a list overrides it (an empty list means no media for that destination). `sourceContentId` is a one-way link; reverse related items are derived by finding records whose `sourceContentId` matches this record's ID. Records with the same non-null `relatedGroupId` are also shown together; this optional group ID does not replace source links.
-
-    ## External editing and conflicts
-
-    1. Read `record.json` and referenced body/media files before editing. Preserve unknown keys if your tool round-trips JSON, and do not change IDs to rename records or folders.
-    2. Write the complete new contents to a temporary file in the same folder, flush it, then atomically replace the original. Never truncate a live record and rewrite it in place. Each individual replacement is atomic; a save that updates several files is not one atomic filesystem transaction.
-    3. Keep all referenced asset and body paths inside the workspace. Do not move or delete referenced files without updating their records. Use relative paths, not absolute paths, for workspace files.
-    4. The app watches workspace records and refreshes after external changes. If the app also has unsaved edits, it reports a revision conflict without replacing the changed file. Keep the app editor open to preserve the local draft; Reload intentionally discards that draft. Resolve the two versions explicitly before continuing. Multi-file saves preflight revisions and, on a reported write failure, attempt to restore files written by that save only if their current bytes still match the save output. If rollback cannot be done safely, the app names the files needing review. This is best-effort recovery, not crash recovery or a transaction; a crash or an independent writer racing the final check can still leave a partial save. Independent writers should avoid simultaneous writes.
-    5. Future schema versions and malformed JSON are kept as opaque files and reported for repair. Do not downgrade their `schemaVersion` or replace them with a partial record.
-
-    Do not edit `workspace.json` except to intentionally change workspace metadata. Do not put API keys, passwords, OAuth tokens, or other secrets in this workspace.
-
-    """
 }
