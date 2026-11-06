@@ -465,10 +465,10 @@ public actor WorkspaceStore {
             do {
                 let destination = try safeURL(path, inside: root)
                 if fileManager.fileExists(atPath: destination.path) {
-                    if root == rootURL, let prior = WorkspaceGuidance.priorCLIRevisions[path],
+                    if root == rootURL, let priorRevisions = WorkspaceGuidance.priorCLIRevisions[path],
                        destination.path == root.appendingPathComponent(path).path,
-                       let current = try? read(relativePath: path), current.revision == prior {
-                        _ = try? write(Data(content.utf8), relativePath: path, expectedRevision: prior)
+                       let current = try? read(relativePath: path), priorRevisions.contains(current.revision) {
+                        _ = try? write(Data(content.utf8), relativePath: path, expectedRevision: current.revision)
                     }
                     continue
                 }

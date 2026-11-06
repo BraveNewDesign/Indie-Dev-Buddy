@@ -10,22 +10,26 @@ nonisolated enum WorkspaceGuidance {
         (".agents/skills/indie-dev-buddy-content/SKILL.md", skill)
     ]
 
-    // Exact shipped originals, so customized workspace instructions remain intact.
+    // When changing a released template, append the SHA-256 of its previous UTF-8 bytes.
+    // Keep older digests so users can skip releases without losing automatic upgrades.
+    // Unrecognized bytes belong to the user and are preserved.
     static let priorCLIRevisions = [
-        "AGENTS.md": "ffda75d6f1519dd2158963035965f4f3a7bf537b2edb8de33b0e9d6e6a85dfe7",
-        ".agents/skills/indie-dev-buddy-content/SKILL.md": "e14564334144f84a1ed8a72c23eb511faedc522e3b67b6063032487f4ba7fccd"
+        "AGENTS.md": ["ffda75d6f1519dd2158963035965f4f3a7bf537b2edb8de33b0e9d6e6a85dfe7", "735b03839667db7d0f7623a78541f710a3596b15eb5c07e8394071fa9f4be58d"],
+        ".agents/skills/indie-dev-buddy-content/SKILL.md": ["e14564334144f84a1ed8a72c23eb511faedc522e3b67b6063032487f4ba7fccd", "05ac537f6baf1a78b18ff9effbd605c6b6e03d2dff09192cb374f8f5f7af4614"]
     ]
 
     private static let agents = #"""
     # Indie Dev Buddy workspace
 
-    Guidance version 2. Workspace schema 1.
+    Guidance version 3. Workspace schema 1.
 
-    - Prefer the validated `indiedevbuddy` CLI for discovery, reads, and edits. Use `indiedevbuddy --help` for commands and install it from the Indie Dev Buddy app menu if needed.
-    - Run `indiedevbuddy workspaces` to find the workspace path. Use that path with `--workspace` for `list`, `read`, `create`, `update`, and `validate`.
-    - Select records by ID. Read a draft before updating it and pass the returned revision with `--revision`. Pass its body revision with `--body-revision` for body edits. If a write conflicts, read again and reconcile the changes before retrying.
-    - Follow `.agents/skills/indie-dev-buddy-content/SKILL.md` for marketing tasks. See `docs/DATA_FORMAT.md` and `docs/EXAMPLES.md` for reference. Use the app for changes beyond the CLI's supported edits.
-    - Preserve user content, unknown fields, stable IDs, media, and customized instructions. Keep workspace paths inside the workspace, and keep secrets out of it.
+    ## AI agent workflow
+
+    - Use `indiedevbuddy` for all supported workspace reads and changes. Run `indiedevbuddy --help`, then `indiedevbuddy workspaces`. Confirm the intended workspace and pass its exact path with `--workspace` on every workspace command.
+    - Use `list` and `read` to resolve stable record IDs. Use `create` for blog, social, and idea drafts and `update` for titles and original bodies. Supply body text through stdin with `--body-file -` or through a temporary file outside the workspace.
+    - Read the current record before updating. Pass the returned `revision` with `--revision` and, for body edits, `bodyRevision` with `--body-revision`. If a conflict occurs, reread and reconcile before retrying. Run `validate` after changes and report any issues and returned backup location.
+    - Never write, patch, move, or delete managed workspace files directly, including record JSON, bodies, variants, media, and manifests. Shell commands, scripts, and editor tools must follow the same rule. If the CLI is unavailable or lacks the requested operation, stop and explain what needs to be done in the app. A validation error does not authorize a direct repair.
+    - Use the marketing skill at `.agents/skills/indie-dev-buddy-content/SKILL.md` for drafts. Treat schema examples as reference. Keep credentials and secrets out of the workspace.
     """#
 
     private static let dataFormat = #"""
@@ -124,17 +128,17 @@ nonisolated enum WorkspaceGuidance {
     private static let skill = #"""
     ---
     name: indie-dev-buddy-content
-    description: Create, organize, and adapt marketing drafts in an Indie Dev Buddy workspace using the validated indiedevbuddy CLI.
+    description: Discover, create, and revise marketing drafts in an Indie Dev Buddy workspace using the indiedevbuddy CLI.
     ---
 
     # Indie Dev Buddy content
 
-    Read `AGENTS.md` and run `indiedevbuddy --help`. Discover the workspace with `indiedevbuddy workspaces`, then use `list apps`, `list websites`, `list accounts`, and `list content` with `--workspace "$workspace"`. Choose eligible accounts and blog-enabled websites using their IDs.
+    Read `AGENTS.md` and run `indiedevbuddy --help`. Use `indiedevbuddy workspaces` to identify the requested workspace and pass its exact path as `--workspace "$workspace"`. Use `list apps`, `list websites`, `list accounts`, and `list content` to find stable IDs and confirm eligible accounts or blog-enabled websites.
 
-    Create drafts with `indiedevbuddy create blog --workspace "$workspace" --title "Launch notes" --body-file draft.md`. Use `create social` for social drafts and pass `--account ID` for each destination. Use `--app ID`, `--website ID`, and `--source ID` as appropriate. Use the app for custom variants or media.
+    Create a draft with `indiedevbuddy create blog --workspace "$workspace" --title "Launch notes" --body-file -` and supply the body on stdin. Use `create social` for social drafts and pass `--account ID` for each destination. Use `--app ID`, `--website ID`, and `--source ID` where applicable. Leave drafts unpublished.
 
-    Run `read content ID --workspace "$workspace"` to get the record, original body, and revisions. Pass `--revision` to `update`, plus `--body-revision` for body changes. If there is a conflict, reread and reconcile before retrying. The returned backup directory contains the previous bytes at their original workspace-relative paths. Run `validate --workspace "$workspace"` after changes.
+    Run `indiedevbuddy read content "$id" --workspace "$workspace"` before editing. Use `indiedevbuddy update "$id" --workspace "$workspace" --revision "$revision" --title "Revised title"`. For body edits, also pass `--body-file -` and `--body-revision "$body_revision"` with the revision from the read. On conflict, reread and reconcile before retrying. Run `indiedevbuddy validate --workspace "$workspace"` after changes and report any issues and the returned backup location.
 
-    Keep drafts unpublished and preserve other variants and media. Prefer the CLI or app to direct JSON edits. Read `docs/DATA_FORMAT.md` and `docs/EXAMPLES.md` to understand the relationships and file layout.
+    Never edit, generate, move, or delete managed workspace files directly. Use stdin or an input file outside the workspace. If the CLI is unavailable or lacks the operation, including variant, media, and publication changes, stop and explain what needs to be done in the app.
     """#
 }
