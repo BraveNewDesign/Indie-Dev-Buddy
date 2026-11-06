@@ -344,6 +344,7 @@ struct ManagementWorkspaceView: View {
             }
         } else {
             ContentUnavailableView("Select a \(singularName)", systemImage: sectionSymbol, description: Text("Choose a record from the list or add a new one."))
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
     }
 
