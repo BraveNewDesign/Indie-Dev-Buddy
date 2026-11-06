@@ -104,7 +104,8 @@ struct ManagementWorkspaceView: View {
                 }
             } else {
                 HSplitView {
-                    recordList.frame(minWidth: 200, idealWidth: 255, maxWidth: 360)
+                    // Keep the record list from collapsing when the selected detail has a larger minimum size.
+                    recordList.frame(width: 360)
                     detailContent
                         .frame(minWidth: 300, maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                 }
@@ -208,6 +209,8 @@ struct ManagementWorkspaceView: View {
                         Group {
                             if let iconURL = row.iconURL, let image = NSImage(contentsOf: iconURL) {
                                 Image(nsImage: image).resizable().scaledToFit()
+                            } else if let platform = row.socialPlatform {
+                                SocialPlatformIcon(platform: platform, size: 24)
                             } else {
                                 Image(systemName: row.symbol).font(.title3).foregroundStyle(.secondary)
                             }
@@ -258,7 +261,7 @@ struct ManagementWorkspaceView: View {
         case .apps: "square.grid.2x2"
         case .identities: "person.crop.circle"
         case .websites: "globe"
-        case .socialAccounts: "bubble.left.and.bubble.right"
+        case .socialAccounts: "at"
         }
     }
 
@@ -311,8 +314,12 @@ struct ManagementWorkspaceView: View {
             }
         case .socialAccounts:
             snapshot.socialAccounts.filter { matchesOwnerFilter($0.owner) }.map { record in
-                let account = [record.platform, record.handle].compactMap { $0 }.joined(separator: " · ")
-                return ManagementRow(id: record.id, title: account.isEmpty ? "Unconfigured account" : account, subtitle: record.owner.map(ownerName) ?? "Owner not set", symbol: "bubble.left.and.bubble.right")
+                let handle = record.handle?.trimmingCharacters(in: .whitespacesAndNewlines)
+                let accountName = (handle?.isEmpty == false ? handle : nil) ?? record.profileURL?.host
+                let account = SocialPlatformIcon.assetName(for: record.platform) != nil
+                    ? (accountName ?? "Unconfigured account")
+                    : [record.platform, accountName].compactMap { $0 }.joined(separator: " · ")
+                return ManagementRow(id: record.id, title: account.isEmpty ? "Unconfigured account" : account, subtitle: record.owner.map(ownerName) ?? "Owner not set", symbol: "at", socialPlatform: record.platform)
             }
         }
     }
@@ -396,9 +403,15 @@ struct ManagementWorkspaceView: View {
                         }.buttonStyle(.link)
                     }
                     ForEach(accounts) { account in
-                        Button([account.platform, account.handle].compactMap { $0 }.joined(separator: " · "), systemImage: "bubble.left.and.bubble.right") {
+                        Button {
                             onOpenRecord(ManagementRecordSelection(type: .socialAccount, id: account.id))
-                        }.buttonStyle(.link)
+                        } label: {
+                            HStack(spacing: 6) {
+                                SocialPlatformIcon(platform: account.platform, size: 16)
+                                Text([account.platform, account.handle].compactMap { $0 }.joined(separator: " · "))
+                            }
+                        }
+                        .buttonStyle(.link)
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -658,6 +671,7 @@ private struct ManagementRow: Identifiable {
     let subtitle: String
     let symbol: String
     var iconURL: URL? = nil
+    var socialPlatform: String? = nil
 }
 
 private struct OwnerChoice: Identifiable, Hashable {

@@ -204,6 +204,7 @@ struct ContentView: View {
         let title: String
         let detail: String
         let symbol: String
+        var socialPlatform: String? = nil
         let destination: Destination
 
         enum Destination {
@@ -250,7 +251,11 @@ struct ContentView: View {
                                                 Text(result.detail).font(.caption).foregroundStyle(.secondary).lineLimit(1)
                                             }
                                         } icon: {
-                                            Image(systemName: result.symbol).foregroundStyle(.secondary)
+                                            if let socialPlatform = result.socialPlatform {
+                                                SocialPlatformIcon(platform: socialPlatform, size: 20)
+                                            } else {
+                                                Image(systemName: result.symbol).foregroundStyle(.secondary)
+                                            }
                                         }
                                     }
                                     .buttonStyle(.plain)
@@ -407,7 +412,7 @@ struct ContentView: View {
             SearchResult(id: "website:\($0.id)", title: $0.name, detail: "Website · \($0.baseURL.host ?? $0.baseURL.absoluteString)", symbol: "globe", destination: .management(ManagementRecordSelection(type: .website, id: $0.id)))
         }
         results += snapshot.socialAccounts.filter { matches($0.platform, $0.handle ?? "", $0.profileURL?.absoluteString ?? "") }.map {
-            SearchResult(id: "account:\($0.id)", title: [$0.platform, $0.handle].compactMap { $0 }.joined(separator: " · "), detail: "Social Account", symbol: "bubble.left.and.bubble.right", destination: .management(ManagementRecordSelection(type: .socialAccount, id: $0.id)))
+            SearchResult(id: "account:\($0.id)", title: [$0.platform, $0.handle].compactMap { $0 }.joined(separator: " · "), detail: "Social Account", symbol: "at", socialPlatform: $0.platform, destination: .management(ManagementRecordSelection(type: .socialAccount, id: $0.id)))
         }
         results += snapshot.content.filter { matches($0.title, $0.kind.rawValue, $0.status.rawValue) }.map {
             SearchResult(id: "content:\($0.id)", title: $0.title, detail: "\($0.kind.rawValue.capitalized) · \($0.status.rawValue.capitalized)", symbol: $0.kind == .blog ? "doc.text" : $0.kind == .social ? "bubble.left.and.bubble.right" : "lightbulb", destination: .content($0.id))
