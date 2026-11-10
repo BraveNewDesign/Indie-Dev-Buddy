@@ -13,6 +13,7 @@ struct SocialOAuthConnectionSheet: View {
     @State private var brokerCredential = ""
     @State private var connectionTask: Task<Void, Never>?
     @State private var message: String?
+    @State private var canRetryCredentialSave = false
     @State private var showingMetaAccessHelp = false
     @State private var metaMethod: MetaConnectionMethod = .accessToken
     @State private var accessToken = ""
@@ -47,10 +48,21 @@ struct SocialOAuthConnectionSheet: View {
                 if platform.requiresBroker { exchangeServiceSection }
             }
             if let message {
-                Text(message).foregroundStyle(.red)
+                Text(message)
+                    .foregroundStyle(.red)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .textSelection(.enabled)
             }
             HStack {
                 Button("Cancel") { dismiss() }.keyboardShortcut(.cancelAction)
+                if platform == .mastodon {
+                    Button("Test Keychain", action: testKeychain)
+                        .disabled(connectionTask != nil)
+                }
+                if platform == .mastodon && canRetryCredentialSave {
+                    Button("Retry Keychain Save", action: retryCredentialSave)
+                        .disabled(connectionTask != nil)
+                }
                 Spacer()
                 Button(actionTitle) {
                     if isMetaPlatform && metaMethod == .accessToken { importAccessToken() }
@@ -169,6 +181,7 @@ struct SocialOAuthConnectionSheet: View {
         let settings = registration
         let accountTarget = settings.accountTarget.isEmpty ? nil : settings.accountTarget
         message = nil
+        canRetryCredentialSave = false
         brokerCredential = ""
         connectionTask = Task {
             defer { connectionTask = nil }
@@ -187,7 +200,45 @@ struct SocialOAuthConnectionSheet: View {
             } catch is CancellationError {
                 message = "Authorization was canceled."
             } catch {
+                if platform == .mastodon, let error = error as? SocialError,
+                   case .credentialStorage = error {
+                    canRetryCredentialSave = true
+                }
                 message = authorizationFailureMessage(for: error)
+            }
+        }
+    }
+
+    private func retryCredentialSave() {
+        message = nil
+        connectionTask = Task {
+            defer { connectionTask = nil }
+            do {
+                let account = try await runtime.connections.retryPendingMastodonCredentialSave()
+                try Task.checkCancellation()
+                registration.save(.mastodon)
+                canRetryCredentialSave = false
+                onConnected(account)
+                dismiss()
+            } catch {
+                message = authorizationFailureMessage(for: error)
+            }
+        }
+    }
+
+    private func testKeychain() {
+        message = nil
+        connectionTask = Task {
+            defer { connectionTask = nil }
+            do {
+                try await runtime.connections.testCredentialStorage()
+                message = "Keychain test succeeded. No Mastodon authorization was requested."
+            } catch {
+                if let error = error as? SocialError, case .credentialStorage(let status) = error {
+                    message = "Keychain test failed (OSStatus \(status))."
+                } else {
+                    message = "Keychain test failed: \(error.localizedDescription)"
+                }
             }
         }
     }
@@ -212,6 +263,8 @@ struct SocialOAuthConnectionSheet: View {
             detail = "Indie Dev Buddy could not reach the server. Check your network connection and try again."
         case .authenticationRequired:
             detail = "The server did not accept the account authorization. Try connecting again."
+        case .credentialStorage(let status):
+            detail = "macOS Keychain rejected saving the account (OSStatus \(status))."
         default:
             detail = socialError.localizedDescription
         }

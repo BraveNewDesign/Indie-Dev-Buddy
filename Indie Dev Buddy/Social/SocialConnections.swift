@@ -101,6 +101,7 @@ actor SocialConnections {
     private var x: SocialClient<XAdapter>
     private let linkedIn: SocialClient<LinkedInAdapter>
     private let mastodon: SocialClient<MastodonAdapter>
+    private var pendingMastodonCredential: SocialCredential?
 
     init(
         serviceName: String = "com.bravenewdesign.indiedevbuddy.social",
@@ -468,10 +469,45 @@ actor SocialConnections {
                                                   scopes: scopes, organizationURN: accountTarget, browser: browser))
         case .mastodon:
             guard let instance else { throw SocialError.invalidConfiguration }
-            return try await mastodon.connect(.init(server: instance, redirectURI: redirectURI,
-                                                    applicationName: "Indie Dev Buddy", browser: browser))
+            let credential = try await MastodonAdapter().connect(.init(
+                server: instance,
+                redirectURI: redirectURI,
+                applicationName: "Indie Dev Buddy",
+                browser: browser
+            ))
+            try Task.checkCancellation()
+            do {
+                try await store.save(credential)
+                pendingMastodonCredential = nil
+                return credential.account
+            } catch {
+                pendingMastodonCredential = credential
+                throw error
+            }
         case .bluesky: throw SocialError.invalidConfiguration
         }
+    }
+
+    func retryPendingMastodonCredentialSave() async throws -> SocialAccount {
+        guard let credential = pendingMastodonCredential else { throw SocialError.invalidConfiguration }
+        try await store.save(credential)
+        pendingMastodonCredential = nil
+        return credential.account
+    }
+
+    func testCredentialStorage() async throws {
+        guard let server = URL(string: "https://keychain-diagnostic.invalid") else {
+            throw SocialError.invalidConfiguration
+        }
+        let account = SocialAccount(
+            platform: .mastodon,
+            server: server,
+            remoteID: UUID().uuidString,
+            username: "keychain-diagnostic"
+        )
+        let credential = SocialCredential(account: account, accessToken: "temporary-keychain-diagnostic")
+        try await store.save(credential)
+        try await store.remove(account.id)
     }
 
     private func accountID(for identity: ContentRecipientIdentity) throws -> SocialAccount.ID {
