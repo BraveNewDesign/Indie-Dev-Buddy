@@ -64,6 +64,7 @@ private extension ContentSchedule {
         mode == .api && idempotencyKey == intent.id && recipient == intent.recipient &&
             scheduledDate == intent.scheduledDate && draftID == intent.draftID &&
             draftCreatedAt == intent.draftCreatedAt && textSnapshot == intent.text &&
-            (media ?? []) == intent.media && mediaURLs == intent.media.map(\.publicURL)
+            (media ?? []) == intent.media && mediaURLs == intent.media.map(\.publicURL) &&
+            (mentions ?? []) == (intent.mentions ?? [])
     }
 }

@@ -101,6 +101,8 @@ struct MarketingComposerView: View {
     @State private var destinationScheduleDates: [String: Date] = [:]
     @State private var destinationMediaLinks: [String: ComposerMediaLink] = [:]
     @State private var mentionResolutions: [String: ComposerMentionResolution] = [:]
+    @State private var rescheduleAccountIDs: Set<String> = []
+    @State private var savedAPIScheduledAccountIDs: Set<String> = []
     @State private var plannedDate: Date?
     @State private var destinationPublicationDates: [String: Date] = [:]
     @State private var sharedMediaPaths: [String] = []
@@ -189,6 +191,7 @@ struct MarketingComposerView: View {
                       destinationScheduleDates: destinationScheduleDates,
                       destinationMediaLinks: destinationMediaLinks,
                       mentionResolutions: mentionResolutions,
+                      rescheduleAccountIDs: rescheduleAccountIDs,
                       plannedDate: plannedDate,
                       destinationPublicationDates: destinationPublicationDates,
                       sharedMediaPaths: sharedMediaPaths,
@@ -739,21 +742,34 @@ struct MarketingComposerView: View {
                 Text("Posted").tag("Published")
             }
             if destinationStatuses[id] == "Scheduled" {
+                let hasSavedAPISchedule = savedAPIScheduledAccountIDs.contains(id)
+                if hasSavedAPISchedule && !rescheduleAccountIDs.contains(id) {
+                    Text("This scheduled post keeps its approved text, mentions, media, and time. Draft edits won’t change what is sent.")
+                        .font(.caption).foregroundStyle(.secondary)
+                    Button("Reschedule with Current Draft") { rescheduleAccountIDs.insert(id) }
+                } else if rescheduleAccountIDs.contains(id) {
+                    Text("Saving will replace the approved payload with the current draft and selected time.")
+                        .font(.caption).foregroundStyle(.orange)
+                    Button("Keep Existing Scheduled Post") { rescheduleAccountIDs.remove(id) }
+                }
                 if let recipient {
                     Label("API recipient: \(recipient.username) on \(recipient.platform.workspaceTitle)", systemImage: "person.crop.circle.badge.checkmark")
                         .font(.caption)
                 }
                 DatePicker("API post time", selection: destinationScheduleDateBinding(id),
                            displayedComponents: [.date, .hourAndMinute])
+                    .disabled(hasSavedAPISchedule && !rescheduleAccountIDs.contains(id))
                 Text("API scheduling requires a verified connected account. The app must be open and the Mac awake at this time.")
                     .font(.caption).foregroundStyle(.secondary)
                 if account.apiPlatform == .threads || account.apiPlatform == .instagram {
                     TextField(account.apiPlatform == .instagram ? "Public media URL" : "Public media URL (optional)",
                               text: destinationMediaLinkBinding(id).url)
+                        .disabled(hasSavedAPISchedule && !rescheduleAccountIDs.contains(id))
                     Picker("Media type", selection: destinationMediaLinkBinding(id).kind) {
                         Text("Image").tag(ContentScheduledMediaKind.image)
                         Text("Video").tag(ContentScheduledMediaKind.video)
                     }
+                    .disabled(hasSavedAPISchedule && !rescheduleAccountIDs.contains(id))
                     Text("Enter a public HTTPS link to a file you want to publish. The app never uploads workspace files automatically.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
@@ -1122,7 +1138,11 @@ struct MarketingComposerView: View {
         onSave(draft) { success in
             isSaving = false
             if success {
-                savedDraftSnapshot = draft
+                rescheduleAccountIDs = []
+                savedAPIScheduledAccountIDs = Set(draft.destinationStatuses.compactMap { accountID, status in
+                    status == "Scheduled" ? accountID : nil
+                })
+                savedDraftSnapshot = currentDraft
                 onDirtyChange(false)
                 Task { await refreshDeliveryHistory() }
             }
@@ -1161,6 +1181,7 @@ struct ComposerDraft: Equatable {
     var destinationScheduleDates: [String: Date] = [:]
     var destinationMediaLinks: [String: ComposerMediaLink] = [:]
     var mentionResolutions: [String: ComposerMentionResolution] = [:]
+    var rescheduleAccountIDs: Set<String> = []
     var plannedDate: Date?
     var destinationPublicationDates: [String: Date]
     var sharedMediaPaths: [String]
@@ -1234,6 +1255,9 @@ extension MarketingComposerView {
         _destinationScheduleDates = State(initialValue: Dictionary(content.destinations.compactMap { destination in
             destination.schedule.map { (destination.accountId, $0.scheduledDate) }
         }, uniquingKeysWith: { _, latest in latest }))
+        _savedAPIScheduledAccountIDs = State(initialValue: Set(content.destinations.compactMap { destination in
+            destination.schedule?.mode == .api ? destination.accountId : nil
+        }))
         let mediaLinks = Dictionary(content.destinations.compactMap { destination in
             destination.schedule?.media?.first.map {
                 (destination.accountId, ComposerMediaLink(url: $0.publicURL.absoluteString, kind: $0.kind))

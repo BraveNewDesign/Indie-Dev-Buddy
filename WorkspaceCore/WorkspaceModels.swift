@@ -114,13 +114,14 @@ nonisolated public struct SocialAccountRecord: Codable, Sendable, Identifiable, 
     public var platform: String
     public var owner: RecordOwner?
     public var handle: String?
+    public var displayName: String?
     public var profileURL: URL?
     public var avatarPath: String?
     /// Verified SocialKit identity bound during account connection. Editable profile metadata is not an API recipient key.
     public var providerIdentity: ContentRecipientIdentity?
     public var enabled: Bool
-    public init(id: String = UUID().uuidString.lowercased(), platform: String, owner: RecordOwner? = nil, handle: String? = nil, profileURL: URL? = nil, avatarPath: String? = nil, providerIdentity: ContentRecipientIdentity? = nil, enabled: Bool = true) {
-        self.id = id; self.platform = platform; self.owner = owner; self.handle = handle; self.profileURL = profileURL; self.avatarPath = avatarPath; self.providerIdentity = providerIdentity; self.enabled = enabled
+    public init(id: String = UUID().uuidString.lowercased(), platform: String, owner: RecordOwner? = nil, handle: String? = nil, displayName: String? = nil, profileURL: URL? = nil, avatarPath: String? = nil, providerIdentity: ContentRecipientIdentity? = nil, enabled: Bool = true) {
+        self.id = id; self.platform = platform; self.owner = owner; self.handle = handle; self.displayName = displayName; self.profileURL = profileURL; self.avatarPath = avatarPath; self.providerIdentity = providerIdentity; self.enabled = enabled
     }
     public var isEligibleDestination: Bool {
         enabled && owner != nil && !platform.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&

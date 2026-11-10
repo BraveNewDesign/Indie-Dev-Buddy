@@ -8,7 +8,7 @@ struct SocialOAuthConnectionSheet: View {
     @Environment(SocialPublishingRuntime.self) private var runtime
     @Environment(\.dismiss) private var dismiss
     let platform: SocialPlatform
-    let onConnected: (ContentRecipientIdentity, String) -> Void
+    let onConnected: (SocialAccount) -> Void
     @State private var registration = SocialOAuthRegistration()
     @State private var brokerCredential = ""
     @State private var connectionTask: Task<Void, Never>?
@@ -103,9 +103,7 @@ struct SocialOAuthConnectionSheet: View {
                 }
                 try Task.checkCancellation()
                 settings.save(platform)
-                onConnected(ContentRecipientIdentity(platform: account.platform.rawValue,
-                                                      server: account.server,
-                                                      remoteID: account.remoteID), account.username)
+                onConnected(account)
                 dismiss()
             } catch is CancellationError {
                 message = "Authorization was canceled."

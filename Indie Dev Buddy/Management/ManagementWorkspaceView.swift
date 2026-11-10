@@ -1480,6 +1480,7 @@ private struct SocialAccountRecordEditor: View {
     @State private var customPlatform = ""
     @State private var ownerID = ""
     @State private var handle = ""
+    @State private var displayName = ""
     @State private var profileURL = ""
     @State private var enabled = true
     @State private var draftID = UUID().uuidString.lowercased()
@@ -1507,6 +1508,7 @@ private struct SocialAccountRecordEditor: View {
                     ForEach(owners) { Text("\($0.title) (\($0.detail))").tag($0.id) }
                 }
                 TextField("Handle", text: $handle, prompt: Text("@name"))
+                TextField("Display name", text: $displayName)
                 TextField("Profile URL", text: $profileURL)
                 Toggle("Enabled for new posts", isOn: $enabled)
                 Text("A new post can use this account when it is enabled, has an owner, and has a platform plus a handle or profile URL.")
@@ -1627,9 +1629,17 @@ private struct SocialAccountRecordEditor: View {
         }
     }
 
-    private func applyConnection(_ identity: ContentRecipientIdentity, _ username: String) {
-        providerIdentity = identity
-        handle = username
+    private func applyConnection(_ account: SocialAccount) {
+        providerIdentity = ContentRecipientIdentity(platform: account.platform.rawValue,
+                                                     server: account.server,
+                                                     remoteID: account.remoteID)
+        handle = account.username
+        if let name = account.displayName, !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            displayName = name
+        }
+        if let profileURL = account.profileURL, profileURL.scheme?.lowercased() == "https", profileURL.host != nil {
+            self.profileURL = profileURL.absoluteString
+        }
     }
     private func load() {
         guard let record else {
@@ -1641,7 +1651,7 @@ private struct SocialAccountRecordEditor: View {
         platform = platforms.contains(record.platform) ? record.platform : "Other"
         customPlatform = platforms.contains(record.platform) ? "" : record.platform
         ownerID = record.owner.map { "\($0.type.rawValue):\($0.id)" } ?? ""
-        handle = record.handle ?? ""; profileURL = record.profileURL?.absoluteString ?? ""; enabled = record.enabled
+        handle = record.handle ?? ""; displayName = record.displayName ?? ""; profileURL = record.profileURL?.absoluteString ?? ""; enabled = record.enabled
         providerIdentity = record.providerIdentity
         avatarPath = record.avatarPath
         if let avatarPath { Task { await loadAvatarPreview(relativePath: avatarPath) } }
@@ -1724,16 +1734,16 @@ private struct SocialAccountRecordEditor: View {
     private func save() async {
         guard let choice = owners.first(where: { $0.id == ownerID }) else { return }
         saving = true; defer { saving = false }
-        if await onSave(SocialAccountRecord(id: record?.id ?? draftID, platform: platformValue.trimmingCharacters(in: .whitespacesAndNewlines), owner: choice.owner, handle: handle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : handle.trimmingCharacters(in: .whitespacesAndNewlines), profileURL: optionalWebURL(profileURL), avatarPath: avatarPath, providerIdentity: providerIdentity, enabled: enabled)) { onDirtyChange(false) }
+        if await onSave(SocialAccountRecord(id: record?.id ?? draftID, platform: platformValue.trimmingCharacters(in: .whitespacesAndNewlines), owner: choice.owner, handle: handle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : handle.trimmingCharacters(in: .whitespacesAndNewlines), displayName: displayName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : displayName.trimmingCharacters(in: .whitespacesAndNewlines), profileURL: optionalWebURL(profileURL), avatarPath: avatarPath, providerIdentity: providerIdentity, enabled: enabled)) { onDirtyChange(false) }
     }
-    private var dirtySignature: String { "\(platform)|\(customPlatform)|\(ownerID)|\(handle)|\(profileURL)|\(enabled)|\(avatarPath ?? "")|\(providerIdentity?.platform ?? "")|\(providerIdentity?.server.absoluteString ?? "")|\(providerIdentity?.remoteID ?? "")" }
+    private var dirtySignature: String { "\(platform)|\(customPlatform)|\(ownerID)|\(handle)|\(displayName)|\(profileURL)|\(enabled)|\(avatarPath ?? "")|\(providerIdentity?.platform ?? "")|\(providerIdentity?.server.absoluteString ?? "")|\(providerIdentity?.remoteID ?? "")" }
     private var isDirty: Bool {
         if let record {
             let savedPlatform = platforms.contains(record.platform) ? record.platform : "Other"
             let savedCustomPlatform = platforms.contains(record.platform) ? "" : record.platform
-            return platform != savedPlatform || customPlatform != savedCustomPlatform || ownerID != (record.owner.map { "\($0.type.rawValue):\($0.id)" } ?? "") || handle != (record.handle ?? "") || profileURL != (record.profileURL?.absoluteString ?? "") || enabled != record.enabled || avatarPath != record.avatarPath || providerIdentity != record.providerIdentity
+            return platform != savedPlatform || customPlatform != savedCustomPlatform || ownerID != (record.owner.map { "\($0.type.rawValue):\($0.id)" } ?? "") || handle != (record.handle ?? "") || displayName != (record.displayName ?? "") || profileURL != (record.profileURL?.absoluteString ?? "") || enabled != record.enabled || avatarPath != record.avatarPath || providerIdentity != record.providerIdentity
         }
-        return platform != "Threads" || !customPlatform.isEmpty || ownerID != (owners.first?.id ?? "") || !handle.isEmpty || !profileURL.isEmpty || !enabled || avatarPath != nil
+        return platform != "Threads" || !customPlatform.isEmpty || ownerID != (owners.first?.id ?? "") || !handle.isEmpty || !displayName.isEmpty || !profileURL.isEmpty || !enabled || avatarPath != nil
     }
 }
 
@@ -1741,7 +1751,7 @@ private struct BlueskyConnectionSheet: View {
     @Environment(SocialPublishingRuntime.self) private var socialPublishingRuntime
     @Environment(\.dismiss) private var dismiss
     let initialHandle: String
-    let onConnected: (ContentRecipientIdentity, String) -> Void
+    let onConnected: (SocialAccount) -> Void
     @State private var handle = ""
     @State private var appPassword = ""
     @State private var server = "https://bsky.social"
@@ -1784,9 +1794,7 @@ private struct BlueskyConnectionSheet: View {
                 server: serverURL
             )
             appPassword = ""
-            onConnected(ContentRecipientIdentity(platform: account.platform.rawValue,
-                                                 server: account.server,
-                                                 remoteID: account.remoteID), account.username)
+            onConnected(account)
             dismiss()
         } catch {
             appPassword = ""

@@ -179,8 +179,14 @@ struct SocialAccountActivityView: View {
                                 Button("Unhide") { perform("Unhide reply", success: "Reply unhidden.") { try await runtime.connections.setReplyHidden(false, replyID: reply.id, for: identity) } }
                                     .disabled(writing)
                             }
-                            if capabilities.contains(.deleteReply), reply.authorID == account.remoteID {
-                                Button("Delete…", role: .destructive) { deleteTarget = reply }.disabled(writing)
+                            if capabilities.contains(.deleteReply) {
+                                if isOwnedByConnectedAccount(reply) {
+                                    Button("Delete…", role: .destructive) { deleteTarget = reply }.disabled(writing)
+                                } else {
+                                    Label("Delete unavailable: provider ownership is unconfirmed.", systemImage: "lock.fill")
+                                        .font(.caption).foregroundStyle(.secondary)
+                                        .help("This provider response did not confirm that the connected account authored this reply.")
+                                }
                             }
                         }
                     }
@@ -214,6 +220,11 @@ struct SocialAccountActivityView: View {
     private func composeReply(to post: SocialPost) {
         replyTarget = post
         replyText = ""
+    }
+
+    private func isOwnedByConnectedAccount(_ post: SocialPost) -> Bool {
+        if let providerProof = post.isOwnedByAccount { return providerProof }
+        return post.authorID == account.remoteID
     }
 
     private func reload() async {

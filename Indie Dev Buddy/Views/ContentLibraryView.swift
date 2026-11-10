@@ -767,11 +767,15 @@ struct ContentRecordEditor: View {
                         dest.schedule = ContentSchedule(mode: .manual, scheduledDate: date)
                     }
                 } else if dest.status == .scheduled {
+                    let existing = dest.schedule
+                    if existing?.mode == .api && !draft.rescheduleAccountIDs.contains(id) {
+                        // The approved send payload is immutable across ordinary draft edits.
+                        // Only the explicit Reschedule action may replace it.
+                    } else {
                     let selectedDate = draft.destinationScheduleDates[id] ?? Date().addingTimeInterval(3600)
                     let scheduledDate = Date(timeIntervalSince1970: floor(selectedDate.timeIntervalSince1970))
                     let mediaLink = draft.destinationMediaLinks[id] ?? ComposerMediaLink()
                     let media = try scheduledMedia(mediaLink)
-                    let existing = dest.schedule
                     var candidateText = draft.customizedText[id] ?? draft.originalText
                     if draft.includeArticleLink,
                        let sourceID = item.sourceContentId,
@@ -781,17 +785,19 @@ struct ContentRecordEditor: View {
                     }
                     let candidateResolution = draft.mentionResolutions[id]
                     let isBluesky = snapshot.socialAccounts.first(where: { $0.id == id }).flatMap { SocialPlatform.workspacePlatform($0.platform) } == .bluesky
+                    let candidateRecipient = snapshot.socialAccounts.first(where: { $0.id == id })?.providerIdentity
                     let candidateMentions = isBluesky && candidateResolution?.textSnapshot == candidateText
                         ? (candidateResolution?.mentions ?? []) : []
                     let hasSameSchedule = existing?.mode == .api && existing?.scheduledDate == scheduledDate &&
                         existing?.textSnapshot == candidateText && (existing?.media ?? []) == media &&
-                        (existing?.mentions ?? []) == candidateMentions
+                        (existing?.mentions ?? []) == candidateMentions && existing?.recipient == candidateRecipient
                     if !hasSameSchedule {
                         guard scheduledDate > Date() else {
                             throw WorkspaceCommandError("Choose a future date for API delivery.")
                         }
-                        guard existing?.state != .outcomeUnknown,
-                              existing.flatMap({ journalEntries[$0.idempotencyKey]?.state }) != .outcomeUnknown else {
+                        let existingJournalState = existing.flatMap { journalEntries[$0.idempotencyKey]?.state }
+                        guard existing?.state != .outcomeUnknown, existing?.state != .sending,
+                              existingJournalState != .outcomeUnknown, existingJournalState != .sending else {
                             throw WorkspaceCommandError("Check the provider for the previous post before scheduling another delivery.")
                         }
                         guard let account = snapshot.socialAccounts.first(where: { $0.id == id }),
@@ -840,6 +846,7 @@ struct ContentRecordEditor: View {
                             draftID: key, draftCreatedAt: createdAt, idempotencyKey: key)
                         pendingDeliveryIntents.append(intent)
                     }
+                    }
                 } else {
                     dest.schedule = nil
                 }
@@ -865,7 +872,6 @@ struct ContentRecordEditor: View {
                     return schedule.idempotencyKey
                 }
             })
-            try await socialPublishingRuntime.cancel(canceledSchedules)
             item.destinations = destinations
             item.mediaPaths = draft.sharedMediaPaths
             if !destinations.isEmpty && destinations.allSatisfy({ $0.status == .published }) { item.status = .published }
@@ -901,6 +907,12 @@ struct ContentRecordEditor: View {
                     edited = item
                     baselineRecord = item
                 }
+            }
+            do {
+                try await socialPublishingRuntime.cancel(canceledSchedules)
+            } catch {
+                let cancelError = "The workspace was saved, but an older API schedule could not be retired yet. It will not send unless it still matches the saved workspace. Review delivery history before rescheduling."
+                self.error = [self.error, cancelError].compactMap { $0 }.joined(separator: " ")
             }
             conflictMessage = nil
             refresh()

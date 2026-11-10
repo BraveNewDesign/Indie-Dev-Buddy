@@ -183,6 +183,15 @@ actor SocialConnections {
         guard let server = URL(string: intent.recipient.server.absoluteString),
               server == id.server else { throw SocialError.invalidInput }
 
+        do {
+            try await refreshCredentialsIfNeeded(for: id)
+        } catch let error as SocialError {
+            return ContentDeliveryResult(state: .failed, message: Self.refreshFailureMessage(error))
+        } catch {
+            return ContentDeliveryResult(state: .failed,
+                                         message: "The account could not be refreshed. Reconnect it before scheduled delivery.")
+        }
+
         let mentions = (intent.mentions ?? []).map {
             SocialMention(byteStart: $0.byteStart, byteEnd: $0.byteEnd, subjectID: $0.subjectID)
         }
@@ -236,8 +245,11 @@ actor SocialConnections {
         } catch SocialError.publishOutcomeUnknown(_) {
             return ContentDeliveryResult(state: .outcomeUnknown,
                                          message: "The provider may have accepted this post. Check it before retrying.")
-        } catch let error as SocialError where Self.isDefinitePreflight(error) {
+        } catch let error as SocialError where Self.isDefiniteRejection(error) {
             return ContentDeliveryResult(state: .failed, message: error.localizedDescription)
+        } catch {
+            return ContentDeliveryResult(state: .outcomeUnknown,
+                                         message: "Delivery may have reached the provider. Check the account before retrying.")
         }
     }
 
@@ -448,11 +460,41 @@ actor SocialConnections {
         return SocialAccount.ID(platform: platform, server: identity.server, remoteID: identity.remoteID)
     }
 
-    private static func isDefinitePreflight(_ error: SocialError) -> Bool {
+    private func refreshCredentialsIfNeeded(for id: SocialAccount.ID, now: Date = Date()) async throws {
+        guard let credential = try await store.credential(for: id) else {
+            throw SocialError.authenticationRequired
+        }
+        guard let expiresAt = credential.expiresAt, expiresAt <= now.addingTimeInterval(300) else { return }
+
+        let identity = ContentRecipientIdentity(platform: id.platform.rawValue, server: id.server, remoteID: id.remoteID)
+        let currentCapabilities = try await capabilities(for: identity)
+        guard currentCapabilities.contains(.refreshSession) else {
+            throw SocialError.authenticationRequired
+        }
+        _ = try await refresh(identity)
+    }
+
+    private static func refreshFailureMessage(_ error: SocialError) -> String {
+        switch error {
+        case .authenticationRequired, .authorizationFailed, .unsupported(.refreshSession), .permissionDenied:
+            "The account authorization is expired or revoked. Reconnect the account before scheduled delivery."
+        case .rateLimited:
+            "The provider rate limited credential refresh. The post was not sent; review or reconnect before trying again."
+        case .billingRequired:
+            "The provider requires additional API access or credits. The post was not sent."
+        default:
+            "The account could not be refreshed, so the post was not sent. Reconnect the account or review its provider settings."
+        }
+    }
+
+    private static func isDefiniteRejection(_ error: SocialError) -> Bool {
         switch error {
         case .invalidConfiguration, .invalidInput, .unsupported, .authenticationRequired,
-             .authorizationFailed, .permissionDenied, .credentialStorage:
+             .authorizationFailed, .permissionDenied, .credentialStorage, .accountBusy,
+             .rateLimited, .billingRequired, .mediaProcessingFailed, .mediaProcessingTimedOut:
             true
+        case .httpStatus(let status):
+            (400..<500).contains(status) && ![408, 409, 425].contains(status)
         default:
             false
         }

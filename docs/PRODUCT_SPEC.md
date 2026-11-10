@@ -37,7 +37,7 @@ The product is **an app-development and marketing workspace**, **not** a general
 
 ### Out of scope for v1
 
-Social mentions/analytics, automatic website publishing, App Store Connect APIs, Git operations, build/test automation, parsing Xcode projects, AI generation/summarization, custom workflows or schemas, graph canvas, kanban boards, collaboration/multi-user, sync server, rich-text/HTML website builder, subscriptions, advanced image editing, bulk migration from all third-party apps, and mobile counterparts. Social API publishing and account interactions are limited to providers, media types, permissions, and accounts supported by the configured SocialKit integration.
+Incoming social-mentions inboxes and social analytics, automatic website publishing, App Store Connect APIs, Git operations, build/test automation, parsing Xcode projects, AI generation/summarization, custom workflows or schemas, graph canvas, kanban boards, collaboration/multi-user, sync server, rich-text/HTML website builder, subscriptions, advanced image editing, bulk migration from all third-party apps, and mobile counterparts. Outbound Bluesky mentions are supported when resolved to a DID and saved in the API schedule payload; other mention formats remain plain text. Social API publishing and account interactions are limited to providers, media types, permissions, and accounts supported by the configured SocialKit integration.
 
 ## 2. Terminology and relationships
 
@@ -128,7 +128,7 @@ Provide recognizable **SwiftUI-rendered platform-inspired preview cards**, not b
 
 ### Publishing status and copy workflow
 
-Statuses: **Idea / Draft / Ready / Scheduled / Manually Scheduled / Published**. API-scheduled delivery stores a due date per destination and sends that account's effective version through SocialKit. Manual scheduling stores a date only; the user still copies, opens the destination, posts, and marks it Published. Marking a destination as Published optionally captures its final public URL and publication date. The global content list derives status from destination states, including mixed manual/API schedules.
+Statuses: **Idea / Draft / Ready / Scheduled / Manually Scheduled / Published**. API-scheduled delivery stores an immutable per-destination snapshot of the approved text, resolved mentions, recipient identity, media, and due time, then sends that payload through SocialKit. Editing the ordinary draft does not change an already approved send; the user must choose **Reschedule with Current Draft** to replace its payload. Manual scheduling stores a date only; the user still copies, opens the destination, posts, and marks it Published. Marking a destination as Published optionally captures its final public URL and publication date. The global content list derives status from destination states, including mixed manual/API schedules.
 
 The social account scope is Bluesky, Facebook Pages, Threads, Instagram, X, LinkedIn, and Mastodon. Custom platforms and personal Facebook profiles use manual posting. The app offers local scheduling when the connected account, provider capabilities, and media format permit it. See [Social connections and local delivery](SOCIAL_CONNECTIONS.md) for provider setup and media formats. Confidential connections require registered callbacks, a trusted HTTPS exchange service, provider permissions, and signed app configuration. Store provider credentials in the device Keychain and keep provider app secrets on the exchange service. Workspace files carry only the verified remote identity and scheduled payload.
 
