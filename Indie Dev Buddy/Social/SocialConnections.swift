@@ -399,7 +399,13 @@ actor SocialConnections {
 
     /// Imports a user-generated Meta access token without sending it through an exchange service.
     /// The provider adapters verify the token against the selected account before it is stored.
-    func importMetaToken(_ token: OAuthToken, platform: SocialPlatform, pageID: String? = nil) async throws -> SocialAccount {
+    func importMetaToken(
+        _ token: OAuthToken,
+        platform: SocialPlatform,
+        pageID: String? = nil,
+        instagramAccessMethod: InstagramAccessMethod = .instagramLogin,
+        instagramAccountID: String? = nil
+    ) async throws -> SocialAccount {
         let credential: SocialCredential
         switch platform {
         case .facebookPages:
@@ -410,7 +416,9 @@ actor SocialConnections {
         case .threads:
             credential = try await ThreadsAdapter().developmentCredential(token)
         case .instagram:
-            credential = try await InstagramAdapter().developmentCredential(token)
+            credential = try await InstagramAdapter().developmentCredential(
+                token, accessMethod: instagramAccessMethod, instagramAccountID: instagramAccountID
+            )
         default:
             throw SocialError.invalidInput
         }
@@ -721,14 +729,14 @@ actor SocialConnections {
 
     private static func requiresReconnect(_ error: SocialError) -> Bool {
         switch error {
-        case .authenticationRequired, .authorizationFailed, .permissionDenied: true
+        case .authenticationRequired, .authorizationFailed, .permissionDenied, .permissionDeniedAt: true
         default: false
         }
     }
 
     private static func refreshFailureMessage(_ error: SocialError) -> String {
         switch error {
-        case .authenticationRequired, .authorizationFailed, .unsupported(.refreshSession), .permissionDenied:
+        case .authenticationRequired, .authorizationFailed, .unsupported(.refreshSession), .permissionDenied, .permissionDeniedAt:
             "The account authorization is expired or revoked. Reconnect the account before scheduled delivery."
         case .rateLimited:
             "The provider rate limited credential refresh. The post was not sent; review or reconnect before trying again."
@@ -750,7 +758,7 @@ actor SocialConnections {
     private static func isDefiniteRejection(_ error: SocialError) -> Bool {
         switch error {
         case .invalidConfiguration, .invalidInput, .unsupported, .authenticationRequired,
-             .authorizationFailed, .permissionDenied, .credentialStorage, .accountBusy,
+             .authorizationFailed, .permissionDenied, .permissionDeniedAt, .credentialStorage, .accountBusy,
              .rateLimited, .billingRequired, .mediaProcessingFailed, .mediaProcessingTimedOut:
             true
         case .httpStatus(let status):

@@ -17,6 +17,8 @@ struct SocialOAuthConnectionSheet: View {
     @State private var canRetryCredentialSave = false
     @State private var showingMetaAccessHelp = false
     @State private var metaMethod: MetaConnectionMethod = .accessToken
+    @State private var instagramAccessMethod: InstagramAccessMethod = .facebookLogin
+    @State private var instagramAccountID = "17841469532626741"
     @State private var associatedDomains: [String] = []
     @State private var accessToken = ""
     @State private var reportedScopes = ""
@@ -143,32 +145,57 @@ struct SocialOAuthConnectionSheet: View {
 
     private var metaAccessTokenSection: some View {
         Section("Meta access token") {
-            SecureField("User access token", text: $accessToken)
+            if platform == .instagram {
+                Picker("Instagram access method", selection: $instagramAccessMethod) {
+                    Text("Facebook Login (Page token)").tag(InstagramAccessMethod.facebookLogin)
+                    Text("Instagram Login").tag(InstagramAccessMethod.instagramLogin)
+                }
+                .disabled(connectionTask != nil)
+                if instagramAccessMethod == .facebookLogin {
+                    TextField("Instagram professional account ID", text: $instagramAccountID)
+                        .textContentType(.username)
+                }
+            }
+            SecureField(accessTokenLabel, text: $accessToken)
                 .textContentType(.password)
             if platform == .facebookPages {
                 TextField("Facebook Page ID", text: $registration.accountTarget)
             }
             TextField("Verified permissions (optional, comma-separated)", text: $reportedScopes)
-            if platform != .facebookPages {
+            if platform != .facebookPages && !(platform == .instagram && instagramAccessMethod == .facebookLogin) {
                 Toggle("Meta issued this as a long-lived token", isOn: $tokenIsLongLived)
                 Text("Enable this only for a confirmed long-lived token. Indie Dev Buddy waits at least 24 hours after import before trying to renew it.")
                     .font(.caption).foregroundStyle(.secondary)
             }
             Toggle("I know when this token expires", isOn: $tokenHasExpiration)
             if tokenHasExpiration {
-                DatePicker(platform == .facebookPages ? "User grant expires" : "Token expires",
+                DatePicker(tokenExpirationLabel,
                            selection: $tokenExpiration)
             } else {
-                Text(platform == .facebookPages ? "User grant expiry is unknown." : "Token expiry is unknown.")
+                Text(platform == .facebookPages || platform == .instagram && instagramAccessMethod == .facebookLogin
+                     ? "User grant expiry is unknown." : "Token expiry is unknown.")
                     .font(.caption).foregroundStyle(.secondary)
             }
             Text(platform == .facebookPages
                  ? "Use a long-lived Facebook user token if possible. Indie Dev Buddy stores the Page token and the broader user grant in this Mac’s Keychain. It uses the user grant to recover the selected Page token while the grant remains valid. The Page token has its own lifetime."
-                 : "Use a long-lived user token from Meta. Indie Dev Buddy verifies the token with Meta, stores it in this Mac’s Keychain, and publishes directly from this Mac. Leave permissions blank if you are unsure.")
+                 : platform == .instagram && instagramAccessMethod == .facebookLogin
+                    ? "Use a Facebook user access token from Graph API Explorer. Indie Dev Buddy checks the granted permissions, finds the linked Facebook Page by Instagram account ID, and stores the Page token plus source grant in this Mac’s Keychain. Leave permissions blank; Indie Dev Buddy reads them from Meta."
+                    : "Use a long-lived user token from Meta. Indie Dev Buddy verifies the token with Meta, stores it in this Mac’s Keychain, and publishes directly from this Mac. Leave permissions blank if you are unsure.")
                 .font(.caption).foregroundStyle(.secondary)
             Button("How do I get a Meta access token?") { showingMetaAccessHelp = true }
                 .font(.caption)
         }
+    }
+
+    private var accessTokenLabel: String {
+        if platform == .instagram && instagramAccessMethod == .facebookLogin { return "Facebook user access token" }
+        if platform == .instagram { return "Instagram user access token" }
+        return "User access token"
+    }
+
+    private var tokenExpirationLabel: String {
+        platform == .facebookPages || platform == .instagram && instagramAccessMethod == .facebookLogin
+            ? "User grant expires" : "Token expires"
     }
 
     private var actionTitle: String {
@@ -181,6 +208,8 @@ struct SocialOAuthConnectionSheet: View {
         if isMetaPlatform && metaMethod == .accessToken {
             return !accessToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                 && (platform != .facebookPages || !registration.accountTarget.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                && (platform != .instagram || instagramAccessMethod != .facebookLogin
+                    || !instagramAccountID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
         }
         return !isMetaPlatform || metaBrowserReady
     }
@@ -321,6 +350,7 @@ struct SocialOAuthConnectionSheet: View {
                                expiresAt: tokenHasExpiration ? tokenExpiration : nil,
                                grantedScopes: scopes.isEmpty ? nil : scopes,
                                metaLongLivedRefreshEligibleAt: tokenIsLongLived && platform != .facebookPages
+                                   && !(platform == .instagram && instagramAccessMethod == .facebookLogin)
                                    ? Date().addingTimeInterval(24 * 60 * 60) : nil)
         accessToken = ""
         message = nil
@@ -329,7 +359,10 @@ struct SocialOAuthConnectionSheet: View {
             do {
                 let account = try await runtime.connections.importMetaToken(
                     token, platform: platform,
-                    pageID: platform == .facebookPages ? registration.accountTarget : nil
+                    pageID: platform == .facebookPages ? registration.accountTarget : nil,
+                    instagramAccessMethod: instagramAccessMethod,
+                    instagramAccountID: platform == .instagram && instagramAccessMethod == .facebookLogin
+                        ? instagramAccountID.trimmingCharacters(in: .whitespacesAndNewlines) : nil
                 )
                 try Task.checkCancellation()
                 onConnected(account)

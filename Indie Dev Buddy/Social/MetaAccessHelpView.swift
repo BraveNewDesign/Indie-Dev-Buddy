@@ -119,7 +119,7 @@ struct MetaAccessHelpView: View {
         case .facebookPages:
             "This connection publishes text to a Facebook Page you can manage. Personal Facebook profiles are not supported."
         case .instagram:
-            "This connection uses Instagram Login and requires an Instagram Business or Creator account. Personal accounts cannot publish through this API."
+            "This connection uses the legacy Instagram API with Facebook Login: a Facebook user token discovers the linked Page, then the Page token accesses Instagram. The Instagram account must be a professional account linked to a Facebook Page."
         case .threads:
             "This connection uses Threads Login to publish to a Threads profile you control."
         default:
@@ -132,7 +132,7 @@ struct MetaAccessHelpView: View {
         case .facebookPages:
             "Needed: pages_show_list and pages_manage_posts for finding and publishing to a Page; pages_read_engagement and pages_read_user_content for reading Page activity; pages_manage_engagement for the supported comment and engagement actions."
         case .instagram:
-            "Needed: instagram_business_basic to identify the professional profile, instagram_business_content_publish to publish media, and instagram_business_manage_comments for the supported comment actions."
+            "For Instagram API with Facebook Login, grant pages_show_list, pages_read_engagement, instagram_basic, instagram_content_publish, and business_management. Meta may also require ads_read or ads_management for some Business Manager roles. Add instagram_manage_comments for supported comment actions."
         case .threads:
             "Needed: threads_basic to identify the profile, threads_content_publish to publish, threads_read_replies and threads_manage_replies for replies, and threads_delete for supported reply deletion."
         default:
@@ -145,7 +145,7 @@ struct MetaAccessHelpView: View {
         case .facebookPages:
             "For publishing, enable pages_show_list and pages_manage_posts. For reading Page posts and comments, also enable pages_read_engagement and pages_read_user_content. For the supported comment actions, add pages_manage_engagement."
         case .instagram:
-            "Use Instagram Login with an Instagram Business or Creator account. Enable instagram_business_basic and instagram_business_content_publish. Add instagram_business_manage_comments if you also want the supported comment actions."
+            "In the Meta app, open Instagram API → API setup with Facebook login and click Add required content permissions. Ensure the professional Instagram account is linked to the Facebook Page and the token user can manage that Page. In Graph API Explorer, request pages_show_list, pages_read_engagement, instagram_basic, instagram_content_publish, and business_management. If Meta requires it for your Business Manager Page role, also grant ads_read or ads_management. Add instagram_manage_comments for the supported comment actions. This connector uses a Facebook user token and linked Page token; the newer Unified Login setup issues a different system-user token."
         case .threads:
             "Enable threads_basic and threads_content_publish. Add threads_read_replies, threads_manage_replies, and threads_delete only if you also need the corresponding reply actions."
         default:
@@ -158,7 +158,7 @@ struct MetaAccessHelpView: View {
         case .facebookPages:
             "In Graph API Explorer, select your Meta app, choose Get User Access Token, select the permissions above, and generate a token. Use Meta’s long-lived user token guide to extend that token before importing it. Indie Dev Buddy verifies access and saves both the selected Page token and the source user grant in this Mac’s Keychain so it can recover the Page token when the grant is valid."
         case .instagram:
-            "In your app's Instagram API setup with Instagram Login, add your professional account and use Generate access tokens. Use the Instagram Login guide to get a long-lived Instagram User token. Mark it as long-lived during import when Meta confirms that it is. A linked Facebook Page is not required for this login method."
+            "In Graph API Explorer, select the Indie Dev Buddy app, choose User Token, select the permissions above, and click Generate Access Token to create a Facebook user token. Paste that token here and use the Instagram professional account ID 17841469532626741 for @bravenewdesignofficial. Indie Dev Buddy verifies the grant, locates its linked Page, and saves the Page token and source user grant in this Mac’s Keychain. Leave the optional permissions field blank; the app reads granted permissions from Meta."
         case .threads:
             "In your app's Access the Threads API use case, add your account as a Threads tester and accept the invite in Threads. Then open Settings → User Token Generator, generate a token with the publishing permission. Use the Threads long-lived token guide to exchange a short-lived token outside Indie Dev Buddy and import only the resulting access token."
         default:
@@ -171,7 +171,7 @@ struct MetaAccessHelpView: View {
         case .facebookPages:
             return ("Facebook Pages API: get started", URL(string: "https://developers.facebook.com/docs/pages-api/getting-started/")!)
         case .instagram:
-            return ("Instagram API with Instagram Login", URL(string: "https://developers.facebook.com/docs/instagram-platform/instagram-api-with-instagram-login/")!)
+            return ("Instagram API with Facebook Login", URL(string: "https://developers.facebook.com/docs/instagram-platform/instagram-api-with-facebook-login/get-started/")!)
         case .threads:
             return ("Threads API: get started", URL(string: "https://developers.facebook.com/docs/threads/get-started/")!)
         default:

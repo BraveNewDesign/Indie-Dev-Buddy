@@ -9,9 +9,9 @@ For Instagram and Threads, the local journal stores the staged container ID with
 | Provider | Connect using | Local API schedule |
 | --- | --- | --- |
 | Bluesky | Handle, app password, and trusted HTTPS server | Text |
-| Facebook Pages | Meta user access token and Page ID | Text or one hosted HTTPS photo on the authorized Page |
-| Threads | Threads user access token | Text or one explicit public HTTPS image/video |
-| Instagram | Instagram user access token for a professional account | One explicit public HTTPS image/video, with an optional caption |
+| Facebook Pages | Facebook user access token and Page ID | Text or one hosted HTTPS photo on the authorized Page |
+| Threads | Threads user access token for each Threads profile | Text or one explicit public HTTPS image/video |
+| Instagram | Facebook user access token, linked Page, and Instagram professional account ID | One explicit public HTTPS image/video, with an optional caption |
 | X | Public client ID and registered callback with OAuth 2.0 authorization code flow | Text |
 | LinkedIn | Public client ID, registered HTTPS callback, trusted exchange service, and optional organization URN | Text |
 | Mastodon | Trusted HTTPS server and callback. The connection dialog suggests the app’s custom callback. | Text |
@@ -23,9 +23,38 @@ Bluesky @mentions can be resolved from the composer against the connected accoun
 
 ## Meta token lifetime
 
-Import a long-lived user access token whenever possible. For Instagram Login and Threads, mark the token as long-lived only when Meta confirms that it is. The app waits at least 24 hours after import before using the provider’s long-lived-token renewal endpoint. A known expired token requires reconnection. Unknown expiry stays unknown until the provider returns a lifetime. A temporary renewal failure keeps the existing credential and the app backs off before trying again. A short-lived token exchange that needs an app secret takes place outside Indie Dev Buddy or on a configured confidential broker.
+### Facebook Pages
 
-For Facebook, the verified Page token and the broader source user grant are stored separately within the same Keychain credential record. The source user token is retained with its known expiry, and the app can use it to recover only the selected Page while the grant still works. The Page token lifetime remains independent. Unlinking a workspace record leaves both tokens in Keychain for other workspace records that may share the connection.
+1. Open **Social Accounts**, add **Facebook Pages**, and choose **Meta access token**. In [Graph API Explorer](https://developers.facebook.com/tools/explorer/), select the Indie Dev Buddy app, choose **User Token**, and request `pages_show_list`. Add `pages_manage_posts` to publish text. Add `pages_read_engagement` for reading Page posts; add `pages_read_user_content` and `pages_manage_engagement` only for the comment actions you need. Generate a fresh token and approve access to the Page.
+2. Paste the **Facebook user token** and enter the Facebook **Page ID**. Choose **Verify and Save Token**. Indie Dev Buddy reads the authorized Pages, obtains the Page token for the selected ID, checks the Page identity, and saves the Page token and source user grant in Keychain. The Page must grant the user the `CREATE_CONTENT` task for publishing.
+
+### Instagram: Facebook Login (Page token)
+
+This is the route used by the current Indie Dev Buddy connection form. It accepts a Facebook **User Token**, discovers the linked Page, then uses that Page's token for Instagram. Meta calls the route **API setup with Facebook login**; its dashboard marks it as legacy but still supported. The newer **Unified Login** configuration uses a system-user token and is not the token type this connection form accepts.
+
+1. In Meta for Developers, open **Use cases → Instagram API → Customize → API setup with Facebook login**. Click **Add required content permissions**. This adds the Facebook Login Instagram scopes to the app.
+2. Open **Permissions and features** for the Instagram API use case. If your Facebook Page role was granted through Meta Business Manager, click **Add** next to `ads_read` (preferred) or `ads_management`. If a permission is absent from Graph API Explorer, add it here first, then reload Explorer. Meta's [Page permission requirements](https://developers.facebook.com/documentation/instagram-platform/instagram-graph-api/reference/page) explain when an ads permission is needed for Business Manager roles.
+3. In [Graph API Explorer](https://developers.facebook.com/tools/explorer/), select the Indie Dev Buddy app and **User Token**. Request `pages_show_list`, `pages_read_engagement`, `instagram_basic`, and `instagram_content_publish`; add `business_management` if Meta's setup requires it. Add `instagram_manage_comments` only if you need comment actions. Generate a new token after changing permissions and approve access with the Facebook user who can manage the linked Page.
+4. To check the grants, select **GET** as the method and enter only `/me/permissions` in the path field. Do not type `GET` in the path. Confirm the required scopes show `granted`. To check the account/Page link, request `/me/accounts?fields=id,name,tasks,instagram_business_account{id}`. Confirm the returned Page has `CREATE_CONTENT` and that its `instagram_business_account.id` matches the Instagram professional account ID. The Facebook Page ID and Instagram account ID are different.
+5. In Indie Dev Buddy, add **Instagram**, choose **Meta access token → Facebook Login (Page token)**, enter the Instagram professional account ID, and paste the Facebook user token. Leave the optional permissions field blank; the app reads grants from Meta. Click **Verify and Save Token**. It retrieves the linked Page token itself; do not paste a Page token in the Facebook user token field.
+
+For example, the Brave New Design account `@bravenewdesignofficial` has Instagram account ID `17841469532626741`. Use the ID shown by the Page lookup for other accounts. A personal Instagram account cannot use this publishing route; use an Instagram Business or Creator account linked to a Facebook Page.
+
+Meta documents both [Facebook Login setup](https://developers.facebook.com/docs/instagram-platform/instagram-api-with-facebook-login/get-started/) and [the Unified Login setup](https://developers.facebook.com/documentation/instagram-platform/instagram-api-with-unified-login/). Keep the selected login method and token type aligned.
+
+### Threads
+
+1. In Meta for Developers, open an app with **Access the Threads API**. For development access, add each Threads profile as a tester and accept the invite in Threads. Generate a Threads user token for that profile from **Use cases → Access the Threads API → Customize → Settings → User Token Generator**.
+2. Request `threads_basic` to identify/read the profile. Add `threads_content_publish` to publish; add `threads_read_replies`, `threads_manage_replies`, and `threads_delete` only for those reply actions. Generate a fresh token after changing grants.
+3. In Indie Dev Buddy, add **Threads**, choose **Meta access token**, paste that profile's Threads user token, and click **Verify and Save Token**. Repeat for the other Threads profile. Threads does not use a Facebook Page ID or Instagram account ID.
+
+Meta's [Threads app setup](https://developers.facebook.com/docs/threads/get-started/create-an-app/) and [Threads API docs](https://developers.facebook.com/documentation/threads/) describe the tester and token flows.
+
+### Token storage and renewal
+
+The app stores the verified provider credential in the Mac’s Keychain. For Facebook Pages and Instagram Facebook Login, the Page token and source Facebook user grant are saved separately in the same credential record; the app can use the source grant to recover that same Page token while the grant is valid. For Threads and the separate Instagram Login option, mark a token long-lived only when Meta confirms that it is. The app waits at least 24 hours after import before using the provider’s renewal endpoint. A known expired token requires reconnection. Unknown expiry stays unknown unless the provider returns a lifetime. A short-lived token exchange that needs an app secret must happen outside Indie Dev Buddy or on a configured confidential broker. Never paste tokens into chat, source files, or logs.
+
+Unlinking a workspace record leaves its Keychain credential available to other workspace records that may share that connection. To revoke provider access, revoke the app grant in Meta separately.
 
 ## Browser and broker setup
 
@@ -33,7 +62,7 @@ Meta access token import works with the default build and connects directly to M
 
 1. Enable Associated Domains for the signing identifier and provision the target with the capability. Build the app with `INDIE_DEV_BUDDY_ENTITLEMENTS=Indie Dev Buddy OAuth.entitlements` and set `INDIE_DEV_BUDDY_OAUTH_CALLBACK_HOST` to the owner-controlled fully qualified hostname. Pass these as Xcode build setting overrides. The opt-in entitlement file preserves Keychain access and adds `webcredentials:<callback-host>`. Verify the final app's signed entitlements with `codesign -d --entitlements :-`.
 2. Serve `https://<callback-host>/.well-known/apple-app-site-association` as JSON over HTTPS without redirects. Use the signed app's application identifier (including its app ID prefix) as the value in `{"webcredentials":{"apps":["<signed-application-identifier>"]}}`. Verify Apple's association has propagated and test on the signed app. [Apple's Associated Domains setup](https://developer.apple.com/documentation/xcode/supporting-associated-domains), [AuthenticationServices HTTPS callback](https://developer.apple.com/documentation/authenticationservices/aswebauthenticationsession/callback/https(host:path:)).
-3. Register the exact HTTPS callback, including path and any trailing slash, with each Meta login product. Enter that URL and the public app ID in Indie Dev Buddy. Set up separate allowlisted registrations for Facebook Login for Pages, Instagram API with Instagram Login, and the Threads API. The app's custom scheme remains available to providers that accept it. Meta uses the confidential authorization-code flow and does not receive PKCE parameters in this app. The provider references did not establish S256 PKCE support for these exact login products and configured registrations. [Facebook manual login](https://developers.facebook.com/docs/facebook-login/guides/advanced/manual-flow/), [Instagram business login](https://developers.facebook.com/docs/instagram-platform/instagram-api-with-instagram-login/business-login/), [Meta's Threads API collection](https://www.postman.com/meta/threads/documentation/dht3nzz/threads-api).
+3. Register the exact HTTPS callback, including path and any trailing slash, with each Meta login product. Enter that URL and the public app ID in Indie Dev Buddy. Set up separate allowlisted registrations for Facebook Login for Pages, Instagram API with Instagram Login, Instagram API with Facebook Login, and the Threads API. The current Instagram Facebook Login token-import flow is configured separately in the app and does not use this broker. The app's custom scheme remains available to providers that accept it. Meta uses the confidential authorization-code flow and does not receive PKCE parameters in this app. The provider references did not establish S256 PKCE support for these exact login products and configured registrations. [Facebook manual login](https://developers.facebook.com/docs/facebook-login/guides/advanced/manual-flow/), [Instagram business login](https://developers.facebook.com/docs/instagram-platform/instagram-api-with-instagram-login/business-login/), [Instagram Facebook Login setup](https://developers.facebook.com/docs/instagram-platform/instagram-api-with-facebook-login/get-started/), [Meta's Threads API collection](https://www.postman.com/meta/threads/documentation/dht3nzz/threads-api).
 4. Enter the trusted exchange service's HTTPS base URL and a temporary service bearer credential. Only public registration values are saved by the connection dialog. Keep Meta app secrets on the broker, and keep authorization payloads, tokens and service credentials out of access and error logs, including at the callback host.
 
 ### Meta broker contract
