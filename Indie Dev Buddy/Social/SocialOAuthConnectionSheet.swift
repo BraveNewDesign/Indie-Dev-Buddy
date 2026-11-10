@@ -336,8 +336,10 @@ struct SocialOAuthConnectionSheet: View {
                 dismiss()
             } catch is CancellationError {
                 message = "Token verification was canceled."
+            } catch let error as SocialError {
+                message = "Could not connect \(platform.workspaceTitle): \(error.localizedDescription)"
             } catch {
-                message = "Meta did not accept this token for the selected account. Check that it is current, has the needed permissions, and matches the Page or profile."
+                message = "Could not connect \(platform.workspaceTitle). Check the connection details and try again."
             }
         }
     }
