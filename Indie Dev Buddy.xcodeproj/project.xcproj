@@ -10,6 +10,12 @@
       "Base",
     ],
   },
+  "packages": [
+    {
+      "kind": "local",
+      "path": "../../../SocialKit",
+    },
+  ],
   "files": [
     { "kind": "folder", "path": "Indie Dev Buddy", "target-membership": [ "Indie Dev Buddy" ] },
     { "kind": "folder", "path": "Indie Dev BuddyTests", "target-membership": [ "Indie Dev BuddyTests" ] },
@@ -44,6 +50,12 @@
           "kind": "copy",
           "name": "Embed CLI",
           "bundle-base-path": "executables-directory",
+        },
+      ],
+      "package-product-members": [
+        {
+          "product-name": "SocialKit",
+          "build-phase": { "build-phase": "frameworks" },
         },
       ],
       "build-settings": {

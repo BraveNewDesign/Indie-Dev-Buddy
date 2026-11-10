@@ -127,7 +127,57 @@ nonisolated public struct SocialAccountRecord: Codable, Sendable, Identifiable, 
 }
 
 nonisolated public enum ContentKind: String, Codable, Sendable { case blog, social, idea }
-nonisolated public enum ContentStatus: String, Codable, Sendable { case idea, draft, ready, published }
+nonisolated public enum ContentStatus: String, Codable, Sendable {
+    case idea, draft, ready, scheduled, manuallyScheduled, published
+
+    public var displayTitle: String {
+        self == .manuallyScheduled ? "Manually Scheduled" : rawValue.capitalized
+    }
+
+    public init?(displayTitle: String) {
+        let cleaned = displayTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+        if cleaned.caseInsensitiveCompare("Manually Scheduled") == .orderedSame {
+            self = .manuallyScheduled
+            return
+        }
+        let normalized = cleaned.lowercased()
+        self.init(rawValue: normalized)
+    }
+}
+
+nonisolated public enum ContentScheduleMode: String, Codable, Sendable { case api, manual }
+nonisolated public enum ContentDeliveryState: String, Codable, Sendable { case queued, sending, failed, outcomeUnknown }
+
+nonisolated public struct ContentSchedule: Codable, Sendable, Equatable {
+    public var mode: ContentScheduleMode
+    public var scheduledDate: Date
+    public var state: ContentDeliveryState
+    /// Effective account-specific text captured when an API delivery is queued.
+    public var textSnapshot: String?
+    /// Public HTTPS URLs only; local media files are not uploaded automatically.
+    public var mediaURLs: [URL]
+    /// Preserve the same key when reconciling an uncertain provider write.
+    public var idempotencyKey: UUID
+    public var lastError: String?
+
+    public init(
+        mode: ContentScheduleMode,
+        scheduledDate: Date,
+        state: ContentDeliveryState = .queued,
+        textSnapshot: String? = nil,
+        mediaURLs: [URL] = [],
+        idempotencyKey: UUID = UUID(),
+        lastError: String? = nil
+    ) {
+        self.mode = mode
+        self.scheduledDate = scheduledDate
+        self.state = state
+        self.textSnapshot = textSnapshot
+        self.mediaURLs = mediaURLs
+        self.idempotencyKey = idempotencyKey
+        self.lastError = lastError
+    }
+}
 
 nonisolated public struct ContentDestination: Codable, Sendable, Identifiable, Equatable {
     public var id: String { accountId }
@@ -137,8 +187,9 @@ nonisolated public struct ContentDestination: Codable, Sendable, Identifiable, E
     public var publishedURL: URL?
     public var publishedDate: Date?
     public var mediaPaths: [String]?
-    public init(accountId: String, bodyPath: String? = nil, status: ContentStatus = .draft, publishedURL: URL? = nil, publishedDate: Date? = nil, mediaPaths: [String]? = nil) {
-        self.accountId = accountId; self.bodyPath = bodyPath; self.status = status; self.publishedURL = publishedURL; self.publishedDate = publishedDate; self.mediaPaths = mediaPaths
+    public var schedule: ContentSchedule?
+    public init(accountId: String, bodyPath: String? = nil, status: ContentStatus = .draft, publishedURL: URL? = nil, publishedDate: Date? = nil, mediaPaths: [String]? = nil, schedule: ContentSchedule? = nil) {
+        self.accountId = accountId; self.bodyPath = bodyPath; self.status = status; self.publishedURL = publishedURL; self.publishedDate = publishedDate; self.mediaPaths = mediaPaths; self.schedule = schedule
     }
 }
 
