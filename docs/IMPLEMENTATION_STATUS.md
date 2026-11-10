@@ -12,7 +12,9 @@ The current source now includes the SocialKit connection, account activity, Blue
 
 This update reflects the checked-in source and documentation as of this date; no build, automated test, or live provider check was run for this documentation pass. The acceptance evidence below is dated 2026-11-06 and remains historical rather than a verification of these later social workflows.
 
-**Current scope adjustment:** App release/version tracking is disabled in the UI, including version summaries, release views, and content-to-release links. Existing release files and legacy content references are preserved but are not loaded into the interface.
+**Current scope adjustment:** Local App release/version tracking remains disabled in the UI, including persistent version summaries, release views, and content-to-release links. The optional App Store tab shows current remote ASC status and release notes on demand; it is not a local release tracker. Existing release files and legacy content references are preserved but are not loaded into the interface.
+
+**App Store Connect CLI extension:** The App detail includes an optional App Store tab. Users can locate `asc`, link an ASC app record, preview and selectively apply its name, bundle ID, and listing URL, read release/review status and recent submission history, pull localized What's New text into an editable copyable draft, and generate a local release-note draft from a user-specified git reference. ASC operations are read-only; no metadata upload, review response, or submission is exposed. This is separate from the disabled local release tracker. The integration uses the user's installed CLI and existing authentication, and stores only the ASC app ID in the workspace. Debug and Release builds passed on 2026-11-10; live ASC interaction and UI behavior have not been exercised.
 
 ## Acceptance review — 2026-11-06
 

@@ -89,9 +89,11 @@ nonisolated public struct AppRecord: Codable, Sendable, Identifiable, Equatable 
     public var repositoryURL: URL?
     public var appStoreURL: URL?
     public var testFlightURL: URL?
+    /// The linked App Store Connect app ID. App Store Connect data is fetched on demand via `asc`.
+    public var appStoreConnectAppId: String?
     public var websiteLinks: [AppWebsiteLink]
-    public init(id: String = UUID().uuidString.lowercased(), name: String, description: String? = nil, bundleIDs: [String]? = nil, developmentStatus: AppDevelopmentStatus? = nil, iconPath: String? = nil, developerIdentityId: String? = nil, platforms: [String] = [], projectPath: String? = nil, repositoryURL: URL? = nil, appStoreURL: URL? = nil, testFlightURL: URL? = nil, websiteLinks: [AppWebsiteLink] = []) {
-        self.id = id; self.name = name; self.description = description; self.bundleIDs = bundleIDs; self.developmentStatus = developmentStatus; self.iconPath = iconPath; self.developerIdentityId = developerIdentityId; self.platforms = platforms; self.projectPath = projectPath; self.repositoryURL = repositoryURL; self.appStoreURL = appStoreURL; self.testFlightURL = testFlightURL; self.websiteLinks = websiteLinks
+    public init(id: String = UUID().uuidString.lowercased(), name: String, description: String? = nil, bundleIDs: [String]? = nil, developmentStatus: AppDevelopmentStatus? = nil, iconPath: String? = nil, developerIdentityId: String? = nil, platforms: [String] = [], projectPath: String? = nil, repositoryURL: URL? = nil, appStoreURL: URL? = nil, testFlightURL: URL? = nil, appStoreConnectAppId: String? = nil, websiteLinks: [AppWebsiteLink] = []) {
+        self.id = id; self.name = name; self.description = description; self.bundleIDs = bundleIDs; self.developmentStatus = developmentStatus; self.iconPath = iconPath; self.developerIdentityId = developerIdentityId; self.platforms = platforms; self.projectPath = projectPath; self.repositoryURL = repositoryURL; self.appStoreURL = appStoreURL; self.testFlightURL = testFlightURL; self.appStoreConnectAppId = appStoreConnectAppId; self.websiteLinks = websiteLinks
     }
 }
 

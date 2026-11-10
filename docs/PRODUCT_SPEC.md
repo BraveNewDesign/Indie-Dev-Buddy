@@ -6,7 +6,7 @@
 
 > **Product promise:** Your apps, websites, social accounts, files, and marketing content in one understandable, local-first workspace.
 
-**Deferred feature:** App release/version tracking is currently disabled in the interface. The app does not show version lists, latest versions, release views, or content-to-release links. Existing release files and legacy `releaseId` fields remain untouched for compatibility.
+**App Store Connect scope:** Apps may optionally link to an App Store Connect record through the user's installed `asc` CLI. The app can read listing identity, review/release status, submission history, and localized What's New text; workspace field changes require an explicit preview and apply action. Indie Dev Buddy does not upload metadata or submit releases. This integration does not restore the deferred release/version tracker or content-to-release links.
 
 ### Existing Xcode project and code locations
 
@@ -37,7 +37,14 @@ The product is **an app-development and marketing workspace**, **not** a general
 
 ### Out of scope for v1
 
-Incoming social-mentions inboxes and social analytics, automatic website publishing, App Store Connect APIs, Git operations, build/test automation, parsing Xcode projects, AI generation/summarization, custom workflows or schemas, graph canvas, kanban boards, collaboration/multi-user, sync server, rich-text/HTML website builder, subscriptions, advanced image editing, bulk migration from all third-party apps, and mobile counterparts. Outbound Bluesky mentions are supported when resolved to a DID and saved in the API schedule payload; other mention formats remain plain text. Social API publishing and account interactions are limited to providers, media types, permissions, and accounts supported by the configured SocialKit integration.
+Incoming social-mentions inboxes and social analytics, automatic website publishing, direct App Store Connect API integration, App Store metadata writes and submissions, full release/version tracking, Git operations outside drafting release notes from a known range, build/test automation, parsing Xcode projects, AI generation/summarization, custom workflows or schemas, graph canvas, kanban boards, collaboration/multi-user, sync server, rich-text/HTML website builder, subscriptions, advanced image editing, bulk migration from all third-party apps, and mobile counterparts. Outbound Bluesky mentions are supported when resolved to a DID and saved in the API schedule payload; other mention formats remain plain text. Social API publishing and account interactions are limited to providers, media types, permissions, and accounts supported by the configured SocialKit integration.
+
+### Optional App Store Connect CLI
+
+- On a saved app's **App Store** page, users can select a matching ASC record, link it by stable ASC app ID, and preview importing the app name, bundle ID, and listing URL. Only checked fields are applied to the local workspace record.
+- The user must have `asc` installed and authenticated. Indie Dev Buddy invokes native `asc` read commands and does not read, store, or transmit credentials. Remote reads include the release dashboard, current App Review state/history, and localized What's New text.
+- What's New is loaded into an editable local draft for reuse or copying. It is never uploaded by this flow. Review state and release notes are shown as App Store Connect data, separate from the workspace's manually chosen development status and app description.
+- If the CLI is unavailable or authentication fails, explain the issue and preserve the user's existing app record.
 
 ## 2. Terminology and relationships
 

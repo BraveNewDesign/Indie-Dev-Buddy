@@ -742,6 +742,7 @@ private struct AppRecordEditor: View {
             Picker("App detail", selection: $detailTab) {
                 Text("Overview").tag("Overview")
                 Text("Marketing").tag("Marketing")
+                Text("App Store").tag("App Store")
                 Text("Files").tag("Files")
             }
             .pickerStyle(.segmented)
@@ -776,6 +777,29 @@ private struct AppRecordEditor: View {
                         .opacity(detailTab == "Marketing" ? 1 : 0)
                         .allowsHitTesting(detailTab == "Marketing")
                         .accessibilityHidden(detailTab != "Marketing")
+                }
+                if let record {
+                    AppStoreConnectView(app: record, onConnect: { appStoreConnectID in
+                        var updated = draftRecord
+                        updated.appStoreConnectAppId = appStoreConnectID.isEmpty ? nil : appStoreConnectID
+                        Task { await save(updated) }
+                    }, onImport: { remoteApp, selection in
+                        var updated = draftRecord
+                        updated.appStoreConnectAppId = remoteApp.id
+                        if selection.name { updated.name = remoteApp.name }
+                        if selection.bundleID, !remoteApp.bundleID.isEmpty { updated.bundleIDs = [remoteApp.bundleID] }
+                        if selection.listingURL { updated.appStoreURL = remoteApp.listingURL }
+                        Task { await save(updated) }
+                    })
+                    .opacity(detailTab == "App Store" ? 1 : 0)
+                    .allowsHitTesting(detailTab == "App Store")
+                    .accessibilityHidden(detailTab != "App Store")
+                } else {
+                    ContentUnavailableView("Save App First", systemImage: "app.badge", description: Text("Save the app overview before linking App Store Connect."))
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .opacity(detailTab == "App Store" ? 1 : 0)
+                        .allowsHitTesting(detailTab == "App Store")
+                        .accessibilityHidden(detailTab != "App Store")
                 }
                 appFilesPanel
                     .opacity(detailTab == "Files" ? 1 : 0)
@@ -1104,7 +1128,7 @@ private struct AppRecordEditor: View {
         if iconPath != nil { Task { await loadAppIconPreview() } }
         resolveProjectLocation()
     }
-    private func save() async {
+    private func save(_ requestedRecord: AppRecord? = nil) async {
         saving = true
         defer { saving = false }
         do {
@@ -1118,7 +1142,7 @@ private struct AppRecordEditor: View {
                 )
                 pendingIconWrittenPath = destination
             }
-            if await onSave(draftRecord) {
+            if await onSave(requestedRecord ?? draftRecord) {
                 pendingIconData = nil
                 pendingIconRevision = nil
                 pendingIconWrittenPath = nil
@@ -1208,7 +1232,9 @@ private struct AppRecordEditor: View {
             platforms: platforms.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) },
             projectPath: projectPath.isEmpty ? nil : projectPath,
             repositoryURL: optionalWebURL(repositoryURL), appStoreURL: optionalWebURL(appStoreURL),
-            testFlightURL: optionalWebURL(testFlightURL), websiteLinks: links
+            testFlightURL: optionalWebURL(testFlightURL),
+            appStoreConnectAppId: record?.appStoreConnectAppId,
+            websiteLinks: links
         )
     }
 
