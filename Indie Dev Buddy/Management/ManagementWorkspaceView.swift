@@ -1,6 +1,7 @@
 import SwiftUI
 import AppKit
 import UniformTypeIdentifiers
+import SocialKit
 
 enum ManagementRecordType: Equatable {
     case app, identity, website, socialAccount
@@ -1468,6 +1469,7 @@ private struct WebsiteRecordEditor: View {
 }
 
 private struct SocialAccountRecordEditor: View {
+    @Environment(SocialPublishingRuntime.self) private var socialPublishingRuntime
     let record: SocialAccountRecord?
     let owners: [OwnerChoice]
     let identities: [IdentityRecord]
@@ -1486,9 +1488,15 @@ private struct SocialAccountRecordEditor: View {
     @State private var identityAvatarPreview: NSImage?
     @State private var avatarError: String?
     @State private var showingAvatarPicker = false
+    @State private var showingBlueskyConnect = false
+    @State private var showingOAuthConnect = false
+    @State private var showingAccountActivity = false
+    @State private var providerIdentity: ContentRecipientIdentity?
+    @State private var connectedAccount: SocialAccount?
     @State private var saving = false
-    private let platforms = ["Threads", "Instagram", "X", "Facebook", "LinkedIn", "Other"]
+    private let platforms = ["Bluesky", "Threads", "Instagram", "X", "Facebook", "LinkedIn", "Mastodon", "Other"]
     private var platformValue: String { platform == "Other" ? customPlatform : platform }
+    private var apiPlatform: SocialPlatform? { SocialPlatform.workspacePlatform(platformValue) }
     var body: some View {
         Form {
             Section("Social account") {
@@ -1504,6 +1512,7 @@ private struct SocialAccountRecordEditor: View {
                 Text("A new post can use this account when it is enabled, has an owner, and has a platform plus a handle or profile URL.")
                     .font(.caption).foregroundStyle(.secondary)
             }
+            connectionSection
             Section("Avatar") {
                 HStack(spacing: 14) {
                     Group {
@@ -1542,7 +1551,32 @@ private struct SocialAccountRecordEditor: View {
         }
         .formStyle(.grouped)
         .navigationTitle(record == nil ? "New Social Account" : platformValue)
+        .sheet(isPresented: $showingBlueskyConnect) {
+            BlueskyConnectionSheet(initialHandle: handle, onConnected: applyConnection)
+        }
+        .sheet(isPresented: $showingOAuthConnect) {
+            if let apiPlatform {
+                SocialOAuthConnectionSheet(platform: apiPlatform, onConnected: applyConnection)
+            }
+        }
+        .sheet(isPresented: $showingAccountActivity) {
+            if let providerIdentity, let connectedAccount {
+                SocialAccountActivityView(identity: providerIdentity, account: connectedAccount)
+            }
+        }
         .onAppear(perform: load)
+        .task(id: providerIdentity) {
+            connectedAccount = nil
+            guard let identity = providerIdentity else { return }
+            let accounts = try? await socialPublishingRuntime.connections.accounts()
+            guard !Task.isCancelled, providerIdentity == identity else { return }
+            connectedAccount = accounts?.first {
+                $0.platform.rawValue == identity.platform && $0.server == identity.server && $0.remoteID == identity.remoteID
+            }
+        }
+        .onChange(of: platformValue) { _, newValue in
+            if SocialPlatform.workspacePlatform(newValue)?.rawValue != providerIdentity?.platform { providerIdentity = nil }
+        }
         .onChange(of: dirtySignature) { _, _ in onDirtyChange(isDirty) }
         .onChange(of: ownerID) { _, _ in Task { await loadIdentityAvatarPreview() } }
         .onChange(of: selectedIdentity?.photoPath) { _, _ in Task { await loadIdentityAvatarPreview() } }
@@ -1555,6 +1589,43 @@ private struct SocialAccountRecordEditor: View {
             }
         }
     }
+
+    @ViewBuilder
+    private var connectionSection: some View {
+        Section("API connection") {
+            if let apiPlatform {
+                if let connectedAccount {
+                    Label("Connected as \(connectedAccount.username)", systemImage: "checkmark.circle.fill")
+                        .foregroundStyle(.green)
+                    Button("View Account Activity…") { showingAccountActivity = true }
+                } else if providerIdentity != nil {
+                    Label("Connection unavailable on this Mac", systemImage: "exclamationmark.circle")
+                } else {
+                    Label("API connection not configured", systemImage: "lock.shield")
+                }
+                if apiPlatform.requiresBroker {
+                    Text("\(apiPlatform.workspaceTitle) requires provider registration and a trusted HTTPS exchange service.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                Button(providerIdentity == nil ? "Connect \(apiPlatform.workspaceTitle)…" : "Reconnect \(apiPlatform.workspaceTitle)…") {
+                    if apiPlatform == .bluesky { showingBlueskyConnect = true }
+                    else { showingOAuthConnect = true }
+                }
+                if providerIdentity != nil {
+                    Button("Unlink from This Workspace Account", role: .destructive) { providerIdentity = nil }
+                    Text("Save the workspace account to apply the change.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+            } else {
+                Label("Manual posting", systemImage: "hand.tap")
+            }
+        }
+    }
+
+    private func applyConnection(_ identity: ContentRecipientIdentity, _ username: String) {
+        providerIdentity = identity
+        handle = username
+    }
     private func load() {
         guard let record else {
             ownerID = owners.first?.id ?? ""
@@ -1566,6 +1637,7 @@ private struct SocialAccountRecordEditor: View {
         customPlatform = platforms.contains(record.platform) ? "" : record.platform
         ownerID = record.owner.map { "\($0.type.rawValue):\($0.id)" } ?? ""
         handle = record.handle ?? ""; profileURL = record.profileURL?.absoluteString ?? ""; enabled = record.enabled
+        providerIdentity = record.providerIdentity
         avatarPath = record.avatarPath
         if let avatarPath { Task { await loadAvatarPreview(relativePath: avatarPath) } }
         Task { await loadIdentityAvatarPreview() }
@@ -1647,16 +1719,74 @@ private struct SocialAccountRecordEditor: View {
     private func save() async {
         guard let choice = owners.first(where: { $0.id == ownerID }) else { return }
         saving = true; defer { saving = false }
-        if await onSave(SocialAccountRecord(id: record?.id ?? draftID, platform: platformValue.trimmingCharacters(in: .whitespacesAndNewlines), owner: choice.owner, handle: handle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : handle.trimmingCharacters(in: .whitespacesAndNewlines), profileURL: optionalWebURL(profileURL), avatarPath: avatarPath, enabled: enabled)) { onDirtyChange(false) }
+        if await onSave(SocialAccountRecord(id: record?.id ?? draftID, platform: platformValue.trimmingCharacters(in: .whitespacesAndNewlines), owner: choice.owner, handle: handle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : handle.trimmingCharacters(in: .whitespacesAndNewlines), profileURL: optionalWebURL(profileURL), avatarPath: avatarPath, providerIdentity: providerIdentity, enabled: enabled)) { onDirtyChange(false) }
     }
-    private var dirtySignature: String { "\(platform)|\(customPlatform)|\(ownerID)|\(handle)|\(profileURL)|\(enabled)|\(avatarPath ?? "")" }
+    private var dirtySignature: String { "\(platform)|\(customPlatform)|\(ownerID)|\(handle)|\(profileURL)|\(enabled)|\(avatarPath ?? "")|\(providerIdentity?.platform ?? "")|\(providerIdentity?.server.absoluteString ?? "")|\(providerIdentity?.remoteID ?? "")" }
     private var isDirty: Bool {
         if let record {
             let savedPlatform = platforms.contains(record.platform) ? record.platform : "Other"
             let savedCustomPlatform = platforms.contains(record.platform) ? "" : record.platform
-            return platform != savedPlatform || customPlatform != savedCustomPlatform || ownerID != (record.owner.map { "\($0.type.rawValue):\($0.id)" } ?? "") || handle != (record.handle ?? "") || profileURL != (record.profileURL?.absoluteString ?? "") || enabled != record.enabled || avatarPath != record.avatarPath
+            return platform != savedPlatform || customPlatform != savedCustomPlatform || ownerID != (record.owner.map { "\($0.type.rawValue):\($0.id)" } ?? "") || handle != (record.handle ?? "") || profileURL != (record.profileURL?.absoluteString ?? "") || enabled != record.enabled || avatarPath != record.avatarPath || providerIdentity != record.providerIdentity
         }
         return platform != "Threads" || !customPlatform.isEmpty || ownerID != (owners.first?.id ?? "") || !handle.isEmpty || !profileURL.isEmpty || !enabled || avatarPath != nil
+    }
+}
+
+private struct BlueskyConnectionSheet: View {
+    @Environment(SocialPublishingRuntime.self) private var socialPublishingRuntime
+    @Environment(\.dismiss) private var dismiss
+    let initialHandle: String
+    let onConnected: (ContentRecipientIdentity, String) -> Void
+    @State private var handle = ""
+    @State private var appPassword = ""
+    @State private var server = "https://bsky.social"
+    @State private var isConnecting = false
+    @State private var errorMessage: String?
+
+    var body: some View {
+        Form {
+            TextField("Handle", text: $handle, prompt: Text("name.bsky.social"))
+            SecureField("App password", text: $appPassword)
+            TextField("PDS server", text: $server)
+            Text("Create an app password in Bluesky settings. The resulting connection credential is stored in Keychain.")
+                .font(.caption).foregroundStyle(.secondary)
+            if let errorMessage { Text(errorMessage).foregroundStyle(.red).textSelection(.enabled) }
+            HStack {
+                Button("Cancel") { appPassword = ""; dismiss() }.keyboardShortcut(.cancelAction)
+                Spacer()
+                Button(isConnecting ? "Connecting…" : "Connect") { Task { await connect() } }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(isConnecting || handle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || appPassword.isEmpty)
+            }
+        }
+        .padding(20)
+        .frame(width: 430)
+        .onAppear { handle = initialHandle }
+    }
+
+    private func connect() async {
+        guard let serverURL = URL(string: server.trimmingCharacters(in: .whitespacesAndNewlines)),
+              serverURL.scheme?.lowercased() == "https", serverURL.host != nil else {
+            errorMessage = "Enter a trusted HTTPS PDS server URL."
+            return
+        }
+        isConnecting = true
+        defer { isConnecting = false }
+        do {
+            let account = try await socialPublishingRuntime.connections.connectBluesky(
+                identifier: handle.trimmingCharacters(in: .whitespacesAndNewlines),
+                appPassword: appPassword,
+                server: serverURL
+            )
+            appPassword = ""
+            onConnected(ContentRecipientIdentity(platform: account.platform.rawValue,
+                                                 server: account.server,
+                                                 remoteID: account.remoteID), account.username)
+            dismiss()
+        } catch {
+            appPassword = ""
+            errorMessage = "Bluesky connection failed: \(error.localizedDescription)"
+        }
     }
 }
 

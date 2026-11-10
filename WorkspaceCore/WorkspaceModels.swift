@@ -116,9 +116,11 @@ nonisolated public struct SocialAccountRecord: Codable, Sendable, Identifiable, 
     public var handle: String?
     public var profileURL: URL?
     public var avatarPath: String?
+    /// Verified SocialKit identity bound during account connection. Editable profile metadata is not an API recipient key.
+    public var providerIdentity: ContentRecipientIdentity?
     public var enabled: Bool
-    public init(id: String = UUID().uuidString.lowercased(), platform: String, owner: RecordOwner? = nil, handle: String? = nil, profileURL: URL? = nil, avatarPath: String? = nil, enabled: Bool = true) {
-        self.id = id; self.platform = platform; self.owner = owner; self.handle = handle; self.profileURL = profileURL; self.avatarPath = avatarPath; self.enabled = enabled
+    public init(id: String = UUID().uuidString.lowercased(), platform: String, owner: RecordOwner? = nil, handle: String? = nil, profileURL: URL? = nil, avatarPath: String? = nil, providerIdentity: ContentRecipientIdentity? = nil, enabled: Bool = true) {
+        self.id = id; self.platform = platform; self.owner = owner; self.handle = handle; self.profileURL = profileURL; self.avatarPath = avatarPath; self.providerIdentity = providerIdentity; self.enabled = enabled
     }
     public var isEligibleDestination: Bool {
         enabled && owner != nil && !platform.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
@@ -146,7 +148,117 @@ nonisolated public enum ContentStatus: String, Codable, Sendable {
 }
 
 nonisolated public enum ContentScheduleMode: String, Codable, Sendable { case api, manual }
-nonisolated public enum ContentDeliveryState: String, Codable, Sendable { case queued, sending, failed, outcomeUnknown }
+nonisolated public enum ContentDeliveryState: String, Codable, Sendable {
+    case queued, sending, failed, outcomeUnknown, overdue, delivered, canceled
+
+    public var displayTitle: String {
+        switch self {
+        case .queued: "Queued"
+        case .sending: "Sending"
+        case .failed: "Failed"
+        case .outcomeUnknown: "Needs Review"
+        case .overdue: "Overdue"
+        case .delivered: "Sent"
+        case .canceled: "Canceled"
+        }
+    }
+}
+
+nonisolated public struct ContentRecipientIdentity: Codable, Sendable, Equatable, Hashable {
+    public var platform: String
+    public var server: URL
+    public var remoteID: String
+
+    public init(platform: String, server: URL, remoteID: String) {
+        self.platform = platform
+        self.server = server
+        self.remoteID = remoteID
+    }
+}
+
+nonisolated public enum ContentScheduledMediaKind: String, Codable, Sendable { case image, video }
+
+nonisolated public struct ContentScheduledMedia: Codable, Sendable, Equatable {
+    public var kind: ContentScheduledMediaKind
+    public var publicURL: URL
+
+    public init(kind: ContentScheduledMediaKind, publicURL: URL) {
+        self.kind = kind
+        self.publicURL = publicURL
+    }
+}
+
+/// Immutable, provider-neutral payload captured when a person explicitly schedules delivery.
+nonisolated public struct ContentDeliveryIntent: Codable, Sendable, Equatable, Identifiable {
+    public var id: UUID
+    public var workspaceID: String
+    public var workspaceRootPath: String
+    public var contentID: String
+    public var destinationID: String
+    public var recipient: ContentRecipientIdentity
+    public var scheduledDate: Date
+    public var draftID: UUID
+    public var draftCreatedAt: Date
+    public var text: String
+    public var media: [ContentScheduledMedia]
+
+    public init(id: UUID = UUID(), workspaceID: String, workspaceRootPath: String,
+                contentID: String, destinationID: String, recipient: ContentRecipientIdentity,
+                scheduledDate: Date, draftID: UUID, draftCreatedAt: Date, text: String,
+                media: [ContentScheduledMedia] = []) {
+        self.id = id
+        self.workspaceID = workspaceID
+        self.workspaceRootPath = workspaceRootPath
+        self.contentID = contentID
+        self.destinationID = destinationID
+        self.recipient = recipient
+        self.scheduledDate = scheduledDate
+        self.draftID = draftID
+        self.draftCreatedAt = draftCreatedAt
+        self.text = text
+        self.media = media
+    }
+}
+
+nonisolated public struct ContentDeliveryAttempt: Codable, Sendable, Equatable, Identifiable {
+    public var id: UUID
+    public var intentID: UUID
+    public var state: ContentDeliveryState
+    public var startedAt: Date
+    public var finishedAt: Date?
+    public var providerPostID: String?
+    public var publishedURL: URL?
+    /// Sanitized user-facing detail only. Never store raw provider bodies or credentials.
+    public var message: String?
+
+    public init(id: UUID = UUID(), intentID: UUID, state: ContentDeliveryState,
+                startedAt: Date, finishedAt: Date? = nil, providerPostID: String? = nil,
+                publishedURL: URL? = nil, message: String? = nil) {
+        self.id = id
+        self.intentID = intentID
+        self.state = state
+        self.startedAt = startedAt
+        self.finishedAt = finishedAt
+        self.providerPostID = providerPostID
+        self.publishedURL = publishedURL
+        self.message = message
+    }
+}
+
+nonisolated public struct ContentDeliveryResult: Codable, Sendable, Equatable {
+    public var state: ContentDeliveryState
+    public var providerPostID: String?
+    public var publishedURL: URL?
+    public var message: String?
+
+    public init(state: ContentDeliveryState, providerPostID: String? = nil,
+                publishedURL: URL? = nil, message: String? = nil) {
+        self.state = state
+        self.providerPostID = providerPostID
+        self.publishedURL = publishedURL
+        self.message = message
+    }
+}
 
 nonisolated public struct ContentSchedule: Codable, Sendable, Equatable {
     public var mode: ContentScheduleMode
@@ -156,6 +268,13 @@ nonisolated public struct ContentSchedule: Codable, Sendable, Equatable {
     public var textSnapshot: String?
     /// Public HTTPS URLs only; local media files are not uploaded automatically.
     public var mediaURLs: [URL]
+    /// Media type is captured so provider requirements can be checked at both schedule and send time.
+    public var media: [ContentScheduledMedia]?
+    /// Identity returned by SocialKit at connection time, independent of editable workspace handle data.
+    public var recipient: ContentRecipientIdentity?
+    /// Stable source draft metadata required by providers that derive record IDs from creation time.
+    public var draftID: UUID?
+    public var draftCreatedAt: Date?
     /// Preserve the same key when reconciling an uncertain provider write.
     public var idempotencyKey: UUID
     public var lastError: String?
@@ -166,6 +285,10 @@ nonisolated public struct ContentSchedule: Codable, Sendable, Equatable {
         state: ContentDeliveryState = .queued,
         textSnapshot: String? = nil,
         mediaURLs: [URL] = [],
+        media: [ContentScheduledMedia]? = nil,
+        recipient: ContentRecipientIdentity? = nil,
+        draftID: UUID? = nil,
+        draftCreatedAt: Date? = nil,
         idempotencyKey: UUID = UUID(),
         lastError: String? = nil
     ) {
@@ -174,6 +297,10 @@ nonisolated public struct ContentSchedule: Codable, Sendable, Equatable {
         self.state = state
         self.textSnapshot = textSnapshot
         self.mediaURLs = mediaURLs
+        self.media = media
+        self.recipient = recipient
+        self.draftID = draftID
+        self.draftCreatedAt = draftCreatedAt
         self.idempotencyKey = idempotencyKey
         self.lastError = lastError
     }
@@ -188,8 +315,9 @@ nonisolated public struct ContentDestination: Codable, Sendable, Identifiable, E
     public var publishedDate: Date?
     public var mediaPaths: [String]?
     public var schedule: ContentSchedule?
-    public init(accountId: String, bodyPath: String? = nil, status: ContentStatus = .draft, publishedURL: URL? = nil, publishedDate: Date? = nil, mediaPaths: [String]? = nil, schedule: ContentSchedule? = nil) {
-        self.accountId = accountId; self.bodyPath = bodyPath; self.status = status; self.publishedURL = publishedURL; self.publishedDate = publishedDate; self.mediaPaths = mediaPaths; self.schedule = schedule
+    public var deliveryHistory: [ContentDeliveryAttempt]?
+    public init(accountId: String, bodyPath: String? = nil, status: ContentStatus = .draft, publishedURL: URL? = nil, publishedDate: Date? = nil, mediaPaths: [String]? = nil, schedule: ContentSchedule? = nil, deliveryHistory: [ContentDeliveryAttempt]? = nil) {
+        self.accountId = accountId; self.bodyPath = bodyPath; self.status = status; self.publishedURL = publishedURL; self.publishedDate = publishedDate; self.mediaPaths = mediaPaths; self.schedule = schedule; self.deliveryHistory = deliveryHistory
     }
 }
 

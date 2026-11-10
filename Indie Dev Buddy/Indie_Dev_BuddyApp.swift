@@ -9,9 +9,13 @@ import SwiftUI
 
 @main
 struct Indie_Dev_BuddyApp: App {
+    @State private var socialPublishingRuntime = SocialPublishingRuntime()
+
     var body: some Scene {
         WindowGroup {
             ContentView()
+                .environment(socialPublishingRuntime)
+                .task { socialPublishingRuntime.start() }
         }
         .commands {
             CommandGroup(after: .appInfo) {
