@@ -188,6 +188,18 @@ nonisolated public struct ContentScheduledMedia: Codable, Sendable, Equatable {
     }
 }
 
+nonisolated public struct ContentScheduledMention: Codable, Sendable, Equatable {
+    public var byteStart: Int
+    public var byteEnd: Int
+    public var subjectID: String
+
+    public init(byteStart: Int, byteEnd: Int, subjectID: String) {
+        self.byteStart = byteStart
+        self.byteEnd = byteEnd
+        self.subjectID = subjectID
+    }
+}
+
 /// Immutable, provider-neutral payload captured when a person explicitly schedules delivery.
 nonisolated public struct ContentDeliveryIntent: Codable, Sendable, Equatable, Identifiable {
     public var id: UUID
@@ -201,11 +213,12 @@ nonisolated public struct ContentDeliveryIntent: Codable, Sendable, Equatable, I
     public var draftCreatedAt: Date
     public var text: String
     public var media: [ContentScheduledMedia]
+    public var mentions: [ContentScheduledMention]?
 
     public init(id: UUID = UUID(), workspaceID: String, workspaceRootPath: String,
                 contentID: String, destinationID: String, recipient: ContentRecipientIdentity,
                 scheduledDate: Date, draftID: UUID, draftCreatedAt: Date, text: String,
-                media: [ContentScheduledMedia] = []) {
+                media: [ContentScheduledMedia] = [], mentions: [ContentScheduledMention]? = nil) {
         self.id = id
         self.workspaceID = workspaceID
         self.workspaceRootPath = workspaceRootPath
@@ -217,6 +230,7 @@ nonisolated public struct ContentDeliveryIntent: Codable, Sendable, Equatable, I
         self.draftCreatedAt = draftCreatedAt
         self.text = text
         self.media = media
+        self.mentions = mentions
     }
 }
 
@@ -270,6 +284,8 @@ nonisolated public struct ContentSchedule: Codable, Sendable, Equatable {
     public var mediaURLs: [URL]
     /// Media type is captured so provider requirements can be checked at both schedule and send time.
     public var media: [ContentScheduledMedia]?
+    /// Bluesky DID mentions frozen to byte ranges in the scheduled text.
+    public var mentions: [ContentScheduledMention]?
     /// Identity returned by SocialKit at connection time, independent of editable workspace handle data.
     public var recipient: ContentRecipientIdentity?
     /// Stable source draft metadata required by providers that derive record IDs from creation time.
@@ -286,6 +302,7 @@ nonisolated public struct ContentSchedule: Codable, Sendable, Equatable {
         textSnapshot: String? = nil,
         mediaURLs: [URL] = [],
         media: [ContentScheduledMedia]? = nil,
+        mentions: [ContentScheduledMention]? = nil,
         recipient: ContentRecipientIdentity? = nil,
         draftID: UUID? = nil,
         draftCreatedAt: Date? = nil,
@@ -298,6 +315,7 @@ nonisolated public struct ContentSchedule: Codable, Sendable, Equatable {
         self.textSnapshot = textSnapshot
         self.mediaURLs = mediaURLs
         self.media = media
+        self.mentions = mentions
         self.recipient = recipient
         self.draftID = draftID
         self.draftCreatedAt = draftCreatedAt

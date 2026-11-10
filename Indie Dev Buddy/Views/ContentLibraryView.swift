@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import SocialKit
 
 struct ContentLibraryView: View {
     let snapshot: WorkspaceSnapshot
@@ -13,18 +14,47 @@ struct ContentLibraryView: View {
     var initialCreateKind: ContentKind? = nil
     var onCreateRequestHandled: () -> Void = {}
     @AppStorage("selectedContentID") private var selectedID: String?
-    @State private var filter = "All Content"
+    @State private var filter = "All"
     @State private var search = ""
+    @State private var selectedAppID = "all"
+    @State private var sortOrder = "Planned Date"
     @State private var error: String?
     @State private var editorHasUnsavedChanges = false
     @State private var requestedNavigationID: String?
     @State private var pendingCreateKind: ContentKind?
     @State private var confirmingDelete = false
     private let createRequestMarker = "__indie_dev_buddy_create__"
+    private let filters = ["All", "To Post", "Posted", "Drafts", "Ideas"]
     private var records: [ContentRecord] {
-        snapshot.content.filter { item in
-            let matchesFilter = filter == "All Content" || (filter == "Blog Articles" && item.kind == .blog) || (filter == "Social Posts" && item.kind == .social) || (filter == "Ideas / Inbox" && item.status == .idea) || item.status.rawValue.capitalized == filter
-            return matchesFilter && (search.isEmpty || item.title.localizedCaseInsensitiveContains(search))
+        let filtered = snapshot.content.filter { item in
+            let matchesFilter: Bool
+            switch filter {
+            case "To Post": matchesFilter = isToPost(item)
+            case "Posted": matchesFilter = isPosted(item)
+            case "Drafts": matchesFilter = item.status == .draft
+            case "Ideas": matchesFilter = item.kind == .idea || item.status == .idea
+            default: matchesFilter = true
+            }
+            let matchesSearch = search.isEmpty || item.title.localizedCaseInsensitiveContains(search)
+                || appNames(for: item).joined(separator: " ").localizedCaseInsensitiveContains(search)
+            let matchesApp = selectedAppID == "all" || item.appIds.contains(selectedAppID)
+            return matchesFilter && matchesSearch && matchesApp
+        }
+        return filtered.sorted { lhs, rhs in
+            switch sortOrder {
+            case "Title": return lhs.title.localizedCaseInsensitiveCompare(rhs.title) == .orderedAscending
+            case "Publishing Progress":
+                let left = progress(for: lhs), right = progress(for: rhs)
+                if left != right { return left < right }
+                return lhs.title.localizedCaseInsensitiveCompare(rhs.title) == .orderedAscending
+            default:
+                switch (lhs.plannedDate, rhs.plannedDate) {
+                case let (left?, right?): return left < right
+                case (_?, nil): return true
+                case (nil, _?): return false
+                default: return lhs.title.localizedCaseInsensitiveCompare(rhs.title) == .orderedAscending
+                }
+            }
         }
     }
     var body: some View {
@@ -119,10 +149,19 @@ struct ContentLibraryView: View {
     private let listRequestMarker = "__all_content__"
 
     private var contentFilter: some View {
-        Picker("Filter", selection: $filter) {
-            ForEach(["All Content", "Blog Articles", "Social Posts", "Draft", "Ready", "Published", "Ideas / Inbox"], id: \.self) { Text($0) }
+        HStack(spacing: 8) {
+            ForEach(filters, id: \.self) { value in
+                Button { filter = value } label: {
+                    Text("\(value) (\(count(for: value)))")
+                        .font(.callout.weight(filter == value ? .semibold : .regular))
+                        .padding(.horizontal, 12).padding(.vertical, 7)
+                        .background(filter == value ? Color.accentColor.opacity(0.14) : Color.clear, in: Capsule())
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(filter == value ? Color.accentColor : Color.primary)
+                .accessibilityAddTraits(filter == value ? .isSelected : [])
+            }
         }
-        .fixedSize()
     }
 
     private var contentSearch: some View {
@@ -131,12 +170,16 @@ struct ContentLibraryView: View {
 
     private var contentList: some View {
         VStack(alignment: .leading, spacing: 0) {
-            VStack(alignment: .leading, spacing: 8) {
-                Text(records.count == 1 ? "1 item" : "\(records.count) items").foregroundStyle(.secondary)
-                ViewThatFits {
-                    HStack { contentFilter; contentSearch }
-                    VStack(alignment: .leading) { contentFilter; contentSearch }
+            VStack(alignment: .leading, spacing: 12) {
+                ViewThatFits(in: .horizontal) {
+                    contentFilter
+                    ScrollView(.horizontal) { contentFilter }
                 }
+                ViewThatFits(in: .horizontal) {
+                    HStack { contentSearch; appFilter; sortPicker }
+                    VStack(alignment: .leading, spacing: 8) { contentSearch; HStack { appFilter; sortPicker } }
+                }
+                Text(records.count == 1 ? "1 item" : "\(records.count) items").foregroundStyle(.secondary).font(.caption)
             }
             .padding(16)
             if records.isEmpty {
@@ -158,7 +201,8 @@ struct ContentLibraryView: View {
                     } else {
                         Button("Clear Search and Filters") {
                             search = ""
-                            filter = "All Content"
+                            filter = "All"
+                            selectedAppID = "all"
                         }
                         .buttonStyle(.bordered)
                     }
@@ -170,33 +214,79 @@ struct ContentLibraryView: View {
                     guard let value, value != selectedID else { return }
                     requestSelection(value)
                 })) { item in
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text(item.title).font(.headline)
-                        Text("\(item.kind.rawValue.capitalized) · \(displayStatus(item))")
-                            .foregroundStyle(.secondary).font(.caption)
-                        let apps = snapshot.apps.filter { item.appIds.contains($0.id) }.map(\.name)
-                        if !apps.isEmpty {
-                            Text(apps.joined(separator: ", "))
-                                .foregroundStyle(.secondary).font(.caption)
-                        }
-                        if let plannedDate = item.plannedDate {
-                            Text("Planned · \(plannedDate.formatted(date: .abbreviated, time: .omitted))")
-                                .foregroundStyle(.secondary).font(.caption)
-                        }
-                    }
-                    .padding(.vertical, 6)
+                    ContentLibraryRow(item: item, apps: appNames(for: item), snapshot: snapshot,
+                                      statusText: displayStatus(item), publishedCount: publishedCount(item))
                     .tag(item.id)
                 }
             }
         }
     }
 
+    private var appFilter: some View {
+        Picker("App", selection: $selectedAppID) {
+            Text("All Apps").tag("all")
+            ForEach(snapshot.apps.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }, id: \.id) { app in
+                Text(app.name).tag(app.id)
+            }
+        }.frame(minWidth: 130)
+    }
+
+    private var sortPicker: some View {
+        Picker("Sort", selection: $sortOrder) {
+            ForEach(["Planned Date", "Publishing Progress", "Title"], id: \.self) { Text($0) }
+        }.frame(minWidth: 145)
+    }
+
+    private func count(for filter: String) -> Int {
+        snapshot.content.filter { item in
+            switch filter {
+            case "To Post": return isToPost(item)
+            case "Posted": return isPosted(item)
+            case "Drafts": return item.status == .draft
+            case "Ideas": return item.kind == .idea || item.status == .idea
+            default: return true
+            }
+        }.count
+    }
+    private func isToPost(_ item: ContentRecord) -> Bool {
+        guard item.kind == .social else { return false }
+        if !item.destinations.isEmpty { return item.destinations.contains { $0.status != .published } }
+        return item.status == .ready
+    }
+    private func isPosted(_ item: ContentRecord) -> Bool {
+        guard item.kind == .social else { return item.status == .published }
+        if item.destinations.isEmpty { return item.status == .published }
+        return item.destinations.allSatisfy { $0.status == .published }
+    }
+    private func publishedCount(_ item: ContentRecord) -> Int {
+        item.destinations.filter { $0.status == .published }.count
+    }
+    private func progress(for item: ContentRecord) -> Double {
+        guard !item.destinations.isEmpty else { return item.status == .published ? 1 : 0 }
+        return Double(publishedCount(item)) / Double(item.destinations.count)
+    }
+    private func appNames(for item: ContentRecord) -> [String] {
+        snapshot.apps.filter { item.appIds.contains($0.id) }.map(\.name)
+    }
+
     private func displayStatus(_ item: ContentRecord) -> String {
-        guard item.kind == .social, !item.destinations.isEmpty else { return item.status.rawValue.capitalized }
-        let published = item.destinations.filter { $0.status == .published }.count
-        if published == item.destinations.count { return "Published" }
-        if published > 0 { return "Partially Published" }
-        return item.status == .published ? "Draft" : item.status.rawValue.capitalized
+        guard item.kind == .social else { return item.status.displayTitle }
+        guard !item.destinations.isEmpty else { return item.status == .published ? "Posted" : "Not Posted" }
+        let posted = publishedCount(item)
+        if posted == item.destinations.count { return "Posted" }
+        let deliveryStates = item.destinations.compactMap { destination in
+            destination.status == .scheduled && destination.schedule?.mode == .api ? destination.schedule?.state : nil
+        }
+        if deliveryStates.contains(.outcomeUnknown) { return "Needs Review" }
+        if deliveryStates.contains(.failed) { return "Delivery Failed" }
+        if deliveryStates.contains(.overdue) { return "Overdue" }
+        if deliveryStates.contains(.canceled) { return "Schedule Canceled" }
+        if posted > 0 { return "Partially Posted" }
+        let statuses = item.destinations.map(\.status)
+        if statuses.allSatisfy({ $0 == .manuallyScheduled }) { return "Manually Scheduled" }
+        if statuses.allSatisfy({ $0 == .scheduled }) { return "Scheduled" }
+        if statuses.contains(.manuallyScheduled) || statuses.contains(.scheduled) { return "Mixed Schedule" }
+        return "Not Posted"
     }
     private var emptyStateTitle: String {
         snapshot.content.isEmpty ? "No Marketing Content Yet" : "No Matching Content"
@@ -262,7 +352,123 @@ struct ContentLibraryView: View {
     }
 }
 
+private struct ContentLibraryRow: View {
+    let item: ContentRecord
+    let apps: [String]
+    let snapshot: WorkspaceSnapshot
+    let statusText: String
+    let publishedCount: Int
+
+    private var destinationAccounts: [SocialAccountRecord] {
+        item.destinations.compactMap { destination in snapshot.socialAccounts.first { $0.id == destination.accountId } }
+    }
+    private var latestPublishedDate: Date? {
+        item.destinations.compactMap(\.publishedDate).max()
+    }
+    private var statusColor: Color {
+        switch statusText {
+        case "Posted": .green
+        case "Partially Posted": .blue
+        case "Needs Review", "Delivery Failed", "Overdue": .orange
+        case "Idea": .purple
+        default: .secondary
+        }
+    }
+    private var kindIcon: String {
+        switch item.kind {
+        case .social: "megaphone.fill"
+        case .blog: "doc.text.fill"
+        case .idea: "lightbulb.fill"
+        }
+    }
+    private var kindColor: Color {
+        switch item.kind {
+        case .social: .blue
+        case .blog: .purple
+        case .idea: .orange
+        }
+    }
+
+    var body: some View {
+        HStack(spacing: 14) {
+            Image(systemName: kindIcon)
+                .font(.system(size: 19, weight: .medium))
+                .foregroundStyle(kindColor)
+                .frame(width: 42, height: 42)
+                .background(kindColor.opacity(0.12), in: RoundedRectangle(cornerRadius: 10))
+            VStack(alignment: .leading, spacing: 5) {
+                Text(item.title.isEmpty ? "Untitled Content" : item.title)
+                    .font(.headline).lineLimit(2)
+                HStack(spacing: 6) {
+                    Text(item.kind == .social ? "Social Post" : item.kind == .blog ? "Blog Article" : "Idea")
+                    if !apps.isEmpty { Text("·"); Text(apps.joined(separator: ", ")).lineLimit(1) }
+                    else if item.kind == .blog, let site = snapshot.websites.first(where: { $0.id == item.websiteId }) {
+                        Text("·"); Text(site.name).lineLimit(1)
+                    }
+                }
+                .font(.subheadline).foregroundStyle(.secondary)
+                HStack(spacing: 8) {
+                    if item.kind == .social {
+                        if item.destinations.isEmpty {
+                            Label("No accounts yet", systemImage: "person.crop.circle")
+                        } else {
+                            HStack(spacing: 7) {
+                                ForEach(destinationAccounts.prefix(4), id: \.id) { account in
+                                    SocialPlatformIcon(platform: account.platform, size: 16)
+                                        .help("\(account.platform)\(account.handle.map { " · \($0)" } ?? "")")
+                                }
+                            }
+                            Text("\(item.destinations.count) account\(item.destinations.count == 1 ? "" : "s")")
+                        }
+                    } else if item.kind == .blog {
+                        Label("Website article", systemImage: "globe")
+                    } else {
+                        Label("No publishing destinations", systemImage: "tray")
+                    }
+                }
+                .font(.caption).foregroundStyle(.secondary)
+                Group {
+                    if isPostedRow, let date = latestPublishedDate {
+                        Label("Published \(date.formatted(date: .abbreviated, time: .omitted))", systemImage: "checkmark.circle")
+                    } else if let date = item.plannedDate {
+                        Label("Planned \(date.formatted(date: .abbreviated, time: .omitted))", systemImage: "calendar")
+                    } else if item.kind == .idea {
+                        Text("No planned date")
+                    } else {
+                        Text("Unscheduled")
+                    }
+                }
+                .font(.caption).foregroundStyle(.secondary)
+            }
+            Spacer(minLength: 12)
+            VStack(alignment: .trailing, spacing: 7) {
+                Text(statusText)
+                    .font(.caption.weight(.semibold))
+                    .padding(.horizontal, 9).padding(.vertical, 5)
+                    .background(statusColor.opacity(0.13), in: Capsule())
+                    .foregroundStyle(statusColor)
+                if item.kind == .social, !item.destinations.isEmpty {
+                    Text("\(publishedCount) of \(item.destinations.count) posted")
+                        .font(.caption).foregroundStyle(.secondary)
+                    ProgressView(value: Double(publishedCount), total: Double(item.destinations.count))
+                        .accessibilityHidden(true)
+                        .tint(publishedCount == item.destinations.count ? .green : .accentColor)
+                        .frame(width: 100)
+                }
+            }
+        }
+        .padding(.vertical, 7)
+        .contentShape(Rectangle())
+    }
+
+    private var isPostedRow: Bool {
+        if item.kind == .social { return !item.destinations.isEmpty && item.destinations.allSatisfy { $0.status == .published } }
+        return item.status == .published
+    }
+}
+
 struct ContentRecordEditor: View {
+    @Environment(SocialPublishingRuntime.self) private var socialPublishingRuntime
     let record: ContentRecord
     let snapshot: WorkspaceSnapshot
     let snapshotGeneration: Int
@@ -541,16 +747,102 @@ struct ContentRecordEditor: View {
         item.title = draft.title; item.includeSourceLink = draft.includeArticleLink
         item.appIds = draft.appIDs
         item.plannedDate = draft.plannedDate
-        item.status = ContentStatus(rawValue: draft.status.lowercased()) ?? .draft
+        item.status = ContentStatus(displayTitle: draft.status) ?? .draft
         Task { do {
             try await verifyCurrentRevisions(item)
             var destinations: [ContentDestination] = item.destinations.filter { draft.preservedDestinationIDs.contains($0.accountId) }
             var pendingWrites: [WorkspaceWriteOperation] = []
             var pendingVariantAccounts: [String] = []
+            var pendingDeliveryIntents: [ContentDeliveryIntent] = []
+            let workspaceRoot = store.rootURL
+            let history = await socialPublishingRuntime.history(workspaceID: snapshot.manifest.id, workspaceRoot: workspaceRoot)
+            let journalEntries = Dictionary(uniqueKeysWithValues: history.map { ($0.intent.id, $0) })
             for id in draft.selectedAccountIDs {
                 var dest = item.destinations.first { $0.accountId == id } ?? ContentDestination(accountId: id)
                 dest.mediaPaths = draft.destinationMediaOverrides[id]
-                dest.status = ContentStatus(rawValue: (draft.destinationStatuses[id] ?? "Draft").lowercased()) ?? .draft
+                dest.status = ContentStatus(displayTitle: draft.destinationStatuses[id] ?? "Draft") ?? .draft
+                if dest.status == .manuallyScheduled {
+                    let date = draft.destinationScheduleDates[id] ?? Date().addingTimeInterval(3600)
+                    if dest.schedule?.mode != .manual || dest.schedule?.scheduledDate != date {
+                        dest.schedule = ContentSchedule(mode: .manual, scheduledDate: date)
+                    }
+                } else if dest.status == .scheduled {
+                    let selectedDate = draft.destinationScheduleDates[id] ?? Date().addingTimeInterval(3600)
+                    let scheduledDate = Date(timeIntervalSince1970: floor(selectedDate.timeIntervalSince1970))
+                    let mediaLink = draft.destinationMediaLinks[id] ?? ComposerMediaLink()
+                    let media = try scheduledMedia(mediaLink)
+                    let existing = dest.schedule
+                    var candidateText = draft.customizedText[id] ?? draft.originalText
+                    if draft.includeArticleLink,
+                       let sourceID = item.sourceContentId,
+                       let source = snapshot.content.first(where: { $0.id == sourceID }),
+                       source.status == .published, let url = source.publishedURL {
+                        candidateText = candidateText.isEmpty ? url.absoluteString : "\(candidateText)\n\n\(url.absoluteString)"
+                    }
+                    let candidateResolution = draft.mentionResolutions[id]
+                    let isBluesky = snapshot.socialAccounts.first(where: { $0.id == id }).flatMap { SocialPlatform.workspacePlatform($0.platform) } == .bluesky
+                    let candidateMentions = isBluesky && candidateResolution?.textSnapshot == candidateText
+                        ? (candidateResolution?.mentions ?? []) : []
+                    let hasSameSchedule = existing?.mode == .api && existing?.scheduledDate == scheduledDate &&
+                        existing?.textSnapshot == candidateText && (existing?.media ?? []) == media &&
+                        (existing?.mentions ?? []) == candidateMentions
+                    if !hasSameSchedule {
+                        guard scheduledDate > Date() else {
+                            throw WorkspaceCommandError("Choose a future date for API delivery.")
+                        }
+                        guard existing?.state != .outcomeUnknown,
+                              existing.flatMap({ journalEntries[$0.idempotencyKey]?.state }) != .outcomeUnknown else {
+                            throw WorkspaceCommandError("Check the provider for the previous post before scheduling another delivery.")
+                        }
+                        guard let account = snapshot.socialAccounts.first(where: { $0.id == id }),
+                              account.isEligibleDestination,
+                              let platform = SocialPlatform.workspacePlatform(account.platform),
+                              let identity = account.providerIdentity,
+                              identity.platform == platform.rawValue else {
+                            throw SocialError.invalidConfiguration
+                        }
+                        if media.isEmpty && !(dest.mediaPaths ?? draft.sharedMediaPaths).isEmpty {
+                            throw WorkspaceCommandError("Choose manual delivery for local attachments or enter an eligible public HTTPS media link.")
+                        }
+                        let capabilities = try await socialPublishingRuntime.connections.capabilities(for: identity)
+                        if media.isEmpty {
+                            guard platform != .instagram else { throw WorkspaceCommandError("Instagram requires a public image or video link.") }
+                            guard capabilities.contains(.publishText) else { throw SocialError.permissionDenied }
+                        } else {
+                            guard platform == .threads || platform == .instagram else { throw SocialError.unsupported(.publishMedia) }
+                            guard capabilities.contains(.publishMedia) else { throw SocialError.permissionDenied }
+                        }
+                        let key = UUID()
+                        let createdAt = Date(timeIntervalSince1970: floor(Date().timeIntervalSince1970))
+                        let text = candidateText
+                        let mentions = platform == .bluesky ? candidateMentions : []
+                        if platform == .bluesky {
+                            let pattern = #"(?<![A-Za-z0-9._-])@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+"#
+                            let expression = try NSRegularExpression(pattern: pattern)
+                            let expected = expression.numberOfMatches(in: text, range: NSRange(text.startIndex..<text.endIndex, in: text))
+                            guard mentions.count == expected else {
+                                throw WorkspaceCommandError("Resolve Bluesky @mentions before API scheduling so each mention stays linked to the verified account.")
+                            }
+                        }
+                        guard !media.isEmpty || !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                            throw SocialError.invalidInput
+                        }
+                        let intent = ContentDeliveryIntent(
+                            id: key, workspaceID: snapshot.manifest.id,
+                            workspaceRootPath: workspaceRoot.path,
+                            contentID: item.id, destinationID: id, recipient: identity,
+                            scheduledDate: scheduledDate, draftID: key, draftCreatedAt: createdAt, text: text,
+                            media: media, mentions: mentions
+                        )
+                        dest.schedule = ContentSchedule(mode: .api, scheduledDate: scheduledDate,
+                            state: .queued, textSnapshot: text, mediaURLs: media.map(\.publicURL), media: media,
+                            mentions: mentions, recipient: identity,
+                            draftID: key, draftCreatedAt: createdAt, idempotencyKey: key)
+                        pendingDeliveryIntents.append(intent)
+                    }
+                } else {
+                    dest.schedule = nil
+                }
                 dest.publishedURL = draft.destinationURLs[id].flatMap { $0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : URL(string: $0) }
                 dest.publishedDate = draft.destinationPublicationDates[id]
                 if let text = draft.customizedText[id] {
@@ -564,10 +856,22 @@ struct ContentRecordEditor: View {
                 } else { dest.bodyPath = nil }
                 destinations.append(dest)
             }
+            let retainedSchedules = Set(destinations.compactMap { $0.schedule?.idempotencyKey })
+            let canceledSchedules: Set<UUID> = Set(item.destinations.compactMap { destination in
+                destination.schedule.flatMap { schedule in
+                    guard schedule.mode == .api, !retainedSchedules.contains(schedule.idempotencyKey),
+                          let state = journalEntries[schedule.idempotencyKey]?.state,
+                          [.queued, .overdue, .sending].contains(state) else { return nil }
+                    return schedule.idempotencyKey
+                }
+            })
+            try await socialPublishingRuntime.cancel(canceledSchedules)
             item.destinations = destinations
             item.mediaPaths = draft.sharedMediaPaths
             if !destinations.isEmpty && destinations.allSatisfy({ $0.status == .published }) { item.status = .published }
-            else if item.status == .published { item.status = .draft }
+            else if !destinations.isEmpty && destinations.allSatisfy({ $0.status == .manuallyScheduled }) { item.status = .manuallyScheduled }
+            else if !destinations.isEmpty && destinations.allSatisfy({ $0.status == .scheduled }) { item.status = .scheduled }
+            else if item.status == .published || item.status == .scheduled || item.status == .manuallyScheduled { item.status = .draft }
             pendingWrites.append(WorkspaceWriteOperation(data: Data(draft.originalText.utf8), relativePath: "\(path)/\(item.originalBodyPath ?? "original.txt")", expectedRevision: bodyRevision))
             pendingWrites.append(WorkspaceWriteOperation(data: try encodedContentRecord(item), relativePath: "\(path)/record.json", expectedRevision: recordRevision))
             let revisions = try await store.writeBatch(pendingWrites)
@@ -579,7 +883,25 @@ struct ContentRecordEditor: View {
             baselineRecord = item
             baselineBodyText = draft.originalText
             baselineVariantText = draft.customizedText
-            error = nil
+            do {
+                try await socialPublishingRuntime.authorize(pendingDeliveryIntents)
+                error = nil
+            } catch {
+                let message = "The draft was saved, but API delivery could not be authorized on this Mac. Choose a new future time to try again."
+                self.error = message
+                let unarmedIDs = Set(pendingDeliveryIntents.map(\.id))
+                for index in item.destinations.indices {
+                    guard var schedule = item.destinations[index].schedule, unarmedIDs.contains(schedule.idempotencyKey) else { continue }
+                    schedule.state = .failed
+                    schedule.lastError = message
+                    item.destinations[index].schedule = schedule
+                }
+                if let newRevision = try? await store.save(item, relativePath: "\(path)/record.json", expectedRevision: recordRevision) {
+                    recordRevision = newRevision
+                    edited = item
+                    baselineRecord = item
+                }
+            }
             conflictMessage = nil
             refresh()
             isSaving = false
@@ -601,6 +923,16 @@ struct ContentRecordEditor: View {
         encoder.dateEncodingStrategy = .iso8601
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
         return try encoder.encode(item)
+    }
+    private func scheduledMedia(_ link: ComposerMediaLink) throws -> [ContentScheduledMedia] {
+        let value = link.url.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !value.isEmpty else { return [] }
+        guard let url = URL(string: value), url.scheme?.lowercased() == "https",
+              url.host?.isEmpty == false, url.user == nil, url.password == nil,
+              url.query == nil, url.fragment == nil else {
+            throw WorkspaceCommandError("Enter a public HTTPS media URL without credentials, a query, or a fragment.")
+        }
+        return [ContentScheduledMedia(kind: link.kind, publicURL: url)]
     }
     private func verifyCurrentRevisions(_ item: ContentRecord) async throws {
         let recordPath = "\(path)/record.json"

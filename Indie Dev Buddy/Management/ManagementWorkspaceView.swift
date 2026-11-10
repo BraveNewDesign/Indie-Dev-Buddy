@@ -1595,8 +1595,13 @@ private struct SocialAccountRecordEditor: View {
         Section("API connection") {
             if let apiPlatform {
                 if let connectedAccount {
-                    Label("Connected as \(connectedAccount.username)", systemImage: "checkmark.circle.fill")
+                    Label("Connected as \(connectedAccount.displayName ?? connectedAccount.username)", systemImage: "checkmark.circle.fill")
                         .foregroundStyle(.green)
+                    if let authenticatedUserName = connectedAccount.authenticatedUserName,
+                       authenticatedUserName != connectedAccount.displayName {
+                        Text("Authorized by \(authenticatedUserName)")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
                     Button("View Account Activity…") { showingAccountActivity = true }
                 } else if providerIdentity != nil {
                     Label("Connection unavailable on this Mac", systemImage: "exclamationmark.circle")

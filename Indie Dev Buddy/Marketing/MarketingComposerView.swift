@@ -1,4 +1,5 @@
 import AppKit
+import SocialKit
 import SwiftUI
 import UniformTypeIdentifiers
 
@@ -9,9 +10,11 @@ struct ComposerSocialAccount: Identifiable, Hashable {
     let handle: String?
     let profileURL: URL?
     let avatarPath: String?
+    let ownerGroupID: String
     let ownerName: String?
     let enabled: Bool
     let hasOwner: Bool
+    let providerIdentity: ContentRecipientIdentity?
     let avatarSymbol: String
 
     init(record: SocialAccountRecord, snapshot: WorkspaceSnapshot) {
@@ -31,6 +34,8 @@ struct ComposerSocialAccount: Identifiable, Hashable {
             case .app: resolvedOwnerName = snapshot.apps.first { $0.id == owner.id }?.name
             }
         } else { resolvedOwnerName = nil }
+        ownerGroupID = record.owner.map { "\($0.type):\($0.id)" } ?? ""
+        providerIdentity = record.providerIdentity
         ownerName = resolvedOwnerName
         hasOwner = resolvedOwnerName != nil
         avatarSymbol = "person.crop.circle.fill"
@@ -45,6 +50,14 @@ struct ComposerSocialAccount: Identifiable, Hashable {
         enabled && hasOwner && (!platform.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty) &&
         (handle?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false || profileURL != nil)
     }
+
+    var apiPlatform: SocialPlatform? {
+        guard enabled, let providerIdentity,
+              let matched = SocialPlatform.workspacePlatform(platform),
+              matched.rawValue == providerIdentity.platform else { return nil }
+        return matched
+    }
+    var isAPISchedulable: Bool { apiPlatform != nil }
 }
 
 struct ComposerArticleReference: Identifiable, Hashable {
@@ -61,6 +74,9 @@ struct ComposerRelatedItem: Identifiable, Hashable {
 }
 
 struct MarketingComposerView: View {
+    @Environment(SocialPublishingRuntime.self) private var socialPublishingRuntime
+    let contentID: String
+    let workspaceID: String
     let contentFolderURL: URL
     let apps: [AppRecord]
     let accounts: [ComposerSocialAccount]
@@ -82,6 +98,9 @@ struct MarketingComposerView: View {
     @State private var customizedText: [String: String] = [:]
     @State private var destinationStatuses: [String: String] = [:]
     @State private var destinationURLs: [String: String] = [:]
+    @State private var destinationScheduleDates: [String: Date] = [:]
+    @State private var destinationMediaLinks: [String: ComposerMediaLink] = [:]
+    @State private var mentionResolutions: [String: ComposerMentionResolution] = [:]
     @State private var plannedDate: Date?
     @State private var destinationPublicationDates: [String: Date] = [:]
     @State private var sharedMediaPaths: [String] = []
@@ -97,6 +116,24 @@ struct MarketingComposerView: View {
     @State private var savedDraftSnapshot: ComposerDraft?
     @State private var isSaving = false
     @State private var showingGuidanceSettings = false
+    @State private var deliveryHistory: [LocalDeliveryJournal.Entry] = []
+    @State private var deliveryError: String?
+    @State private var mentionResolutionMessage: String?
+    @State private var connectedAccounts: [SocialAccount] = []
+    private enum EditorSection: String, CaseIterable {
+        case content = "Content"
+        case publishing = "Accounts & Publishing"
+        case details = "Details & Relationships"
+    }
+
+    @State private var section = EditorSection.content
+    @State private var editingAccountVersion = false
+    private struct AccountSelection: Identifiable {
+        let id = UUID()
+        let accountIDs: Set<String>
+    }
+
+    @State private var accountSelection: AccountSelection?
     @State private var compactPreviewSelected = false
     @AppStorage("guidance.threads") private var threadsGuideline = 500
     @AppStorage("guidance.instagram") private var instagramGuideline = 2200
@@ -132,19 +169,26 @@ struct MarketingComposerView: View {
         if let stored, stored > 0 { return stored }
         return characterGuidelines[key]
     }
+    private var selectedAccounts: [ComposerSocialAccount] {
+        eligibleAccounts.filter { selectedAccountIDs.contains($0.id) }
+    }
+
+    private var destinationIDs: Set<String> { selectedAccountIDs.union(unavailableDestinationIDs) }
+    private var postedCount: Int { destinationIDs.filter { destinationStatuses[$0] == "Published" }.count }
+    private var progressText: String { "\(postedCount) of \(destinationIDs.count) posted" }
     private var effectiveGlobalStatus: String {
-        guard !selectedAccountIDs.isEmpty else { return draftStatus }
-        let statuses = selectedAccountIDs.map { destinationStatuses[$0] ?? "Draft" }
-        if statuses.allSatisfy({ $0 == "Published" }) { return "Published" }
-        if statuses.contains("Published") { return "Partially Published" }
-        let uniqueStatuses = Set(statuses)
-        return uniqueStatuses.count == 1 ? (uniqueStatuses.first ?? draftStatus) : "Mixed"
+        guard !destinationIDs.isEmpty else { return draftStatus }
+        if postedCount == destinationIDs.count { return "Posted" }
+        return postedCount == 0 ? "Not Posted" : "Partially Posted"
     }
     private var currentDraft: ComposerDraft {
         ComposerDraft(title: title, originalText: originalText, selectedAccountIDs: selectedAccountIDs,
                       appIDs: Array(selectedAppIDs).sorted(),
                       customizedText: customizedText, destinationStatuses: destinationStatuses,
                       destinationURLs: destinationURLs,
+                      destinationScheduleDates: destinationScheduleDates,
+                      destinationMediaLinks: destinationMediaLinks,
+                      mentionResolutions: mentionResolutions,
                       plannedDate: plannedDate,
                       destinationPublicationDates: destinationPublicationDates,
                       sharedMediaPaths: sharedMediaPaths,
@@ -156,11 +200,11 @@ struct MarketingComposerView: View {
 
     var body: some View {
         GeometryReader { geometry in
-            if geometry.size.width >= 1040 {
+            if geometry.size.width >= 890 {
                 HStack(spacing: 0) {
                     editorPane
                     Divider()
-                    previewPane
+                    ScrollView { previewPane }
                         .frame(minWidth: 310, idealWidth: 360, maxWidth: 430)
                         .background(Color(nsColor: .windowBackgroundColor))
                 }
@@ -168,14 +212,14 @@ struct MarketingComposerView: View {
                 VStack(spacing: 0) {
                     Picker("Composer view", selection: $compactPreviewSelected) {
                         Text("Edit").tag(false)
-                        Text("Preview").tag(true)
+                        Text("Publishing & Preview").tag(true)
                     }
                     .pickerStyle(.segmented)
                     .labelsHidden()
                     .padding(.horizontal, 16)
                     .padding(.vertical, 10)
                     if compactPreviewSelected {
-                        ScrollView { previewPane.padding(16) }
+                        ScrollView { previewPane }
                     } else {
                         editorPane
                     }
@@ -211,6 +255,16 @@ struct MarketingComposerView: View {
         }
         .onChange(of: currentDraft) { _, draft in onDirtyChange(draft != savedDraftSnapshot) }
         .onAppear { onDirtyChange(hasUnsavedChanges) }
+        .task(id: contentID) {
+            while !Task.isCancelled {
+                await refreshDeliveryHistory()
+                try? await Task.sleep(nanoseconds: 10_000_000_000)
+            }
+        }
+        .task(id: accounts) {
+            let verified = try? await socialPublishingRuntime.connections.accounts()
+            if !Task.isCancelled { connectedAccounts = verified ?? [] }
+        }
         .onChange(of: accounts) { _, _ in
             let eligibleIDs = Set(eligibleAccounts.map(\.id))
             var current = currentDraft
@@ -248,6 +302,11 @@ struct MarketingComposerView: View {
         } message: {
             Text("Save your changes before leaving, or discard them and continue.")
         }
+        .sheet(item: $accountSelection) { selection in
+            ComposerAccountChooser(accounts: eligibleAccounts, selectedIDs: selection.accountIDs) { ids in
+                selectedAccountIDs = ids.intersection(eligibleAccounts.map(\.id))
+            }
+        }
         .sheet(isPresented: $showOriginalText) {
             VStack(alignment: .leading, spacing: 12) {
                 Text("Shared Original").font(.title2.bold())
@@ -262,16 +321,33 @@ struct MarketingComposerView: View {
     private var editorPane: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
-                header
-                TextField("Title", text: $title)
+                TextField("Post title", text: $title)
                     .font(.title2.bold())
                     .textFieldStyle(.roundedBorder)
-                originalSection
-                sharedMediaSection
-                metadataSection
-                destinationsSection
-                sourceSection
-                relatedSection
+                header
+                Picker("Editor section", selection: $section) {
+                    ForEach(EditorSection.allCases, id: \.self) { Text($0.rawValue).tag($0) }
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                Divider()
+                switch section {
+                case .content:
+                    contentSection
+                    destinationsSection
+                    sourceSection
+                    relatedSection
+                case .publishing:
+                    destinationsSection
+                    ForEach(selectedAccounts) { account in
+                        Divider()
+                        publicationEditor(for: account)
+                    }
+                case .details:
+                    metadataSection
+                    sourceSection
+                    relatedSection
+                }
             }
             .padding(24)
             .frame(maxWidth: 780, alignment: .leading)
@@ -281,22 +357,73 @@ struct MarketingComposerView: View {
     }
 
     private var header: some View {
-        HStack(alignment: .top) {
-            VStack(alignment: .leading, spacing: 5) {
-                Text("Social Post").font(.largeTitle.bold())
-                Text("Prepare account-specific versions, then copy and publish manually.")
-                    .foregroundStyle(.secondary)
-            }
-            Spacer()
-            VStack(alignment: .trailing, spacing: 4) {
-                Text("Overall status").font(.caption).foregroundStyle(.secondary)
-                Menu {
-                    ForEach(["Idea", "Draft", "Ready"], id: \.self) { status in
-                        Button(status) { draftStatus = status }
-                    }
-                } label: {
-                    Text(effectiveGlobalStatus)
+        HStack {
+            Label("Social Post", systemImage: "megaphone")
+                .foregroundStyle(.secondary)
+            if destinationIDs.isEmpty {
+                Picker("Post status", selection: $draftStatus) {
+                    ForEach(["Idea", "Draft", "Ready", "Published"], id: \.self) { Text($0).tag($0) }
                 }
+                .fixedSize()
+            } else {
+                Text("\(effectiveGlobalStatus) (\(postedCount) of \(destinationIDs.count))")
+                    .foregroundStyle(postedCount > 0 ? Color.accentColor : .secondary)
+            }
+        }
+        .font(.callout)
+    }
+
+    private var contentSection: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            sectionTitle("Post Text")
+            if !selectedAccounts.isEmpty {
+                Picker("Version", selection: $editingAccountVersion) {
+                    Text("Shared Original").tag(false)
+                    Text("Custom for Account").tag(true)
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+            }
+            if editingAccountVersion, let account = selectedAccount {
+                accountPicker
+                if customizedText[account.id] != nil {
+                    TextEditor(text: accountTextBinding(account.id))
+                        .accessibilityLabel("Custom post text for \(account.displayName)")
+                        .frame(minHeight: 150)
+                        .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(.quaternary))
+                    HStack {
+                        Button("View Original") { showOriginalText = true }
+                        Button("Use Original Text") { showUseOriginalConfirmation = true }
+                    }
+                } else {
+                    Text("This account uses the shared original text.").foregroundStyle(.secondary)
+                    Button("Customize Text") { customizedText[account.id] = originalText }
+                }
+                accountMedia(for: account)
+            } else {
+                originalSection
+                sharedMediaSection
+            }
+            if selectedAccounts.contains(where: { $0.apiPlatform == .bluesky }) {
+                VStack(alignment: .leading, spacing: 6) {
+                    Button("Resolve @mentions for Bluesky") { Task { await resolveBlueskyMentions() } }
+                        .disabled(isSaving || selectedAccounts.filter { $0.apiPlatform == .bluesky }.isEmpty)
+                    if let text = mentionResolutionMessage {
+                        Text(text).font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+            }
+            if selectedAccounts.contains(where: { $0.apiPlatform != .bluesky }) {
+                Text("Other platforms receive @names as plain text unless their own mention support is added.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private var accountPicker: some View {
+        Picker("Account", selection: $selectedAccountID) {
+            ForEach(selectedAccounts) { account in
+                Text(account.displayName).tag(Optional(account.id))
             }
         }
     }
@@ -333,13 +460,10 @@ struct MarketingComposerView: View {
 
     private var originalSection: some View {
         VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                sectionTitle("Shared original")
-                Spacer()
-                Text("Used by accounts without a custom version")
-                    .font(.caption).foregroundStyle(.secondary)
-            }
+            Text("Accounts without custom text use the shared original.")
+                .font(.caption).foregroundStyle(.secondary)
             TextEditor(text: $originalText)
+                .accessibilityLabel("Shared original post text")
                 .font(.body)
                 .frame(minHeight: 150)
                 .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.secondary.opacity(0.25)))
@@ -358,34 +482,28 @@ struct MarketingComposerView: View {
     private var destinationsSection: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
-                sectionTitle("Destination accounts")
+                sectionTitle("Selected Accounts (\(selectedAccounts.count))")
                 Spacer()
-                Text("\(selectedAccountIDs.count) selected").font(.caption).foregroundStyle(.secondary)
+                Button("Choose Accounts…") {
+                    accountSelection = AccountSelection(accountIDs: selectedAccountIDs)
+                }
             }
-            if eligibleAccounts.isEmpty {
-                ContentUnavailableView("No eligible accounts", systemImage: "person.crop.circle.badge.exclamationmark",
-                                       description: Text("Enable an account and add an owner, platform, and handle or profile URL."))
-                    .frame(maxWidth: .infinity, minHeight: 120)
-            } else {
-                ForEach(eligibleAccounts) { account in
-                    HStack(spacing: 10) {
-                        Toggle(account.displayName, isOn: selectionBinding(for: account))
-                            .toggleStyle(.checkbox)
-                        Spacer(minLength: 8)
-                        if customizedText[account.id] != nil {
-                            Label("Custom", systemImage: "arrow.branch")
-                                .font(.caption).foregroundStyle(.tint)
-                        } else {
-                            Text("Original").font(.caption).foregroundStyle(.secondary)
-                        }
-                        Button("Preview") {
-                            selectedAccountID = account.id
-                            compactPreviewSelected = true
-                        }
-                            .disabled(!selectedAccountIDs.contains(account.id))
-                            .buttonStyle(.link)
+            if selectedAccounts.isEmpty {
+                Text("Choose accounts to prepare their posts.").foregroundStyle(.secondary)
+            }
+            ForEach(selectedAccounts) { account in
+                HStack {
+                    SocialPlatformIcon(platform: account.platform, size: 20)
+                    Text(account.displayName)
+                    Spacer()
+                    if customizedText[account.id] != nil || customMediaAccountIDs.contains(account.id) {
+                        Text("Custom").foregroundStyle(.secondary)
                     }
-                    .padding(.vertical, 4)
+                    Button("Preview") {
+                        selectedAccountID = account.id
+                        compactPreviewSelected = true
+                    }
+                    .buttonStyle(.link)
                 }
             }
             let unavailableReferenced = accounts.filter { !$0.isEligible && unavailableDestinationIDs.contains($0.id) }
@@ -449,20 +567,11 @@ struct MarketingComposerView: View {
 
     private var previewPane: some View {
         VStack(alignment: .leading, spacing: 14) {
-            HStack {
-                Text("Preview").font(.title2.bold())
-                Spacer()
-                if let account = selectedAccount {
-                    Menu {
-                        ForEach(eligibleAccounts.filter { selectedAccountIDs.contains($0.id) }) { candidate in
-                            Button(candidate.displayName) { selectedAccountID = candidate.id }
-                        }
-                    } label: {
-                        Label(account.platform, systemImage: "chevron.down")
-                    }
-                    .menuStyle(.borderlessButton)
-                }
-            }
+            deliveryHistorySection
+            publishingProgress
+            Divider()
+            Text("Preview").font(.title2.bold())
+            if !selectedAccounts.isEmpty { accountPicker }
             if let account = selectedAccount {
                 previewCard(for: account)
                 VStack(alignment: .leading, spacing: 5) {
@@ -477,55 +586,19 @@ struct MarketingComposerView: View {
                     if let guideline, resolvedText.count > guideline {
                         Label("Over this platform's suggested limit — review before posting.", systemImage: "exclamationmark.triangle.fill")
                             .font(.caption).foregroundStyle(.orange)
+                    } else if let guideline, Double(resolvedText.count) >= Double(guideline) * 0.9 {
+                        Label("Approaching this platform’s suggested limit.", systemImage: "exclamationmark.triangle")
+                            .font(.caption).foregroundStyle(.orange)
                     } else {
                         Text("Counts are guidance and may differ from platform validation.")
                             .font(.caption).foregroundStyle(.secondary)
                     }
                 }
                 Divider()
-                if customizedText[account.id] == nil {
-                    Button("Customize for this account") {
-                        customizedText[account.id] = originalText
-                    }
-                    .buttonStyle(.bordered)
-                } else {
-                    HStack {
-                        Text("Custom version").font(.headline)
-                        Spacer()
-                        Button("View Original") { showOriginalText = true }
-                        Button("Use Original") { showUseOriginalConfirmation = true }
-                    }
-                    TextEditor(text: accountTextBinding(account.id))
-                        .frame(minHeight: 125)
-                        .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.secondary.opacity(0.25)))
-                    Button("Copy from Original") { customizedText[account.id] = originalText }
-                        .buttonStyle(.link)
-                }
-                VStack(alignment: .leading, spacing: 8) {
-                    HStack {
-                        Text("Media for this account").font(.headline)
-                        Spacer()
-                        if customMediaAccountIDs.contains(account.id) {
-                            Button("Use Shared Media") {
-                                customMediaAccountIDs.remove(account.id)
-                                destinationMediaOverrides.removeValue(forKey: account.id)
-                            }
-                        } else {
-                            Button("Customize Media") {
-                                customMediaAccountIDs.insert(account.id)
-                                destinationMediaOverrides[account.id] = sharedMediaPaths
-                            }
-                        }
-                    }
-                    if customMediaAccountIDs.contains(account.id) {
-                        ContentMediaView(contentFolderURL: contentFolderURL,
-                                         assetPaths: mediaOverrideBinding(account.id))
-                    } else if effectiveMediaPaths(for: account.id).isEmpty {
-                        Text("No shared media selected.").font(.caption).foregroundStyle(.secondary)
-                    } else {
-                        Text("Using \(sharedMediaPaths.count) shared file(s).")
-                            .font(.caption).foregroundStyle(.secondary)
-                    }
+                Button("Edit Version for This Account") {
+                    section = .content
+                    editingAccountVersion = true
+                    compactPreviewSelected = false
                 }
                 HStack {
                     Button {
@@ -535,26 +608,8 @@ struct MarketingComposerView: View {
                     .keyboardShortcut("c", modifiers: [.command, .shift])
                     .help("Copy the selected account’s effective post text (⇧⌘C)")
                     Text(copyMessage ?? "").font(.caption).foregroundStyle(.secondary)
-                    if let url = account.profileURL { Button("Open Social Account") { NSWorkspace.shared.open(url) } }
                 }
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("Publication for this account").font(.headline)
-                    Picker("Status", selection: destinationStatusBinding(account.id)) {
-                        ForEach(["Idea", "Draft", "Ready", "Published"], id: \.self) { Text($0) }
-                    }
-                    if destinationStatuses[account.id] == "Published" {
-                        TextField("Published URL (optional)", text: destinationURLBinding(account.id))
-                            .textFieldStyle(.roundedBorder)
-                        Toggle("Record publication date", isOn: destinationPublicationDatePresenceBinding(account.id))
-                        if destinationPublicationDates[account.id] != nil {
-                            DatePicker("Published on", selection: destinationPublicationDateBinding(account.id), displayedComponents: .date)
-                                .datePickerStyle(.field)
-                        }
-                        Text("Marking Published records your work; it does not post to the account.")
-                            .font(.caption).foregroundStyle(.secondary)
-                    }
-                }
-                Spacer(minLength: 0)
+                if let url = account.profileURL { Link("Open Social Account", destination: url) }
             } else {
                 ContentUnavailableView("Select an account", systemImage: "rectangle.and.text.magnifyingglass",
                                        description: Text("Choose an eligible destination to review its effective post."))
@@ -564,6 +619,185 @@ struct MarketingComposerView: View {
         .padding(20)
         .sheet(isPresented: $showingGuidanceSettings) {
             PlatformGuidanceSettingsView()
+        }
+    }
+
+    @ViewBuilder private var deliveryHistorySection: some View {
+        let entries = deliveryHistory.filter { $0.intent.contentID == contentID }
+        if !entries.isEmpty {
+            VStack(alignment: .leading, spacing: 8) {
+                sectionTitle("API Delivery History")
+                if let deliveryError {
+                    Text(deliveryError).font(.caption).foregroundStyle(.orange)
+                }
+                ForEach(entries, id: \.intent.id) { entry in
+                    VStack(alignment: .leading, spacing: 4) {
+                        HStack {
+                            Text(entry.state.displayTitle)
+                                .font(.subheadline.weight(.semibold))
+                            Spacer()
+                            Text(entry.intent.scheduledDate.formatted(date: .abbreviated, time: .shortened))
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                        if let attempt = entry.attempts.last {
+                            Text(attempt.message ?? attempt.finishedAt?.formatted(date: .abbreviated, time: .shortened) ?? "Delivery in progress")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                        if entry.state == .outcomeUnknown {
+                            Text("Check the account before taking another action. Indie Dev Buddy will not retry automatically.")
+                                .font(.caption).foregroundStyle(.orange)
+                        }
+                        if let url = entry.attempts.last?.publishedURL { Link("View Post", destination: url) }
+                        if entry.state == .queued || entry.state == .overdue {
+                            Button("Cancel API Schedule", role: .destructive) {
+                                Task {
+                                    do {
+                                        try await socialPublishingRuntime.cancel([entry.intent.id])
+                                        deliveryError = nil
+                                    } catch {
+                                        deliveryError = "This schedule could not be canceled. Review the latest delivery status."
+                                    }
+                                    await refreshDeliveryHistory()
+                                }
+                            }
+                            .font(.caption)
+                        }
+                    }
+                    .padding(9)
+                    .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 8))
+                }
+            }
+            Divider()
+        }
+    }
+
+    private func refreshDeliveryHistory() async {
+        let root = contentFolderURL.deletingLastPathComponent().deletingLastPathComponent()
+        deliveryHistory = await socialPublishingRuntime.history(workspaceID: workspaceID, workspaceRoot: root)
+    }
+
+    private var publishingProgress: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            sectionTitle("Publishing Progress")
+            if destinationIDs.isEmpty {
+                Text("No destinations selected").foregroundStyle(.secondary)
+            } else {
+                ProgressView(value: Double(postedCount), total: Double(destinationIDs.count)) {
+                    Text(progressText)
+                }
+                .tint(postedCount == destinationIDs.count ? .green : .accentColor)
+                ForEach(selectedAccounts) { account in
+                    let posted = destinationStatuses[account.id] == "Published"
+                    VStack(alignment: .leading, spacing: 4) {
+                        HStack(alignment: .firstTextBaseline) {
+                            SocialPlatformIcon(platform: account.platform, size: 20)
+                            Text(account.displayName).fontWeight(.medium)
+                            Spacer(minLength: 8)
+                            Text(posted ? "Posted" : destinationStatuses[account.id] ?? "Draft")
+                                .foregroundStyle(posted ? Color.green : .secondary)
+                        }
+                        if posted, let date = destinationPublicationDates[account.id] {
+                            Text(date.formatted(date: .abbreviated, time: .shortened))
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                        if posted, let rawURL = destinationURLs[account.id], let url = URL(string: rawURL),
+                           let scheme = url.scheme?.lowercased(), ["http", "https"].contains(scheme), url.host != nil {
+                            Link("View Post", destination: url)
+                        }
+                    }
+                }
+                if !unavailableDestinationIDs.isEmpty {
+                    Text("\(unavailableDestinationIDs.count) unavailable destination(s) included")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                if !selectedAccounts.isEmpty {
+                    Button("Manage Publishing") {
+                        section = .publishing
+                        compactPreviewSelected = false
+                    }
+                }
+            }
+        }
+    }
+
+    private func publicationEditor(for account: ComposerSocialAccount) -> some View {
+        let id = account.id
+        let recipient = account.providerIdentity.flatMap { identity in
+            connectedAccounts.first {
+                $0.platform.rawValue == identity.platform && $0.server == identity.server && $0.remoteID == identity.remoteID
+            }
+        }
+        let canSchedule = account.isAPISchedulable && recipient != nil
+        return VStack(alignment: .leading, spacing: 8) {
+            sectionTitle(account.displayName)
+            Picker("Status", selection: destinationStatusBinding(id)) {
+                Text("Idea").tag("Idea")
+                Text("Draft").tag("Draft")
+                Text("Ready").tag("Ready")
+                if canSchedule || destinationStatuses[id] == "Scheduled" { Text("Scheduled").tag("Scheduled") }
+                Text("Manually Scheduled").tag("Manually Scheduled")
+                Text("Posted").tag("Published")
+            }
+            if destinationStatuses[id] == "Scheduled" {
+                if let recipient {
+                    Label("API recipient: \(recipient.username) on \(recipient.platform.workspaceTitle)", systemImage: "person.crop.circle.badge.checkmark")
+                        .font(.caption)
+                }
+                DatePicker("API post time", selection: destinationScheduleDateBinding(id),
+                           displayedComponents: [.date, .hourAndMinute])
+                Text("API scheduling requires a verified connected account. The app must be open and the Mac awake at this time.")
+                    .font(.caption).foregroundStyle(.secondary)
+                if account.apiPlatform == .threads || account.apiPlatform == .instagram {
+                    TextField(account.apiPlatform == .instagram ? "Public media URL" : "Public media URL (optional)",
+                              text: destinationMediaLinkBinding(id).url)
+                    Picker("Media type", selection: destinationMediaLinkBinding(id).kind) {
+                        Text("Image").tag(ContentScheduledMediaKind.image)
+                        Text("Video").tag(ContentScheduledMediaKind.video)
+                    }
+                    Text("Enter a public HTTPS link to a file you want to publish. The app never uploads workspace files automatically.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+            } else if !canSchedule {
+                Text("API scheduling is not configured for this account. You can still mark it Manually Scheduled.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            if destinationStatuses[id] == "Manually Scheduled" {
+                DatePicker("Manual post time", selection: destinationScheduleDateBinding(id),
+                           displayedComponents: [.date, .hourAndMinute])
+                Text("This records your plan only. Indie Dev Buddy will not send this post.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            if destinationStatuses[id] == "Published" {
+                TextField("Post URL (optional)", text: destinationURLBinding(id))
+                    .textFieldStyle(.roundedBorder)
+                Toggle("Record publication date", isOn: destinationPublicationDatePresenceBinding(id))
+                if destinationPublicationDates[id] != nil {
+                    DatePicker("Posted on", selection: destinationPublicationDateBinding(id),
+                               displayedComponents: [.date, .hourAndMinute])
+                        .datePickerStyle(.field)
+                }
+            } else {
+                Button("Mark as Posted") { destinationStatusBinding(id).wrappedValue = "Published" }
+            }
+        }
+    }
+
+    private func accountMedia(for account: ComposerSocialAccount) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            sectionTitle("Media for This Account")
+            if customMediaAccountIDs.contains(account.id) {
+                ContentMediaView(contentFolderURL: contentFolderURL, assetPaths: mediaOverrideBinding(account.id))
+                Button("Use Shared Media") {
+                    customMediaAccountIDs.remove(account.id)
+                    destinationMediaOverrides.removeValue(forKey: account.id)
+                }
+            } else {
+                Text("Using shared media (\(sharedMediaPaths.count))").foregroundStyle(.secondary)
+                Button("Customize Media") {
+                    customMediaAccountIDs.insert(account.id)
+                    destinationMediaOverrides[account.id] = sharedMediaPaths
+                }
+            }
         }
     }
 
@@ -780,15 +1014,30 @@ struct MarketingComposerView: View {
 
     private func sectionTitle(_ title: String) -> some View { Text(title).font(.headline) }
 
-    private func selectionBinding(for account: ComposerSocialAccount) -> Binding<Bool> {
-        Binding(get: { selectedAccountIDs.contains(account.id) }, set: { selected in
-            if selected {
-                selectedAccountIDs.insert(account.id)
-                selectedAccountID = account.id
-            } else {
-                selectedAccountIDs.remove(account.id)
+    @MainActor
+    private func resolveBlueskyMentions() async {
+        mentionResolutionMessage = nil
+        let targets = selectedAccounts.filter { $0.apiPlatform == .bluesky }
+        guard !targets.isEmpty else { return }
+        var completed = 0
+        for account in targets {
+            guard let identity = account.providerIdentity else { continue }
+            var text = customizedText[account.id] ?? originalText
+            if includeArticleLink, let url = article?.publishedURL {
+                text = text.isEmpty ? url.absoluteString : "\(text)\n\n\(url.absoluteString)"
             }
-        })
+            do {
+                let mentions = try await socialPublishingRuntime.connections.resolveBlueskyMentions(in: text, for: identity)
+                mentionResolutions[account.id] = ComposerMentionResolution(textSnapshot: text, mentions: mentions)
+                completed += 1
+            } catch {
+                mentionResolutionMessage = "Could not resolve mentions for \(account.displayName). Check the Bluesky connection and handle spelling."
+                return
+            }
+        }
+        mentionResolutionMessage = completed == 0
+            ? "Connect a Bluesky account to resolve tagged mentions."
+            : "Resolved \(completed) Bluesky account version\(completed == 1 ? "" : "s"). Scheduled posts keep the resolved account IDs."
     }
 
     private func accountTextBinding(_ id: String) -> Binding<String> {
@@ -796,11 +1045,35 @@ struct MarketingComposerView: View {
     }
 
     private func destinationStatusBinding(_ id: String) -> Binding<String> {
-        Binding(get: { destinationStatuses[id] ?? "Draft" }, set: { destinationStatuses[id] = $0 })
+        Binding(get: { destinationStatuses[id] ?? "Draft" }, set: { status in
+            destinationStatuses[id] = status
+            if status == "Manually Scheduled" || status == "Scheduled" {
+                destinationScheduleDates[id] = destinationScheduleDates[id] ?? Date().addingTimeInterval(3600)
+            } else {
+                destinationScheduleDates.removeValue(forKey: id)
+            }
+            if status != "Scheduled" { destinationMediaLinks.removeValue(forKey: id) }
+            if status == "Published" {
+                destinationPublicationDates[id] = destinationPublicationDates[id] ?? Date()
+            } else {
+                destinationPublicationDates.removeValue(forKey: id)
+                destinationURLs.removeValue(forKey: id)
+            }
+        })
     }
 
     private func destinationURLBinding(_ id: String) -> Binding<String> {
         Binding(get: { destinationURLs[id] ?? "" }, set: { destinationURLs[id] = $0 })
+    }
+
+    private func destinationScheduleDateBinding(_ id: String) -> Binding<Date> {
+        Binding(get: { destinationScheduleDates[id] ?? Date().addingTimeInterval(3600) },
+                set: { destinationScheduleDates[id] = $0 })
+    }
+
+    private func destinationMediaLinkBinding(_ id: String) -> Binding<ComposerMediaLink> {
+        Binding(get: { destinationMediaLinks[id] ?? ComposerMediaLink() },
+                set: { destinationMediaLinks[id] = $0 })
     }
 
     private var plannedDatePresenceBinding: Binding<Bool> {
@@ -851,6 +1124,7 @@ struct MarketingComposerView: View {
             if success {
                 savedDraftSnapshot = draft
                 onDirtyChange(false)
+                Task { await refreshDeliveryHistory() }
             }
             completion?(success)
         }
@@ -871,6 +1145,11 @@ struct MarketingComposerView: View {
     }
 }
 
+struct ComposerMediaLink: Equatable {
+    var url = ""
+    var kind: ContentScheduledMediaKind = .image
+}
+
 struct ComposerDraft: Equatable {
     var title: String
     var originalText: String
@@ -879,6 +1158,9 @@ struct ComposerDraft: Equatable {
     var customizedText: [String: String]
     var destinationStatuses: [String: String]
     var destinationURLs: [String: String]
+    var destinationScheduleDates: [String: Date] = [:]
+    var destinationMediaLinks: [String: ComposerMediaLink] = [:]
+    var mentionResolutions: [String: ComposerMentionResolution] = [:]
     var plannedDate: Date?
     var destinationPublicationDates: [String: Date]
     var sharedMediaPaths: [String]
@@ -891,6 +1173,11 @@ struct ComposerDraft: Equatable {
         selectedAccountIDs.formIntersection(eligibleAccountIDs)
         preservedDestinationIDs = unavailableDestinationIDs
     }
+}
+
+struct ComposerMentionResolution: Equatable {
+    var textSnapshot: String
+    var mentions: [ContentScheduledMention]
 }
 
 extension MarketingComposerView {
@@ -914,12 +1201,14 @@ extension MarketingComposerView {
         let selectableIDs = destinationSelection.selectedAccountIDs
         let unavailableIDs = destinationSelection.unavailableAccountIDs
         self.init(
+            contentID: content.id,
+            workspaceID: snapshot.manifest.id,
             contentFolderURL: contentFolderURL,
             apps: snapshot.apps,
             accounts: snapshot.socialAccounts.map { ComposerSocialAccount(record: $0, snapshot: snapshot) },
             article: article ?? Self.sourceArticle(for: content, snapshot: snapshot),
             hasUnavailableSource: content.sourceContentId.map { snapshot.contentByID[$0] == nil } ?? false,
-            relatedItems: related.map {
+            relatedItems: related.filter { $0.id != content.sourceContentId }.map {
                 ComposerRelatedItem(id: $0.id, title: $0.title, kind: $0.kind.rawValue.capitalized, status: $0.status.rawValue.capitalized)
             },
             unavailableDestinationIDs: unavailableIDs,
@@ -934,14 +1223,29 @@ extension MarketingComposerView {
         _selectedAppIDs = State(initialValue: Set(content.appIds))
         _originalText = State(initialValue: originalText)
         _includeArticleLink = State(initialValue: content.includeSourceLink)
-        _draftStatus = State(initialValue: content.status.rawValue.capitalized)
+        _draftStatus = State(initialValue: content.status.displayTitle)
         _selectedAccountIDs = State(initialValue: selectableIDs)
-        _selectedAccountID = State(initialValue: selectableIDs.first)
+        _selectedAccountID = State(initialValue: selectableIDs.sorted().first)
         _customizedText = State(initialValue: customizedText)
-        _destinationStatuses = State(initialValue: Dictionary(content.destinations.map { ($0.accountId, $0.status.rawValue.capitalized) }, uniquingKeysWith: { _, latest in latest }))
+        _destinationStatuses = State(initialValue: Dictionary(content.destinations.map { ($0.accountId, $0.status.displayTitle) }, uniquingKeysWith: { _, latest in latest }))
         _destinationURLs = State(initialValue: Dictionary(content.destinations.compactMap { destination in
             destination.publishedURL.map { (destination.accountId, $0.absoluteString) }
         }, uniquingKeysWith: { _, latest in latest }))
+        _destinationScheduleDates = State(initialValue: Dictionary(content.destinations.compactMap { destination in
+            destination.schedule.map { (destination.accountId, $0.scheduledDate) }
+        }, uniquingKeysWith: { _, latest in latest }))
+        let mediaLinks = Dictionary(content.destinations.compactMap { destination in
+            destination.schedule?.media?.first.map {
+                (destination.accountId, ComposerMediaLink(url: $0.publicURL.absoluteString, kind: $0.kind))
+            }
+        }, uniquingKeysWith: { _, latest in latest })
+        _destinationMediaLinks = State(initialValue: mediaLinks)
+        let savedMentions = Dictionary(content.destinations.compactMap { destination -> (String, ComposerMentionResolution)? in
+            guard let schedule = destination.schedule, let textSnapshot = schedule.textSnapshot,
+                  let mentions = schedule.mentions, !mentions.isEmpty else { return nil }
+            return (destination.accountId, ComposerMentionResolution(textSnapshot: textSnapshot, mentions: mentions))
+        }, uniquingKeysWith: { _, latest in latest })
+        _mentionResolutions = State(initialValue: savedMentions)
         _plannedDate = State(initialValue: content.plannedDate)
         _destinationPublicationDates = State(initialValue: Dictionary(content.destinations.compactMap { destination in
             destination.publishedDate.map { (destination.accountId, $0) }
@@ -953,17 +1257,20 @@ extension MarketingComposerView {
         _customMediaAccountIDs = State(initialValue: Set(content.destinations.compactMap { $0.mediaPaths == nil ? nil : $0.accountId }))
         _savedDraftSnapshot = State(initialValue: ComposerDraft(
             title: content.title, originalText: originalText,
-            selectedAccountIDs: selectableIDs, appIDs: content.appIds,
+            selectedAccountIDs: selectableIDs, appIDs: content.appIds.sorted(),
             customizedText: customizedText,
-            destinationStatuses: Dictionary(content.destinations.map { ($0.accountId, $0.status.rawValue.capitalized) }, uniquingKeysWith: { _, latest in latest }),
+            destinationStatuses: Dictionary(content.destinations.map { ($0.accountId, $0.status.displayTitle) }, uniquingKeysWith: { _, latest in latest }),
             destinationURLs: Dictionary(content.destinations.compactMap { destination in destination.publishedURL.map { (destination.accountId, $0.absoluteString) } }, uniquingKeysWith: { _, latest in latest }),
+            destinationScheduleDates: Dictionary(content.destinations.compactMap { destination in destination.schedule.map { (destination.accountId, $0.scheduledDate) } }, uniquingKeysWith: { _, latest in latest }),
+            destinationMediaLinks: mediaLinks,
+            mentionResolutions: savedMentions,
             plannedDate: content.plannedDate,
             destinationPublicationDates: Dictionary(content.destinations.compactMap { destination in destination.publishedDate.map { (destination.accountId, $0) } }, uniquingKeysWith: { _, latest in latest }),
             sharedMediaPaths: content.mediaPaths,
             destinationMediaOverrides: Dictionary(content.destinations.compactMap { destination in destination.mediaPaths.map { (destination.accountId, $0) } }, uniquingKeysWith: { _, latest in latest }),
             preservedDestinationIDs: unavailableIDs,
             includeArticleLink: content.includeSourceLink,
-            status: content.status.rawValue.capitalized
+            status: content.status.displayTitle
         ))
     }
 
@@ -975,6 +1282,65 @@ extension MarketingComposerView {
     private static func relatedFamily(for content: ContentRecord, snapshot: WorkspaceSnapshot) -> [ContentRecord] {
         snapshot.relatedFamily(to: content.id)
     }
+}
+
+private struct ComposerAccountChooser: View {
+    @Environment(\.dismiss) private var dismiss
+    let accounts: [ComposerSocialAccount]
+    let onConfirm: (Set<String>) -> Void
+    @State private var selectedIDs: Set<String>
+
+    init(accounts: [ComposerSocialAccount], selectedIDs: Set<String>, onConfirm: @escaping (Set<String>) -> Void) {
+        self.accounts = accounts
+        self.onConfirm = onConfirm
+        _selectedIDs = State(initialValue: selectedIDs)
+    }
+
+    var body: some View {
+        let groups = Dictionary(grouping: accounts, by: \.ownerGroupID)
+        let sortedGroups = groups.values.sorted {
+            let left = $0.first?.ownerName ?? ""
+            let right = $1.first?.ownerName ?? ""
+            if left == right { return ($0.first?.ownerGroupID ?? "") < ($1.first?.ownerGroupID ?? "") }
+            return left.localizedStandardCompare(right) == .orderedAscending
+        }
+        return VStack(alignment: .leading, spacing: 14) {
+            Text("Choose Accounts").font(.title2.bold())
+            if accounts.isEmpty {
+                ContentUnavailableView("No eligible accounts", systemImage: "person.crop.circle.badge.exclamationmark",
+                                       description: Text("Enable an account with an owner, platform, and handle or profile URL."))
+            } else {
+                List {
+                    ForEach(sortedGroups.compactMap(\.first)) { owner in
+                        Section(owner.ownerName ?? "Accounts") {
+                            ForEach(groups[owner.ownerGroupID] ?? []) { account in
+                                Toggle(account.displayName, isOn: Binding(
+                                    get: { selectedIDs.contains(account.id) },
+                                    set: { isSelected in
+                                        if isSelected { selectedIDs.insert(account.id) }
+                                        else { selectedIDs.remove(account.id) }
+                                    }
+                                ))
+                                .toggleStyle(.checkbox)
+                            }
+                        }
+                    }
+                }
+            }
+            HStack {
+                Spacer()
+                Button("Cancel") { dismiss() }.keyboardShortcut(.cancelAction)
+                Button("Done") {
+                    onConfirm(selectedIDs)
+                    dismiss()
+                }
+                .keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(20)
+        .frame(width: 460, height: 390)
+    }
+
 }
 
 private struct PlatformGuidanceSettingsView: View {

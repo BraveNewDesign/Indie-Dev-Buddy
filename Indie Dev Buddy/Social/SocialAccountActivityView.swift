@@ -14,6 +14,7 @@ struct SocialAccountActivityView: View {
     @State private var postCursor: String?
     @State private var replyCursor: String?
     @State private var selectedPostID: String?
+    @State private var selectedPostQueryID: String?
     @State private var replyTarget: SocialPost?
     @State private var replyText = ""
     @State private var deleteTarget: SocialPost?
@@ -27,7 +28,12 @@ struct SocialAccountActivityView: View {
             HStack {
                 VStack(alignment: .leading) {
                     Text("Account Activity").font(.title2.bold())
-                    Text("\(account.platform.workspaceTitle) · \(account.username)").foregroundStyle(.secondary)
+                    Text(account.displayName ?? account.username).font(.headline)
+                    Text(account.authenticatedUserName.map { "\(account.platform.workspaceTitle) · Connected by \($0)" } ?? account.platform.workspaceTitle)
+                        .foregroundStyle(.secondary)
+                    if account.profileURL?.scheme?.lowercased() == "https", let profileURL = account.profileURL {
+                        Link("Open profile", destination: profileURL).font(.caption)
+                    }
                 }
                 Spacer()
                 Button("Refresh", systemImage: "arrow.clockwise") { Task { await reload() } }
@@ -72,19 +78,28 @@ struct SocialAccountActivityView: View {
             if let replyTarget {
                 Divider()
                 Text(account.platform == .instagram ? "Reply to Comment" : "Write Reply").font(.headline)
+                Text("Replying to \(replyTarget.authorName ?? replyTarget.authorHandle.map { "@\($0)" } ?? "this post or comment")")
+                    .font(.caption).foregroundStyle(.secondary)
                 TextField("Reply text", text: $replyText, axis: .vertical)
                     .lineLimit(2...4)
                 HStack {
                     Button("Cancel Reply") { self.replyTarget = nil; replyText = "" }
                     Button("Send Reply") {
                         let text = replyText.trimmingCharacters(in: .whitespacesAndNewlines)
-                        perform("Reply", success: "Reply sent.") {
-                            _ = try await runtime.connections.reply(text, to: replyTarget.id, for: identity)
+                        let success = account.platform == .instagram
+                            ? "Reply sent. Instagram does not expose nested replies in this comments list."
+                            : "Reply sent."
+                        perform("Reply", success: success) {
+                            let target = replyTarget
+                            _ = try await runtime.connections.reply(text, to: target.id, for: identity)
                             self.replyTarget = nil
                             replyText = ""
-                            if let selectedPostID { await loadReplies(to: selectedPostID, reset: true) }
+                            if account.platform != .instagram, let selectedPostQueryID {
+                                await loadReplies(to: selectedPostQueryID, reset: true)
+                            }
                         }
                     }
+                    .help(account.platform == .instagram ? "Instagram sends this as a reply to the selected comment. Nested replies are not available in this list." : "Send a reply to the selected post or comment.")
                     .disabled(writing || replyText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 }
             }
@@ -112,14 +127,18 @@ struct SocialAccountActivityView: View {
             itemText(post)
             HStack {
                 if capabilities.contains(.readReplies) {
-                    Button(selectedPostID == post.id ? "Hide Comments" : "View Comments") {
+                    let noun = (account.platform == .facebookPages || account.platform == .instagram || account.platform == .linkedIn) ? "Comments" : "Replies"
+                    Button(selectedPostID == post.id ? "Hide \(noun)" : "View \(noun)") {
                         if selectedPostID == post.id {
                             selectedPostID = nil
+                            selectedPostQueryID = nil
                             replies = []
                             replyCursor = nil
                         } else {
                             selectedPostID = post.id
-                            Task { await loadReplies(to: post.id, reset: true) }
+                            let queryID = account.platform == .x ? (post.conversationRootID ?? post.id) : post.id
+                            selectedPostQueryID = queryID
+                            Task { await loadReplies(to: queryID, reset: true) }
                         }
                     }
                     .disabled(loading)
@@ -160,15 +179,15 @@ struct SocialAccountActivityView: View {
                                 Button("Unhide") { perform("Unhide reply", success: "Reply unhidden.") { try await runtime.connections.setReplyHidden(false, replyID: reply.id, for: identity) } }
                                     .disabled(writing)
                             }
-                            if capabilities.contains(.deleteReply) {
+                            if capabilities.contains(.deleteReply), reply.authorID == account.remoteID {
                                 Button("Delete…", role: .destructive) { deleteTarget = reply }.disabled(writing)
                             }
                         }
                     }
                     .padding(.leading, 14)
                 }
-                if replyCursor != nil {
-                    Button("Load More Comments") { Task { await loadReplies(to: post.id, reset: false) } }.disabled(loading)
+                if replyCursor != nil, let selectedPostQueryID {
+                    Button("Load More Comments") { Task { await loadReplies(to: selectedPostQueryID, reset: false) } }.disabled(loading)
                 }
                 if replies.isEmpty && !loading { Text("No comments returned.").font(.caption).foregroundStyle(.secondary) }
             }
@@ -178,7 +197,14 @@ struct SocialAccountActivityView: View {
 
     private func itemText(_ post: SocialPost) -> some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text(verbatim: post.text).textSelection(.enabled)
+            HStack(spacing: 6) {
+                Text(post.authorName ?? post.authorHandle.map { "@\($0)" } ?? "Author unavailable")
+                    .font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                if let date = post.createdAt {
+                    Text(date.formatted(date: .abbreviated, time: .shortened)).font(.caption2).foregroundStyle(.tertiary)
+                }
+            }
+            Text(verbatim: readableText(post)).textSelection(.enabled)
             if let url = post.url, url.scheme?.lowercased() == "https", url.host != nil {
                 Link("View on Provider", destination: url).font(.caption)
             }
@@ -199,7 +225,7 @@ struct SocialAccountActivityView: View {
             capabilities = try await runtime.connections.capabilities(for: identity)
             try Task.checkCancellation()
         } catch {
-            if !Task.isCancelled { message = "Could not read this connection. Check its credentials and permissions." }
+            if !Task.isCancelled { message = message(for: error, fallback: "Could not read this connection. Check its credentials and permissions.") }
             return
         }
         if capabilities.contains(.listPosts) {
@@ -223,11 +249,12 @@ struct SocialAccountActivityView: View {
             postCursor = page.nextCursor == cursor ? nil : page.nextCursor
             if reset {
                 selectedPostID = nil
+                selectedPostQueryID = nil
                 replies = []
                 replyCursor = nil
             }
         } catch {
-            if !Task.isCancelled { message = "Could not load posts for this account." }
+            if !Task.isCancelled { message = message(for: error, fallback: "Could not load posts for this account.") }
         }
     }
 
@@ -235,18 +262,14 @@ struct SocialAccountActivityView: View {
         guard !loading else { return }
         loading = true
         defer { loading = false }
-        if reset {
-            replies = []
-            replyCursor = nil
-        }
         do {
             let cursor = reset ? nil : replyCursor
             let page = try await runtime.connections.replies(to: postID, for: identity, cursor: cursor)
-            guard !Task.isCancelled, selectedPostID == postID else { return }
-            replies = merged(replies, page.items)
+            guard !Task.isCancelled, selectedPostQueryID == postID else { return }
+            replies = merged(reset ? [] : replies, page.items)
             replyCursor = page.nextCursor == cursor ? nil : page.nextCursor
         } catch {
-            if !Task.isCancelled { message = "Could not load comments for this post." }
+            if !Task.isCancelled { message = message(for: error, fallback: "Could not load comments for this post.") }
         }
     }
 
@@ -267,8 +290,37 @@ struct SocialAccountActivityView: View {
                 message = success
             } catch {
                 recordActivity(action, confirmed: false)
-                message = "The provider did not confirm this action. Check the post before trying again."
+                message = message(for: error, fallback: "The provider did not confirm this action. Check the post before trying again.")
             }
+        }
+    }
+
+    private func readableText(_ post: SocialPost) -> String {
+        guard post.textFormat == .html else { return post.text }
+        var value = post.text.replacingOccurrences(of: #"(?is)<(script|style)[^>]*>.*?</\1\s*>"#, with: "", options: .regularExpression)
+        value = value.replacingOccurrences(of: #"(?i)<br\s*/?>|</p\s*>|</li\s*>|</div\s*>"#, with: "\n", options: .regularExpression)
+        value = value.replacingOccurrences(of: #"<[^>]+>"#, with: "", options: .regularExpression)
+        for (entity, replacement) in [("&nbsp;", " "), ("&amp;", "&"), ("&lt;", "<"), ("&gt;", ">"), ("&quot;", "\""), ("&#39;", "'")] {
+            value = value.replacingOccurrences(of: entity, with: replacement)
+        }
+        return value.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private func message(for error: Error, fallback: String) -> String {
+        guard let error = error as? SocialError else { return fallback }
+        switch error {
+        case .authenticationRequired, .authorizationFailed:
+            return "Reconnect this account, then try again."
+        case .permissionDenied:
+            return "This account does not currently have permission for that action. Review its provider access."
+        case .rateLimited(let retryAfter):
+            return retryAfter.map { "The provider rate limited this action. Try again after \($0)." } ?? "The provider rate limited this action. Try again later."
+        case .unsupported(let capability):
+            return "This provider does not support \(capability.rawValue)."
+        case .billingRequired:
+            return "The provider requires an API plan or credits for this action."
+        default:
+            return fallback
         }
     }
 

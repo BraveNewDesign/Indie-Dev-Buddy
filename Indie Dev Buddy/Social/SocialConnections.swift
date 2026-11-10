@@ -152,6 +152,25 @@ actor SocialConnections {
         }
     }
 
+    func resolveBlueskyMentions(in text: String, for identity: ContentRecipientIdentity) async throws -> [ContentScheduledMention] {
+        let id = try accountID(for: identity)
+        guard id.platform == .bluesky else { throw SocialError.unsupported(.resolveMentions) }
+        let expression = try NSRegularExpression(pattern: #"(?<![A-Za-z0-9._-])@([A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+)"#)
+        let matches = expression.matches(in: text, range: NSRange(text.startIndex..<text.endIndex, in: text))
+        var result: [ContentScheduledMention] = []
+        for match in matches {
+            guard let range = Range(match.range, in: text), let handleRange = Range(match.range(at: 1), in: text),
+                  let start = range.lowerBound.samePosition(in: text.utf8),
+                  let end = range.upperBound.samePosition(in: text.utf8) else { throw SocialError.invalidInput }
+            let did = try await bluesky.resolveMention(String(text[handleRange]), as: id)
+            result.append(ContentScheduledMention(
+                byteStart: text.utf8.distance(from: text.utf8.startIndex, to: start),
+                byteEnd: text.utf8.distance(from: text.utf8.startIndex, to: end), subjectID: did
+            ))
+        }
+        return result
+    }
+
     func sender() -> PublishingCoordinator.Sender {
         { [weak self] intent in
             guard let self else { throw SocialError.invalidConfiguration }
@@ -164,7 +183,11 @@ actor SocialConnections {
         guard let server = URL(string: intent.recipient.server.absoluteString),
               server == id.server else { throw SocialError.invalidInput }
 
-        let draft = TextPost(text: intent.text, idempotencyKey: intent.draftID, createdAt: intent.draftCreatedAt)
+        let mentions = (intent.mentions ?? []).map {
+            SocialMention(byteStart: $0.byteStart, byteEnd: $0.byteEnd, subjectID: $0.subjectID)
+        }
+        let draft = TextPost(text: intent.text, idempotencyKey: intent.draftID,
+                             createdAt: intent.draftCreatedAt, mentions: mentions)
         let media: [SocialMedia] = try intent.media.map { item in
             guard item.publicURL.scheme?.lowercased() == "https", item.publicURL.host != nil else {
                 throw SocialError.invalidInput
@@ -379,6 +402,7 @@ actor SocialConnections {
         accountTarget: String?,
         instance: URL?,
         exchange: (any ConfidentialOAuthExchange)?,
+        requestLinkedInActivity: Bool = false,
         browser: @escaping OAuthBrowser
     ) async throws -> SocialAccount {
         switch platform {
@@ -402,8 +426,13 @@ actor SocialConnections {
         case .linkedIn:
             guard let exchange else { throw SocialError.invalidConfiguration }
             let client = SocialClient(adapter: LinkedInAdapter(oauthBroker: exchange), store: store)
+            let scopes: Set<String>? = requestLinkedInActivity
+                ? (accountTarget == nil
+                    ? ["openid", "profile", "w_member_social", "r_member_social", "w_member_social_feed", "r_member_social_feed"]
+                    : ["openid", "profile", "w_organization_social", "r_organization_social", "w_organization_social_feed", "r_organization_social_feed"])
+                : nil
             return try await client.connect(.init(clientID: clientID, redirectURI: redirectURI,
-                                                  organizationURN: accountTarget, browser: browser))
+                                                  scopes: scopes, organizationURN: accountTarget, browser: browser))
         case .mastodon:
             guard let instance else { throw SocialError.invalidConfiguration }
             return try await mastodon.connect(.init(server: instance, redirectURI: redirectURI,

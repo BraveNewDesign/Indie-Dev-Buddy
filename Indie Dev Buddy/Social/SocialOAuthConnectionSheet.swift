@@ -27,6 +27,12 @@ struct SocialOAuthConnectionSheet: View {
                     TextField("Facebook Page ID", text: $registration.accountTarget)
                 } else if platform == .linkedIn {
                     TextField("Organization URN (optional)", text: $registration.accountTarget)
+                    Toggle("Request LinkedIn comment and feed access", isOn: Binding(
+                        get: { registration.requestLinkedInActivity ?? false },
+                        set: { registration.requestLinkedInActivity = $0 }
+                    ))
+                    Text("This requests Community Management scopes for posts and comments. LinkedIn must approve them for this app; leave off for publishing-only access.")
+                        .font(.caption).foregroundStyle(.secondary)
                 }
             }
             if platform.requiresBroker {
@@ -90,7 +96,8 @@ struct SocialOAuthConnectionSheet: View {
             do {
                 let account = try await runtime.connections.connectOAuth(
                     platform: platform, clientID: settings.clientID, redirectURI: redirect,
-                    accountTarget: accountTarget, instance: instance, exchange: broker
+                    accountTarget: accountTarget, instance: instance, exchange: broker,
+                    requestLinkedInActivity: settings.requestLinkedInActivity ?? false
                 ) { authorizationURL, callbackURL in
                     try await browser.authenticate(authorizationURL, redirect: callbackURL)
                 }
@@ -116,6 +123,7 @@ nonisolated struct SocialOAuthRegistration: Codable {
     var instance = ""
     var accountTarget = ""
     var brokerEndpoint = ""
+    var requestLinkedInActivity: Bool? = false
 
     static func load(_ platform: SocialPlatform) -> Self {
         if let data = UserDefaults.standard.data(forKey: key(platform)),
