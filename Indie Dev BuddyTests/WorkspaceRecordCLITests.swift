@@ -3,6 +3,65 @@ import Testing
 @testable import Indie_Dev_Buddy
 
 struct WorkspaceRecordCLITests {
+    @Test func sharedPostOverridesAndPartialPublicationMetadataRoundTrip() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = WorkspaceStore(rootURL: root)
+        try await store.createWorkspace(at: root)
+
+        let owner = IdentityRecord(name: "Owner")
+        _ = try await store.saveRecord(.identities, id: owner.id, json: JSONEncoder().encode(owner), expectedRevision: nil)
+        let accounts = ["threads", "linkedin", "instagram"].map { platform in
+            SocialAccountRecord(platform: platform, owner: RecordOwner(type: .identity, id: owner.id), handle: "@\(platform)")
+        }
+        for account in accounts {
+            _ = try await store.saveRecord(.accounts, id: account.id, json: JSONEncoder().encode(account), expectedRevision: nil)
+        }
+
+        // Keep the current CLI-style account selection contract intact: selected accounts
+        // start as destinations that inherit the shared original.
+        let cliStyleDraft = ContentRecord.draft(kind: .social, title: "CLI post", accountIDs: accounts.prefix(2).map(\.id))
+        #expect(cliStyleDraft.destinations.map(\.accountId) == accounts.prefix(2).map(\.id))
+        #expect(cliStyleDraft.destinations.allSatisfy { $0.bodyPath == nil && $0.status == .draft })
+
+        let publishedDate = Date(timeIntervalSince1970: 1_800_000_000)
+        let publishedURL = try #require(URL(string: "https://example.com/threads-post"))
+        let post = ContentRecord(
+            kind: .social, title: "Shared announcement",
+            originalBodyPath: "original.txt",
+            destinations: [
+                ContentDestination(accountId: accounts[0].id, bodyPath: "Variants/threads.txt", status: .published,
+                                   publishedURL: publishedURL, publishedDate: publishedDate,
+                                   mediaPaths: ["Media/threads.png"]),
+                ContentDestination(accountId: accounts[1].id, bodyPath: "Variants/linkedin.txt", status: .ready,
+                                   mediaPaths: ["Media/linkedin.png"]),
+                ContentDestination(accountId: accounts[2].id, status: .draft)
+            ],
+            mediaPaths: ["Media/shared.png"]
+        )
+        try await store.write(Data("Threads wording".utf8), relativePath: "Content/\(post.id)/Variants/threads.txt")
+        try await store.write(Data("LinkedIn wording".utf8), relativePath: "Content/\(post.id)/Variants/linkedin.txt")
+        for path in ["Media/shared.png", "Media/threads.png", "Media/linkedin.png"] {
+            try await store.write(Data([0x01]), relativePath: "Content/\(post.id)/\(path)")
+        }
+        _ = try await store.createContent(post, body: "Shared wording")
+
+        let loaded = try await store.load().contentByID[post.id]
+        let persisted = try #require(loaded)
+        #expect(persisted.originalBodyPath == "original.txt")
+        #expect(persisted.destinations.map(\.accountId) == accounts.map(\.id))
+        #expect(persisted.destinations[0].bodyPath == "Variants/threads.txt")
+        #expect(persisted.destinations[1].bodyPath == "Variants/linkedin.txt")
+        #expect(persisted.destinations[2].bodyPath == nil)
+        #expect(persisted.destinations.map(\.status) == [.published, .ready, .draft])
+        #expect(persisted.destinations[0].publishedURL == publishedURL)
+        #expect(persisted.destinations[0].publishedDate == publishedDate)
+        #expect(persisted.destinations[1].publishedURL == nil && persisted.destinations[1].publishedDate == nil)
+        #expect(persisted.mediaPaths == ["Media/shared.png"])
+        #expect(persisted.destinations[0].mediaPaths == ["Media/threads.png"])
+        #expect(persisted.destinations[1].mediaPaths == ["Media/linkedin.png"])
+    }
+
     @Test func accountCreateUpdateConflictAndDeleteAreRevisionGuarded() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }
