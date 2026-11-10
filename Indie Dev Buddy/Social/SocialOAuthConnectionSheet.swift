@@ -187,9 +187,36 @@ struct SocialOAuthConnectionSheet: View {
             } catch is CancellationError {
                 message = "Authorization was canceled."
             } catch {
-                message = "Could not authorize \(platform.workspaceTitle). Check the callback registration, account permissions, and service configuration."
+                message = authorizationFailureMessage(for: error)
             }
         }
+    }
+
+    private func authorizationFailureMessage(for error: any Error) -> String {
+        guard let socialError = error as? SocialError else {
+            let error = error as NSError
+            return "Could not connect \(platform.workspaceTitle). Diagnostic: \(error.domain) error \(error.code)."
+        }
+
+        let detail: String
+        switch socialError {
+        case .invalidConfiguration:
+            detail = "The server or OAuth settings are incompatible. Check the HTTPS server address, callback URL, PKCE support, and requested permissions."
+        case .invalidResponse:
+            detail = "The server returned a response Indie Dev Buddy could not read."
+        case .authorizationFailed:
+            detail = "Authorization did not return a valid callback. Check that the callback URL is unchanged and approve the requested access."
+        case .httpStatus(let status):
+            detail = "The server rejected a connection request with HTTP \(status)."
+        case .transportFailure:
+            detail = "Indie Dev Buddy could not reach the server. Check your network connection and try again."
+        case .authenticationRequired:
+            detail = "The server did not accept the account authorization. Try connecting again."
+        default:
+            detail = socialError.localizedDescription
+        }
+
+        return "Could not connect \(platform.workspaceTitle). \(detail)"
     }
 
     private func importAccessToken() {
