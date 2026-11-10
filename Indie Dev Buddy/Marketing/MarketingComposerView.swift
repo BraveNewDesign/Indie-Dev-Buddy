@@ -623,6 +623,7 @@ struct MarketingComposerView: View {
                             .font(.caption).foregroundStyle(.secondary)
                     }
                 }
+                providerRestrictionGuidance(for: account)
                 Divider()
                 Button("Edit Version for This Account") {
                     section = .content
@@ -919,6 +920,51 @@ struct MarketingComposerView: View {
                     destinationMediaOverrides[account.id] = sharedMediaPaths
                 }
             }
+        }
+    }
+
+    @ViewBuilder
+    private func providerRestrictionGuidance(for account: ComposerSocialAccount) -> some View {
+        let restrictions = Self.providerRestrictions(for: account.platform)
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Provider restrictions")
+                .font(.subheadline.weight(.semibold))
+            ForEach(Array(restrictions.enumerated()), id: \.offset) { _, restriction in
+                Label(restriction, systemImage: "info.circle")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Text("These notes describe Indie Dev Buddy’s API publishing. Provider rules and account access can vary.")
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
+        }
+        .padding(10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.secondary.opacity(0.06), in: RoundedRectangle(cornerRadius: 8))
+        .accessibilityElement(children: .contain)
+    }
+
+    private static func providerRestrictions(for platform: String) -> [String] {
+        switch SocialPlatform.workspacePlatform(platform) {
+        case .bluesky:
+            ["API publishing sends text only. Local attachments and media URLs are not sent."]
+        case .mastodon:
+            ["API publishing sends text only. This app does not upload local files or send public media URLs to Mastodon."]
+        case .threads:
+            ["Media must be a public HTTPS image or video URL; local attachments are not uploaded.",
+             "Only one media item can be included in an API post."]
+        case .instagram:
+            ["Posts require public HTTPS image or video URLs; local attachments are not uploaded.",
+             "A post needs at least one media item and supports up to 10 items."]
+        case .facebookPages:
+            ["API publishing supports one public HTTPS photo URL. Local attachments and videos are not sent."]
+        case .x:
+            ["API publishing sends text only. Media uploads are not supported in this app."]
+        case .linkedIn:
+            ["API publishing sends text only. Media uploads are not supported in this app."]
+        case nil:
+            ["Provider-specific API limits are not configured for this destination. Check its rules before publishing."]
         }
     }
 
