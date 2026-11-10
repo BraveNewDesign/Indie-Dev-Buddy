@@ -6,6 +6,12 @@
 
 The product specification remains the acceptance authority. This file describes the implementation sequence; it is not a release-readiness claim.
 
+## Implementation update — 2026-11-10
+
+The current source now includes the SocialKit connection, account activity, Bluesky mention, and local scheduled-delivery workflows. API delivery uses a device-local journal to authorize intents, refreshes credentials near expiry when supported, preserves immutable scheduled payloads until the user explicitly reschedules with the current draft, and leaves ambiguous outcomes for manual reconciliation. Workspace account records distinguish editable display name/handle/profile URL and avatar from the verified provider recipient identity. Saved workspace avatars are used by account and composer previews. See [Social connections and local delivery](SOCIAL_CONNECTIONS.md) and the [GUI and CLI capability matrix](CLI_CAPABILITY_MATRIX.md).
+
+This update reflects the checked-in source and documentation as of this date; no build, automated test, or live provider check was run for this documentation pass. The acceptance evidence below is dated 2026-11-06 and remains historical rather than a verification of these later social workflows.
+
 **Current scope adjustment:** App release/version tracking is disabled in the UI, including version summaries, release views, and content-to-release links. Existing release files and legacy content references are preserved but are not loaded into the interface.
 
 ## Acceptance review — 2026-11-06

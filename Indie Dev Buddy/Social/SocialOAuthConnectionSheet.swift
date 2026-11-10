@@ -13,35 +13,38 @@ struct SocialOAuthConnectionSheet: View {
     @State private var brokerCredential = ""
     @State private var connectionTask: Task<Void, Never>?
     @State private var message: String?
+    @State private var showingMetaAccessHelp = false
+    @State private var metaMethod: MetaConnectionMethod = .accessToken
+    @State private var accessToken = ""
+    @State private var reportedScopes = ""
+    @State private var tokenHasExpiration = false
+    @State private var tokenExpiration = Date()
+
+    private var isMetaPlatform: Bool { [.facebookPages, .instagram, .threads].contains(platform) }
 
     var body: some View {
         Form {
-            Section("Provider Registration") {
-                if platform != .mastodon {
-                    TextField("Public client or app ID", text: $registration.clientID)
+            if isMetaPlatform {
+                Section("Connection method") {
+                    Picker("Connect using", selection: $metaMethod) {
+                        Text("Meta access token").tag(MetaConnectionMethod.accessToken)
+                        Text("Browser sign-in").tag(MetaConnectionMethod.oauth)
+                    }
+                    .pickerStyle(.segmented)
+                    Text(metaMethod == .accessToken
+                         ? "Local connection. No exchange service is needed."
+                         : "One-click sign-in requires a trusted OAuth exchange service.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                if metaMethod == .accessToken {
+                    metaAccessTokenSection
                 } else {
-                    TextField("Mastodon server", text: $registration.instance)
+                    providerRegistrationSection
+                    if platform.requiresBroker { exchangeServiceSection }
                 }
-                TextField("Registered callback URL", text: $registration.redirect)
-                if platform == .facebookPages {
-                    TextField("Facebook Page ID", text: $registration.accountTarget)
-                } else if platform == .linkedIn {
-                    TextField("Organization URN (optional)", text: $registration.accountTarget)
-                    Toggle("Request LinkedIn comment and feed access", isOn: Binding(
-                        get: { registration.requestLinkedInActivity ?? false },
-                        set: { registration.requestLinkedInActivity = $0 }
-                    ))
-                    Text("This requests Community Management scopes for posts and comments. LinkedIn must approve them for this app; leave off for publishing-only access.")
-                        .font(.caption).foregroundStyle(.secondary)
-                }
-            }
-            if platform.requiresBroker {
-                Section("Trusted Exchange Service") {
-                    TextField("HTTPS service base URL", text: $registration.brokerEndpoint)
-                    SecureField("Service access credential", text: $brokerCredential)
-                    Text("Use a service you control that implements the token exchange contract. Keep the provider app secret on that service. The service credential is used for this connection and is not saved.")
-                        .font(.caption).foregroundStyle(.secondary)
-                }
+            } else {
+                providerRegistrationSection
+                if platform.requiresBroker { exchangeServiceSection }
             }
             if let message {
                 Text(message).foregroundStyle(.red)
@@ -49,18 +52,94 @@ struct SocialOAuthConnectionSheet: View {
             HStack {
                 Button("Cancel") { dismiss() }.keyboardShortcut(.cancelAction)
                 Spacer()
-                Button(connectionTask == nil ? "Authorize in Browser" : "Connecting…") { beginConnection() }
+                Button(actionTitle) {
+                    if isMetaPlatform && metaMethod == .accessToken { importAccessToken() }
+                    else { beginConnection() }
+                }
                     .buttonStyle(.borderedProminent)
-                    .disabled(connectionTask != nil)
+                    .disabled(!canConnect)
             }
         }
         .padding(20)
-        .frame(width: 500)
+        .frame(width: 560)
         .onAppear { registration = .load(platform) }
+        .sheet(isPresented: $showingMetaAccessHelp) {
+            MetaAccessHelpView(platform: platform)
+        }
         .onDisappear {
             connectionTask?.cancel()
             brokerCredential = ""
+            accessToken = ""
         }
+    }
+
+    @ViewBuilder
+    private var providerRegistrationSection: some View {
+        Section("Provider Registration") {
+            if platform != .mastodon {
+                TextField("Public client or app ID", text: $registration.clientID)
+            } else {
+                TextField("Mastodon server", text: $registration.instance)
+            }
+            TextField("Registered callback URL", text: $registration.redirect)
+            if platform == .facebookPages {
+                TextField("Facebook Page ID", text: $registration.accountTarget)
+            } else if platform == .linkedIn {
+                TextField("Organization URN (optional)", text: $registration.accountTarget)
+                Toggle("Request LinkedIn comment and feed access", isOn: Binding(
+                    get: { registration.requestLinkedInActivity ?? false },
+                    set: { registration.requestLinkedInActivity = $0 }
+                ))
+                Text("This requests Community Management scopes for posts and comments. LinkedIn must approve them for this app; leave off for publishing-only access.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            if isMetaPlatform {
+                Button("How do I get a Meta access token?") { showingMetaAccessHelp = true }
+                    .font(.caption)
+            }
+        }
+    }
+
+    private var exchangeServiceSection: some View {
+        Section("Trusted Exchange Service") {
+            TextField("HTTPS service base URL", text: $registration.brokerEndpoint)
+            SecureField("Service access credential", text: $brokerCredential)
+            Text("Use a service you control that implements the token exchange contract. Keep the provider app secret on that service. The service credential is used for this connection and is not saved.")
+                .font(.caption).foregroundStyle(.secondary)
+        }
+    }
+
+    private var metaAccessTokenSection: some View {
+        Section("Meta access token") {
+            SecureField("User access token", text: $accessToken)
+                .textContentType(.password)
+            if platform == .facebookPages {
+                TextField("Facebook Page ID", text: $registration.accountTarget)
+            }
+            TextField("Verified permissions (optional, comma-separated)", text: $reportedScopes)
+            Toggle("I know when this token expires", isOn: $tokenHasExpiration)
+            if tokenHasExpiration {
+                DatePicker("Token expires", selection: $tokenExpiration)
+            }
+            Text("Get a user access token from Meta's developer tools. Indie Dev Buddy verifies it with Meta, stores the resulting account token in Keychain, and publishes directly from this Mac. Leave permissions blank if you are unsure; do not guess.")
+                .font(.caption).foregroundStyle(.secondary)
+            Button("How do I get a Meta access token?") { showingMetaAccessHelp = true }
+                .font(.caption)
+        }
+    }
+
+    private var actionTitle: String {
+        guard connectionTask == nil else { return "Connecting…" }
+        return isMetaPlatform && metaMethod == .accessToken ? "Verify and Save Token" : "Authorize in Browser"
+    }
+
+    private var canConnect: Bool {
+        guard connectionTask == nil else { return false }
+        if isMetaPlatform && metaMethod == .accessToken {
+            return !accessToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                && (platform != .facebookPages || !registration.accountTarget.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+        }
+        return true
     }
 
     private func beginConnection() {
@@ -112,6 +191,39 @@ struct SocialOAuthConnectionSheet: View {
             }
         }
     }
+
+    private func importAccessToken() {
+        let trimmedToken = accessToken.trimmingCharacters(in: .whitespacesAndNewlines)
+        let scopes = Set(reportedScopes.split(separator: ",").map {
+            $0.trimmingCharacters(in: .whitespacesAndNewlines)
+        }.filter { !$0.isEmpty })
+        let token = OAuthToken(accessToken: trimmedToken,
+                               expiresAt: tokenHasExpiration ? tokenExpiration : nil,
+                               grantedScopes: scopes.isEmpty ? nil : scopes)
+        accessToken = ""
+        message = nil
+        connectionTask = Task {
+            defer { connectionTask = nil }
+            do {
+                let account = try await runtime.connections.importMetaToken(
+                    token, platform: platform,
+                    pageID: platform == .facebookPages ? registration.accountTarget : nil
+                )
+                try Task.checkCancellation()
+                onConnected(account)
+                dismiss()
+            } catch is CancellationError {
+                message = "Token verification was canceled."
+            } catch {
+                message = "Meta did not accept this token for the selected account. Check that it is current, has the needed permissions, and matches the Page or profile."
+            }
+        }
+    }
+}
+
+private enum MetaConnectionMethod: String, Hashable {
+    case accessToken
+    case oauth
 }
 
 nonisolated struct SocialOAuthRegistration: Codable {

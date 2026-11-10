@@ -365,6 +365,27 @@ actor SocialConnections {
         try await bluesky.connect(.init(identifier: identifier, appPassword: appPassword, server: server))
     }
 
+    /// Imports a user-generated Meta access token without sending it through an exchange service.
+    /// The provider adapters verify the token against the selected account before it is stored.
+    func importMetaToken(_ token: OAuthToken, platform: SocialPlatform, pageID: String? = nil) async throws -> SocialAccount {
+        let credential: SocialCredential
+        switch platform {
+        case .facebookPages:
+            guard let pageID, !pageID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                throw SocialError.invalidInput
+            }
+            credential = try await FacebookPagesAdapter().developmentCredential(token, pageID: pageID)
+        case .threads:
+            credential = try await ThreadsAdapter().developmentCredential(token)
+        case .instagram:
+            credential = try await InstagramAdapter().developmentCredential(token)
+        default:
+            throw SocialError.invalidInput
+        }
+        try await store.save(credential)
+        return credential.account
+    }
+
     func connectFacebookPages(pageID: String? = nil, browser: @escaping OAuthBrowser) async throws -> SocialAccount {
         guard let clientID = configuration.facebookAppID, let redirectURI = configuration.facebookRedirectURI,
               let exchange = configuration.metaExchange else { throw SocialError.invalidConfiguration }

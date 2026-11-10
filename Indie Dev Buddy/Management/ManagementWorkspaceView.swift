@@ -1491,6 +1491,7 @@ private struct SocialAccountRecordEditor: View {
     @State private var showingAvatarPicker = false
     @State private var showingBlueskyConnect = false
     @State private var showingOAuthConnect = false
+    @State private var showingMetaAccessHelp = false
     @State private var showingAccountActivity = false
     @State private var providerIdentity: ContentRecipientIdentity?
     @State private var connectedAccount: SocialAccount?
@@ -1580,6 +1581,11 @@ private struct SocialAccountRecordEditor: View {
                 SocialOAuthConnectionSheet(platform: apiPlatform, onConnected: applyConnection)
             }
         }
+        .sheet(isPresented: $showingMetaAccessHelp) {
+            if let apiPlatform, [.facebookPages, .instagram, .threads].contains(apiPlatform) {
+                MetaAccessHelpView(platform: apiPlatform)
+            }
+        }
         .sheet(isPresented: $showingAccountActivity) {
             if let providerIdentity, let connectedAccount {
                 SocialAccountActivityView(identity: providerIdentity, account: connectedAccount)
@@ -1615,6 +1621,9 @@ private struct SocialAccountRecordEditor: View {
     private var connectionSection: some View {
         Section("API connection") {
             if let apiPlatform {
+                if [.facebookPages, .instagram, .threads].contains(apiPlatform) {
+                    Button("Set Up Meta API Access…") { showingMetaAccessHelp = true }
+                }
                 if let connectedAccount {
                     Label("Connected as \(connectedAccount.displayName ?? connectedAccount.username)", systemImage: "checkmark.circle.fill")
                         .foregroundStyle(.green)
@@ -1629,7 +1638,10 @@ private struct SocialAccountRecordEditor: View {
                 } else {
                     Label("API connection not configured", systemImage: "lock.shield")
                 }
-                if apiPlatform.requiresBroker {
+                if [.facebookPages, .instagram, .threads].contains(apiPlatform) {
+                    Text("Import a Meta access token to connect locally. Browser sign-in is also available when you have an OAuth exchange service.")
+                        .font(.caption).foregroundStyle(.secondary)
+                } else if apiPlatform.requiresBroker {
                     Text("\(apiPlatform.workspaceTitle) requires provider registration and a trusted HTTPS exchange service.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
