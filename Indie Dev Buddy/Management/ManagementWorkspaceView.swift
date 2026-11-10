@@ -1658,6 +1658,9 @@ private struct SocialAccountRecordEditor: View {
                         Text("Authorized by \(authenticatedUserName)")
                             .font(.caption).foregroundStyle(.secondary)
                     }
+                    if let status = socialPublishingRuntime.metaCredentialStatus[connectedAccount.id] {
+                        Text(status).font(.caption).foregroundStyle(.secondary)
+                    }
                     Button("View Account Activity…") { showingAccountActivity = true }
                 } else if providerIdentity != nil {
                     Label("Connection unavailable on this Mac", systemImage: "exclamationmark.circle")
@@ -1687,6 +1690,8 @@ private struct SocialAccountRecordEditor: View {
     }
 
     private func applyConnection(_ account: SocialAccount) {
+        if account.platform.isMeta { socialPublishingRuntime.updateCredentialStatus(for: account.id) }
+        connectedAccount = account
         providerIdentity = ContentRecipientIdentity(platform: account.platform.rawValue,
                                                      server: account.server,
                                                      remoteID: account.remoteID)

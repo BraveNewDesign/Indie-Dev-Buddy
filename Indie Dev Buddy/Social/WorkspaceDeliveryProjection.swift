@@ -48,10 +48,16 @@ extension WorkspaceStore {
               record.destinations.filter({ $0.accountId == intent.destinationID }).count == 1,
               let index = record.destinations.firstIndex(where: { $0.accountId == intent.destinationID }) else { return }
         var destination = record.destinations[index]
-        let known = Set((destination.deliveryHistory ?? []).map(\.id))
-        let newAttempts = entry.attempts.filter { !known.contains($0.id) }
-        if !newAttempts.isEmpty {
-            destination.deliveryHistory = (destination.deliveryHistory ?? []) + newAttempts
+        if !entry.attempts.isEmpty {
+            var history = destination.deliveryHistory ?? []
+            for attempt in entry.attempts {
+                if let existing = history.firstIndex(where: { $0.id == attempt.id }) {
+                    history[existing] = attempt
+                } else {
+                    history.append(attempt)
+                }
+            }
+            destination.deliveryHistory = history
         }
         if var schedule = destination.schedule,
            (schedule.matches(intent) || schedule.state == .overdue),

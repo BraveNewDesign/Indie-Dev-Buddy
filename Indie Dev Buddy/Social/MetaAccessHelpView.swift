@@ -102,6 +102,10 @@ struct MetaAccessHelpView: View {
             Link("Open Meta for Developers", destination: URL(string: "https://developers.facebook.com/apps/")!)
             if platform == .facebookPages {
                 Link("Open Graph API Explorer", destination: URL(string: "https://developers.facebook.com/tools/explorer/")!)
+                Link("Facebook long-lived tokens", destination: URL(string: "https://developers.facebook.com/docs/facebook-login/guides/access-tokens/get-long-lived/")!)
+            }
+            if platform == .threads {
+                Link("Threads long-lived tokens", destination: URL(string: "https://developers.facebook.com/docs/threads/get-started/long-lived-tokens/")!)
             }
             Link(destination: guideLink.url) {
                 Label(guideLink.title, systemImage: "arrow.up.right.square")
@@ -152,11 +156,11 @@ struct MetaAccessHelpView: View {
     private var tokenSetup: String {
         switch platform {
         case .facebookPages:
-            "In Graph API Explorer, select your Meta app, choose Get User Access Token, select the permissions above, and generate a token. Paste the User token here, not a Page token; Indie Dev Buddy will verify your Page access and get the Page token itself."
+            "In Graph API Explorer, select your Meta app, choose Get User Access Token, select the permissions above, and generate a token. Use Meta’s long-lived user token guide to extend that token before importing it. Indie Dev Buddy verifies access and saves both the selected Page token and the source user grant in this Mac’s Keychain so it can recover the Page token when the grant is valid."
         case .instagram:
-            "In your app's Instagram API setup with Instagram Login, add your professional account and use Generate access tokens. Copy the Instagram User token. A linked Facebook Page is not required for this login method."
+            "In your app's Instagram API setup with Instagram Login, add your professional account and use Generate access tokens. Use the Instagram Login guide to get a long-lived Instagram User token. Mark it as long-lived during import when Meta confirms that it is. A linked Facebook Page is not required for this login method."
         case .threads:
-            "In your app's Access the Threads API use case, add your account as a Threads tester and accept the invite in Threads. Then open Settings → User Token Generator, generate a token with the publishing permission, and copy it."
+            "In your app's Access the Threads API use case, add your account as a Threads tester and accept the invite in Threads. Then open Settings → User Token Generator, generate a token with the publishing permission. Use the Threads long-lived token guide to exchange a short-lived token outside Indie Dev Buddy and import only the resulting access token."
         default:
             "Generate an access token from Meta's developer tools."
         }

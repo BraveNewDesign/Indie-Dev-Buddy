@@ -1,6 +1,7 @@
 import AppKit
 import AuthenticationServices
 import Foundation
+import Security
 import SocialKit
 import SwiftUI
 
@@ -16,8 +17,10 @@ struct SocialOAuthConnectionSheet: View {
     @State private var canRetryCredentialSave = false
     @State private var showingMetaAccessHelp = false
     @State private var metaMethod: MetaConnectionMethod = .accessToken
+    @State private var associatedDomains: [String] = []
     @State private var accessToken = ""
     @State private var reportedScopes = ""
+    @State private var tokenIsLongLived = false
     @State private var tokenHasExpiration = false
     @State private var tokenExpiration = Date()
 
@@ -27,14 +30,20 @@ struct SocialOAuthConnectionSheet: View {
         Form {
             if isMetaPlatform {
                 Section("Connection method") {
-                    Picker("Connect using", selection: $metaMethod) {
-                        Text("Meta access token").tag(MetaConnectionMethod.accessToken)
-                        Text("Browser sign-in").tag(MetaConnectionMethod.oauth)
+                    if associatedDomains.contains(where: { $0.hasPrefix("webcredentials:") }) {
+                        Picker("Connect using", selection: $metaMethod) {
+                            Text("Meta access token").tag(MetaConnectionMethod.accessToken)
+                            Text("Browser sign-in").tag(MetaConnectionMethod.oauth)
+                        }
+                        .pickerStyle(.segmented)
+                        .disabled(connectionTask != nil)
+                    } else {
+                        Text("Browser sign-in is unavailable in this build. It requires an associated HTTPS callback domain.")
+                            .font(.caption).foregroundStyle(.secondary)
                     }
-                    .pickerStyle(.segmented)
                     Text(metaMethod == .accessToken
                          ? "Local connection. No exchange service is needed."
-                         : "One-click sign-in requires a trusted OAuth exchange service.")
+                         : "Browser sign-in requires a trusted exchange service and a registered callback.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 if metaMethod == .accessToken {
@@ -42,6 +51,10 @@ struct SocialOAuthConnectionSheet: View {
                 } else {
                     providerRegistrationSection
                     if platform.requiresBroker { exchangeServiceSection }
+                    if !metaBrowserReady && connectionTask == nil {
+                        Text("Browser sign-in is unavailable until the registration, associated callback, and exchange service are configured.")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
                 }
             } else {
                 providerRegistrationSection
@@ -74,7 +87,10 @@ struct SocialOAuthConnectionSheet: View {
         }
         .padding(20)
         .frame(width: 560)
-        .onAppear { registration = .load(platform) }
+        .onAppear {
+            registration = .load(platform)
+            if isMetaPlatform { associatedDomains = SocialOAuthRegistration.signedAssociatedDomains() }
+        }
         .sheet(isPresented: $showingMetaAccessHelp) {
             MetaAccessHelpView(platform: platform)
         }
@@ -118,6 +134,10 @@ struct SocialOAuthConnectionSheet: View {
             SecureField("Service access credential", text: $brokerCredential)
             Text("Use a service you control that implements the token exchange contract. Keep the provider app secret on that service. The service credential is used for this connection and is not saved.")
                 .font(.caption).foregroundStyle(.secondary)
+            if platform == .facebookPages {
+                Text("Keychain stores the Page token and the source Facebook user grant. Indie Dev Buddy uses the grant only to recover access to this same Page while the grant remains valid.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
         }
     }
 
@@ -129,11 +149,22 @@ struct SocialOAuthConnectionSheet: View {
                 TextField("Facebook Page ID", text: $registration.accountTarget)
             }
             TextField("Verified permissions (optional, comma-separated)", text: $reportedScopes)
+            if platform != .facebookPages {
+                Toggle("Meta issued this as a long-lived token", isOn: $tokenIsLongLived)
+                Text("Enable this only for a confirmed long-lived token. Indie Dev Buddy waits at least 24 hours after import before trying to renew it.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
             Toggle("I know when this token expires", isOn: $tokenHasExpiration)
             if tokenHasExpiration {
-                DatePicker("Token expires", selection: $tokenExpiration)
+                DatePicker(platform == .facebookPages ? "User grant expires" : "Token expires",
+                           selection: $tokenExpiration)
+            } else {
+                Text(platform == .facebookPages ? "User grant expiry is unknown." : "Token expiry is unknown.")
+                    .font(.caption).foregroundStyle(.secondary)
             }
-            Text("Get a user access token from Meta's developer tools. Indie Dev Buddy verifies it with Meta, stores the resulting account token in Keychain, and publishes directly from this Mac. Leave permissions blank if you are unsure; do not guess.")
+            Text(platform == .facebookPages
+                 ? "Use a long-lived Facebook user token if possible. Indie Dev Buddy stores the Page token and the broader user grant in this Mac’s Keychain. It uses the user grant to recover the selected Page token while the grant remains valid. The Page token has its own lifetime."
+                 : "Use a long-lived user token from Meta. Indie Dev Buddy verifies the token with Meta, stores it in this Mac’s Keychain, and publishes directly from this Mac. Leave permissions blank if you are unsure.")
                 .font(.caption).foregroundStyle(.secondary)
             Button("How do I get a Meta access token?") { showingMetaAccessHelp = true }
                 .font(.caption)
@@ -151,10 +182,19 @@ struct SocialOAuthConnectionSheet: View {
             return !accessToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                 && (platform != .facebookPages || !registration.accountTarget.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
         }
-        return true
+        return !isMetaPlatform || metaBrowserReady
+    }
+
+    private var metaBrowserReady: Bool {
+        registration.metaBrowserReady(for: platform, associatedDomains: associatedDomains)
+            && SocialOAuthBroker.validBearer(brokerCredential)
     }
 
     private func beginConnection() {
+        guard !isMetaPlatform || metaBrowserReady else {
+            message = "Set up the associated HTTPS callback and trusted exchange service, or connect with a Meta access token."
+            return
+        }
         guard let redirect = registration.callback(for: platform),
               platform == .mastodon || !registration.clientID.isEmpty,
               platform != .facebookPages || !registration.accountTarget.isEmpty else {
@@ -279,7 +319,9 @@ struct SocialOAuthConnectionSheet: View {
         }.filter { !$0.isEmpty })
         let token = OAuthToken(accessToken: trimmedToken,
                                expiresAt: tokenHasExpiration ? tokenExpiration : nil,
-                               grantedScopes: scopes.isEmpty ? nil : scopes)
+                               grantedScopes: scopes.isEmpty ? nil : scopes,
+                               metaLongLivedRefreshEligibleAt: tokenIsLongLived && platform != .facebookPages
+                                   ? Date().addingTimeInterval(24 * 60 * 60) : nil)
         accessToken = ""
         message = nil
         connectionTask = Task {
@@ -346,6 +388,23 @@ nonisolated struct SocialOAuthRegistration: Codable {
               parts.user == nil, parts.password == nil, parts.query == nil, parts.fragment == nil else { return nil }
         return url
     }
+
+    func metaBrowserReady(for platform: SocialPlatform, associatedDomains: [String]) -> Bool {
+        guard platform == .facebookPages || platform == .instagram || platform == .threads,
+              !clientID.isEmpty, clientID.utf8.allSatisfy({ (48...57).contains($0) }),
+              platform != .facebookPages || (!accountTarget.isEmpty && accountTarget.utf8.allSatisfy({ (48...57).contains($0) })),
+              let url = callback(for: platform), let host = url.host?.lowercased(),
+              url.port == nil, !url.path.isEmpty,
+              associatedDomains.contains("webcredentials:\(host)"),
+              let endpoint = URL(string: brokerEndpoint),
+              Self.httpsURL(endpoint) != nil, endpoint.port == nil || endpoint.port == 443 else { return false }
+        return true
+    }
+
+    static func signedAssociatedDomains() -> [String] {
+        guard let task = SecTaskCreateFromSelf(nil) else { return [] }
+        return SecTaskCopyValueForEntitlement(task, "com.apple.developer.associated-domains" as CFString, nil) as? [String] ?? []
+    }
 }
 
 @MainActor
@@ -400,75 +459,5 @@ private final class SocialAuthorizationBrowser: NSObject, ASWebAuthenticationPre
         continuation = nil
         session = nil
         pending?.resume(with: result)
-    }
-}
-
-/// The exchange contract matches SocialKit's standalone Meta validation client.
-private nonisolated struct SocialOAuthBroker: ConfidentialOAuthExchange {
-    private let endpoint: URL
-    private let bearer: String
-    private let session: URLSession
-
-    init(endpoint: URL, bearer: String) throws {
-        guard SocialOAuthRegistration.httpsURL(endpoint) != nil,
-              endpoint.port == nil || endpoint.port == 443,
-              !bearer.isEmpty, bearer.utf8.allSatisfy({ (33...126).contains($0) }) else {
-            throw SocialError.invalidConfiguration
-        }
-        self.endpoint = endpoint
-        self.bearer = bearer
-        let configuration = URLSessionConfiguration.ephemeral
-        configuration.httpShouldSetCookies = false
-        configuration.httpCookieStorage = nil
-        configuration.urlCredentialStorage = nil
-        configuration.urlCache = nil
-        session = URLSession(configuration: configuration, delegate: RejectOAuthRedirects(), delegateQueue: nil)
-    }
-
-    func exchange(platform: SocialPlatform, code: String, redirectURI: URL) async throws -> OAuthToken {
-        do {
-            let url = endpoint.appendingPathComponent("oauth").appendingPathComponent("exchange")
-            var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 30)
-            request.httpMethod = "POST"
-            request.setValue("Bearer \(bearer)", forHTTPHeaderField: "Authorization")
-            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-            request.setValue("application/json", forHTTPHeaderField: "Accept")
-            request.httpBody = try JSONEncoder().encode([
-                "platform": platform.rawValue, "code": code, "redirect_uri": redirectURI.absoluteString
-            ])
-            let (data, response) = try await session.data(for: request)
-            guard let response = response as? HTTPURLResponse, response.url == url,
-                  (200..<300).contains(response.statusCode), data.count <= 64 * 1024 else {
-                throw SocialError.authorizationFailed
-            }
-            let decoded = try JSONDecoder().decode(TokenResponse.self, from: data)
-            guard !decoded.access_token.isEmpty else { throw SocialError.authorizationFailed }
-            let expiry = try decoded.expires_at.map { date in
-                if let date = ISO8601DateFormatter().date(from: date) { return date }
-                let formatter = ISO8601DateFormatter()
-                formatter.formatOptions.insert(.withFractionalSeconds)
-                guard let result = formatter.date(from: date) else { throw SocialError.authorizationFailed }
-                return result
-            }
-            return OAuthToken(accessToken: decoded.access_token, refreshToken: decoded.refresh_token,
-                              expiresAt: expiry, grantedScopes: decoded.granted_scopes)
-        } catch {
-            try Task.checkCancellation()
-            throw SocialError.authorizationFailed
-        }
-    }
-
-    private struct TokenResponse: Decodable {
-        let access_token: String
-        let refresh_token: String?
-        let expires_at: String?
-        let granted_scopes: Set<String>?
-    }
-}
-
-private nonisolated final class RejectOAuthRedirects: NSObject, URLSessionTaskDelegate {
-    func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse,
-                    newRequest request: URLRequest, completionHandler: @escaping @Sendable (URLRequest?) -> Void) {
-        completionHandler(nil)
     }
 }

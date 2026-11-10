@@ -27,6 +27,10 @@ extension SocialPlatform {
         }
     }
 
+    nonisolated var isMeta: Bool {
+        self == .facebookPages || self == .instagram || self == .threads
+    }
+
     nonisolated var requiresBroker: Bool {
         switch self {
         case .facebookPages, .threads, .instagram, .linkedIn: true
@@ -92,7 +96,7 @@ nonisolated struct SocialConnectionConfiguration: Sendable {
 /// App-only facade around SocialKit. Keep account identity and credentials bound to the provider
 /// Keychain record; workspace account handles are descriptive metadata, never credential keys.
 actor SocialConnections {
-    private let store: KeychainCredentialStore
+    private let store: any CredentialStore
     private let configuration: SocialConnectionConfiguration
     private let bluesky: SocialClient<BlueskyAdapter>
     private let facebook: SocialClient<FacebookPagesAdapter>
@@ -101,19 +105,32 @@ actor SocialConnections {
     private var x: SocialClient<XAdapter>
     private let linkedIn: SocialClient<LinkedInAdapter>
     private let mastodon: SocialClient<MastodonAdapter>
+    private var metaChecks: [SocialAccount.ID: Task<Void, Error>] = [:]
+    private var metaCheckResults: [SocialAccount.ID: MetaCheckResult] = [:]
+    private static let metaCheckInterval: TimeInterval = 6 * 60 * 60
+    private static let metaRenewalWindow: TimeInterval = 7 * 24 * 60 * 60
+
+    private struct MetaCheckResult {
+        let nextCheck: Date
+        let failures: Int
+        let error: SocialError?
+    }
+
     private var pendingMastodonCredential: SocialCredential?
 
     init(
         serviceName: String = "com.bravenewdesign.indiedevbuddy.social",
-        configuration: SocialConnectionConfiguration = .init()
+        configuration: SocialConnectionConfiguration = .init(),
+        credentialStore: (any CredentialStore)? = nil,
+        metaTransport: any HTTPTransport = URLSessionTransport()
     ) {
-        let store = KeychainCredentialStore(service: serviceName)
+        let store = credentialStore ?? KeychainCredentialStore(service: serviceName)
         self.store = store
         self.configuration = configuration
         bluesky = SocialClient(adapter: BlueskyAdapter(), store: store)
-        facebook = SocialClient(adapter: FacebookPagesAdapter(), store: store)
-        threads = SocialClient(adapter: ThreadsAdapter(), store: store)
-        instagram = SocialClient(adapter: InstagramAdapter(), store: store)
+        facebook = SocialClient(adapter: FacebookPagesAdapter(transport: metaTransport), store: store)
+        threads = SocialClient(adapter: ThreadsAdapter(transport: metaTransport), store: store)
+        instagram = SocialClient(adapter: InstagramAdapter(transport: metaTransport), store: store)
         x = SocialClient(adapter: XAdapter(clientID: configuration.xClientID ?? "",
                                             includeMediaWriteScope: configuration.xMediaWriteEnabled), store: store)
         linkedIn = SocialClient(adapter: LinkedInAdapter(oauthBroker: configuration.linkedinExchange), store: store)
@@ -172,14 +189,10 @@ actor SocialConnections {
         return result
     }
 
-    func sender() -> PublishingCoordinator.Sender {
-        { [weak self] intent in
-            guard let self else { throw SocialError.invalidConfiguration }
-            return try await self.deliver(intent)
-        }
-    }
-
-    func deliver(_ intent: ContentDeliveryIntent) async throws -> ContentDeliveryResult {
+    func deliver(
+        _ intent: ContentDeliveryIntent, checkpoint: MetaPublishingCheckpoint?,
+        saveCheckpoint: @escaping MetaPublishingCheckpointWriter
+    ) async throws -> ContentDeliveryResult {
         let id = try accountID(for: intent.recipient)
         guard let server = URL(string: intent.recipient.server.absoluteString),
               server == id.server else { throw SocialError.invalidInput }
@@ -215,17 +228,18 @@ actor SocialConnections {
                 guard media.isEmpty else { throw SocialError.unsupported(.publishMedia) }
                 post = try await bluesky.publish(draft, as: id)
             case .facebookPages:
-                guard media.isEmpty else { throw SocialError.unsupported(.publishMedia) }
-                post = try await facebook.publish(draft, as: id)
-            case .threads:
                 post = media.isEmpty
-                    ? try await threads.publish(draft, as: id)
-                    : try await threads.publishMedia(media, draft: draft, as: id)
+                    ? try await facebook.publish(draft, as: id)
+                    : try await facebook.publishMedia(media, draft: draft, as: id)
+            case .threads:
+                post = try await threads.publishCheckpointedMetaPost(
+                    media, draft: draft, as: id, checkpoint: checkpoint, save: saveCheckpoint
+                )
             case .instagram:
                 guard !media.isEmpty else { throw SocialError.invalidInput }
-                post = media.count == 1
-                    ? try await instagram.publishMedia(media[0], draft: draft, as: id)
-                    : try await instagram.publishMedia(media, draft: draft, as: id)
+                post = try await instagram.publishCheckpointedMetaPost(
+                    media, draft: draft, as: id, checkpoint: checkpoint, save: saveCheckpoint
+                )
             case .x:
                 guard media.isEmpty else {
                     // X requires uploaded image bytes; a public URL is not an interchangeable payload.
@@ -243,6 +257,13 @@ actor SocialConnections {
                 post = try await mastodon.publish(draft, as: id)
             }
             return ContentDeliveryResult(state: .delivered, providerPostID: post.id, publishedURL: post.url)
+        } catch let error as SocialError where (id.platform == .instagram || id.platform == .threads)
+            && Self.canPauseMetaPolling(after: error) {
+            throw PublishingCoordinator.PollingPaused.unavailable
+        } catch let error as PublishingCoordinator.PollingPaused {
+            throw error
+        } catch is CancellationError {
+            throw CancellationError()
         } catch SocialError.publishOutcomeUnknown(_) {
             return ContentDeliveryResult(state: .outcomeUnknown,
                                          message: "The provider may have accepted this post. Check it before retrying.")
@@ -251,6 +272,15 @@ actor SocialConnections {
         } catch {
             return ContentDeliveryResult(state: .outcomeUnknown,
                                          message: "Delivery may have reached the provider. Check the account before retrying.")
+        }
+    }
+
+    func wasMetaContainerPublished(_ checkpoint: MetaPublishingCheckpoint, for intent: ContentDeliveryIntent) async throws -> Bool {
+        let id = try accountID(for: intent.recipient)
+        switch id.platform {
+        case .threads: return try await threads.wasMetaContainerPublished(checkpoint, as: id)
+        case .instagram: return try await instagram.wasMetaContainerPublished(checkpoint, as: id)
+        default: return false
         }
     }
 
@@ -360,6 +390,7 @@ actor SocialConnections {
         case .linkedIn: try await linkedIn.disconnect(id)
         case .mastodon: try await mastodon.disconnect(id)
         }
+        metaCheckResults.removeValue(forKey: id)
     }
 
     func connectBluesky(identifier: String, appPassword: String, server: URL = URL(string: "https://bsky.social")!) async throws -> SocialAccount {
@@ -383,8 +414,15 @@ actor SocialConnections {
         default:
             throw SocialError.invalidInput
         }
-        try await store.save(credential)
-        return credential.account
+        let account: SocialAccount
+        switch platform {
+        case .facebookPages: account = try await facebook.saveVerifiedCredential(credential)
+        case .threads: account = try await threads.saveVerifiedCredential(credential)
+        case .instagram: account = try await instagram.saveVerifiedCredential(credential)
+        default: throw SocialError.invalidInput
+        }
+        await clearMetaCheckResult(for: account.id)
+        return account
     }
 
     func connectFacebookPages(pageID: String? = nil, browser: @escaping OAuthBrowser) async throws -> SocialAccount {
@@ -442,16 +480,22 @@ actor SocialConnections {
         switch platform {
         case .facebookPages:
             guard let exchange else { throw SocialError.invalidConfiguration }
-            return try await facebook.connect(.init(clientID: clientID, redirectURI: redirectURI,
+            let account = try await facebook.connect(.init(clientID: clientID, redirectURI: redirectURI,
                                                     pageID: accountTarget, browser: browser, exchange: exchange))
+            await clearMetaCheckResult(for: account.id)
+            return account
         case .threads:
             guard let exchange else { throw SocialError.invalidConfiguration }
-            return try await threads.connect(.init(clientID: clientID, redirectURI: redirectURI,
+            let account = try await threads.connect(.init(clientID: clientID, redirectURI: redirectURI,
                                                    browser: browser, exchange: exchange))
+            await clearMetaCheckResult(for: account.id)
+            return account
         case .instagram:
             guard let exchange else { throw SocialError.invalidConfiguration }
-            return try await instagram.connect(.init(clientID: clientID, redirectURI: redirectURI,
+            let account = try await instagram.connect(.init(clientID: clientID, redirectURI: redirectURI,
                                                      browser: browser, exchange: exchange))
+            await clearMetaCheckResult(for: account.id)
+            return account
         case .x:
             let client = SocialClient(adapter: XAdapter(clientID: clientID), store: store)
             let account = try await client.connect(.init(redirectURI: redirectURI, browser: browser))
@@ -521,6 +565,20 @@ actor SocialConnections {
         guard let credential = try await store.credential(for: id) else {
             throw SocialError.authenticationRequired
         }
+        if id.platform.isMeta {
+            let expired = credential.expiresAt.map { $0 <= now } ?? false
+            if expired, id.platform != .facebookPages { throw SocialError.authenticationRequired }
+            do {
+                try await checkMetaCredential(id, force: expired, now: now)
+            } catch let error as SocialError where Self.isTransientCredentialCheckError(error) {
+                // Renewal can fail independently of an otherwise usable token.
+                // The provider still checks the current credential on the publishing request.
+                guard credential.expiresAt.map({ $0 > Date() }) ?? true else {
+                    throw SocialError.authenticationRequired
+                }
+            }
+            return
+        }
         guard let expiresAt = credential.expiresAt, expiresAt <= now.addingTimeInterval(300) else { return }
 
         let identity = ContentRecipientIdentity(platform: id.platform.rawValue, server: id.server, remoteID: id.remoteID)
@@ -529,6 +587,143 @@ actor SocialConnections {
             throw SocialError.authenticationRequired
         }
         _ = try await refresh(identity)
+    }
+
+    /// Only non-secret connection status leaves the actor. The app can refresh it while awake.
+    func checkMetaCredentials(force: Bool = false, now: Date = Date()) async -> [SocialAccount.ID: String] {
+        guard let accounts = try? await accounts() else { return [:] }
+        var status: [SocialAccount.ID: String] = [:]
+        for account in accounts where account.platform.isMeta {
+            if Task.isCancelled { break }
+            try? await checkMetaCredential(account.id, force: force, now: now)
+            guard let credential = try? await store.credential(for: account.id) else { continue }
+            status[account.id] = metaCredentialStatus(credential, now: now)
+        }
+        return status
+    }
+
+    private func clearMetaCheckResult(for id: SocialAccount.ID) async {
+        _ = try? await metaChecks[id]?.value
+        metaCheckResults.removeValue(forKey: id)
+    }
+
+    private func checkMetaCredential(_ id: SocialAccount.ID, force: Bool = false, now: Date = Date()) async throws {
+        if let check = metaChecks[id] {
+            return try await check.value
+        }
+        if let result = metaCheckResults[id], now < result.nextCheck, !force || result.error != nil {
+            if let error = result.error { throw error }
+            return
+        }
+
+        let check = Task { try await runMetaCheck(id, now: now) }
+        metaChecks[id] = check
+        try await check.value
+    }
+
+    private func runMetaCheck(_ id: SocialAccount.ID, now: Date) async throws {
+        defer { metaChecks.removeValue(forKey: id) }
+        do {
+            try await probeMetaCredential(id, now: now)
+            metaCheckResults[id] = MetaCheckResult(nextCheck: now.addingTimeInterval(Self.metaCheckInterval),
+                                                  failures: 0, error: nil)
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            let error = error as? SocialError ?? .transportFailure
+            let failures = min((metaCheckResults[id]?.failures ?? 0) + 1, 8)
+            let backoff = min(300 * pow(2.0, Double(failures - 1)), Self.metaCheckInterval)
+            let delay: TimeInterval
+            switch error {
+            case .rateLimited(let retryAfter):
+                delay = max(backoff, retryAfter.flatMap(TimeInterval.init) ?? 0)
+            case .accountBusy:
+                delay = 60
+            default:
+                delay = Self.requiresReconnect(error) ? Self.metaCheckInterval : backoff
+            }
+            metaCheckResults[id] = MetaCheckResult(nextCheck: now.addingTimeInterval(delay),
+                                                  failures: failures, error: error)
+            throw error
+        }
+    }
+
+    private func probeMetaCredential(_ id: SocialAccount.ID, now: Date) async throws {
+        guard let credential = try await store.credential(for: id) else {
+            throw SocialError.authenticationRequired
+        }
+        let expired = credential.expiresAt.map { $0 <= now } ?? false
+        switch id.platform {
+        case .facebookPages:
+            do {
+                try await facebook.verifyCredential(id) { adapter, credential in
+                    _ = try await adapter.profile(credential: credential)
+                }
+            } catch let error as SocialError where Self.requiresReconnect(error) {
+                guard let source = credential.facebookPageSourceGrant,
+                      source.expiresAt.map({ $0 > now }) ?? true else { throw error }
+                _ = try await facebook.refresh(id)
+            }
+        case .instagram, .threads:
+            guard !expired else { throw SocialError.authenticationRequired }
+            if credential.canRefreshMetaLongLivedToken(at: now),
+               credential.expiresAt.map({ $0 <= now.addingTimeInterval(Self.metaRenewalWindow) }) ?? true {
+                if id.platform == .instagram { _ = try await instagram.refresh(id) }
+                else { _ = try await threads.refresh(id) }
+            } else if id.platform == .instagram {
+                try await instagram.verifyCredential(id) { adapter, credential in
+                    guard try await adapter.profile(credential: credential).id == id else {
+                        throw SocialError.authenticationRequired
+                    }
+                }
+            } else {
+                try await threads.verifyCredential(id) { adapter, credential in
+                    guard try await adapter.profile(credential: credential).id == id else {
+                        throw SocialError.authenticationRequired
+                    }
+                }
+            }
+        default:
+            throw SocialError.invalidInput
+        }
+    }
+
+    private func metaCredentialStatus(_ credential: SocialCredential, now: Date = Date()) -> String {
+        let error = metaCheckResults[credential.account.id]?.error
+        if error.map(Self.requiresReconnect) == true || credential.expiresAt.map({ $0 <= now }) == true {
+            return "Reconnect with a current Meta token before scheduled delivery."
+        }
+        if let expiresAt = credential.expiresAt {
+            let date = expiresAt.formatted(date: .abbreviated, time: .shortened)
+            if error != nil { return "Credential check delayed. The current token expires \(date)." }
+            if expiresAt <= now.addingTimeInterval(Self.metaRenewalWindow) {
+                return "Token expires soon (\(date)). Reconnect if the expiry does not update."
+            }
+            return "Token expires \(date)."
+        }
+        if error != nil { return "Credential check delayed. Token expiry is unknown." }
+        if let sourceExpiry = credential.facebookPageSourceGrant?.expiresAt {
+            if sourceExpiry <= now {
+                return "Page token expiry is unknown. The source user grant has expired and can no longer recover it."
+            }
+            return "Page token expiry is unknown. The source user grant expires \(sourceExpiry.formatted(date: .abbreviated, time: .shortened))."
+        }
+        return "Token expiry is unknown."
+    }
+
+    private static func isTransientCredentialCheckError(_ error: SocialError) -> Bool {
+        switch error {
+        case .transportFailure, .rateLimited, .invalidResponse: true
+        case .httpStatus(let status): status == 408 || (500..<600).contains(status)
+        default: false
+        }
+    }
+
+    private static func requiresReconnect(_ error: SocialError) -> Bool {
+        switch error {
+        case .authenticationRequired, .authorizationFailed, .permissionDenied: true
+        default: false
+        }
     }
 
     private static func refreshFailureMessage(_ error: SocialError) -> String {
@@ -541,6 +736,14 @@ actor SocialConnections {
             "The provider requires additional API access or credits. The post was not sent."
         default:
             "The account could not be refreshed, so the post was not sent. Reconnect the account or review its provider settings."
+        }
+    }
+
+    private static func canPauseMetaPolling(after error: SocialError) -> Bool {
+        switch error {
+        case .mediaProcessingTimedOut, .transportFailure: true
+        case .httpStatus(let status): status >= 500
+        default: false
         }
     }
 

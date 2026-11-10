@@ -9,6 +9,8 @@ import SocialKit
 final class SocialPublishingRuntime {
     let connections: SocialConnections
     private let coordinator: PublishingCoordinator?
+    private(set) var metaCredentialStatus: [SocialAccount.ID: String] = [:]
+    private var credentialTask: Task<Void, Never>?
     private var timerTask: Task<Void, Never>?
     private var workspaceTokens: [NSObjectProtocol] = []
     private(set) var initializationError: String?
@@ -18,9 +20,10 @@ final class SocialPublishingRuntime {
         connections = SocialConnections(configuration: .init(xClientID: x.clientID, xRedirectURI: x.callback(for: .x)))
         do {
             let journal = try LocalDeliveryJournal()
-            coordinator = PublishingCoordinator(journal: journal, validator: { intent in
+            coordinator = PublishingCoordinator(journal: journal, validator: { intent, immediate in
                 guard Self.isRegisteredWorkspace(intent.workspaceRootPath) else { return false }
                 let store = WorkspaceStore(rootURL: URL(fileURLWithPath: intent.workspaceRootPath, isDirectory: true))
+                if immediate { return (try? await store.canPublishNow(intent)) == true }
                 return (try? await store.canDeliver(intent)) == true
             }, projector: { entry in
                 guard Self.isRegisteredWorkspace(entry.intent.workspaceRootPath) else {
@@ -28,8 +31,11 @@ final class SocialPublishingRuntime {
                 }
                 let store = WorkspaceStore(rootURL: URL(fileURLWithPath: entry.intent.workspaceRootPath, isDirectory: true))
                 try await store.projectDelivery(entry)
-            }) { [connections] intent in
-                try await connections.deliver(intent)
+            }, reconciler: { [connections] checkpoint, intent in
+                guard Self.isRegisteredWorkspace(intent.workspaceRootPath) else { return false }
+                return try await connections.wasMetaContainerPublished(checkpoint, for: intent)
+            }) { [connections] intent, checkpoint, saveCheckpoint in
+                try await connections.deliver(intent, checkpoint: checkpoint, saveCheckpoint: saveCheckpoint)
             }
         } catch {
             coordinator = nil
@@ -41,6 +47,7 @@ final class SocialPublishingRuntime {
         guard timerTask == nil else { return }
         installLifecycleObservers()
         setEligible(true)
+        startCredentialChecks()
         timerTask = Task { [weak self] in
             while !Task.isCancelled {
                 try? await Task.sleep(nanoseconds: 15_000_000_000)
@@ -53,6 +60,7 @@ final class SocialPublishingRuntime {
     func stop() {
         timerTask?.cancel()
         timerTask = nil
+        stopCredentialChecks()
         setEligible(false)
         for token in workspaceTokens { NSWorkspace.shared.notificationCenter.removeObserver(token) }
         workspaceTokens.removeAll()
@@ -85,7 +93,7 @@ final class SocialPublishingRuntime {
         guard let coordinator else { throw LocalDeliveryJournal.JournalError.storageFailure }
         var immediateIntent = intent
         if let existing = await coordinator.history(workspaceID: intent.workspaceID).first(where: { $0.intent.id == intent.id }) {
-            guard existing.state == .queued || existing.state == .overdue else {
+            guard !existing.canResumeContainer, existing.state == .queued || existing.state == .overdue else {
                 throw LocalDeliveryJournal.JournalError.invalidTransition
             }
             try await coordinator.cancel([intent.id])
@@ -110,13 +118,49 @@ final class SocialPublishingRuntime {
         }) == true
     }
 
+    private func startCredentialChecks() {
+        guard credentialTask == nil else { return }
+        credentialTask = Task { [weak self, connections] in
+            var force = true
+            while !Task.isCancelled {
+                let status = await connections.checkMetaCredentials(force: force)
+                guard !Task.isCancelled else { return }
+                self?.metaCredentialStatus = status
+                force = false
+                try? await Task.sleep(for: .seconds(300))
+            }
+        }
+    }
+
+    private func stopCredentialChecks() {
+        credentialTask?.cancel()
+        credentialTask = nil
+    }
+
+    func updateCredentialStatus(for id: SocialAccount.ID) {
+        metaCredentialStatus.removeValue(forKey: id)
+        guard credentialTask != nil else { return }
+        stopCredentialChecks()
+        startCredentialChecks()
+    }
+
     private func installLifecycleObservers() {
         let workspaceCenter = NSWorkspace.shared.notificationCenter
         workspaceTokens.append(workspaceCenter.addObserver(
             forName: NSWorkspace.willSleepNotification, object: nil, queue: .main
-        ) { [weak self] _ in Task { @MainActor in self?.setEligible(false) } })
+        ) { [weak self] _ in
+            Task { @MainActor in
+                self?.stopCredentialChecks()
+                self?.setEligible(false)
+            }
+        })
         workspaceTokens.append(workspaceCenter.addObserver(
             forName: NSWorkspace.didWakeNotification, object: nil, queue: .main
-        ) { [weak self] _ in Task { @MainActor in self?.setEligible(true) } })
+        ) { [weak self] _ in
+            Task { @MainActor in
+                self?.setEligible(true)
+                self?.startCredentialChecks()
+            }
+        })
     }
 }

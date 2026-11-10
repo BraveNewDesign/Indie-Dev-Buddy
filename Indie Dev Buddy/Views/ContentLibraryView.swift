@@ -831,7 +831,7 @@ struct ContentRecordEditor: View {
                             guard platform != .instagram else { throw WorkspaceCommandError("Instagram requires a public image or video link.") }
                             guard capabilities.contains(.publishText) else { throw SocialError.permissionDenied }
                         } else {
-                            guard platform == .threads || platform == .instagram else { throw SocialError.unsupported(.publishMedia) }
+                            try Self.validateMedia(media, for: platform)
                             guard capabilities.contains(.publishMedia) else { throw SocialError.permissionDenied }
                         }
                         let key = UUID()
@@ -959,6 +959,11 @@ struct ContentRecordEditor: View {
             Task {
                 do {
                     let media = try scheduledMedia(draft.destinationMediaLinks[accountID] ?? ComposerMediaLink())
+                    try Self.validateMedia(media, for: platform)
+                    if !media.isEmpty {
+                        let capabilities = try await socialPublishingRuntime.connections.capabilities(for: identity)
+                        guard capabilities.contains(.publishMedia) else { throw SocialError.permissionDenied }
+                    }
                     if media.isEmpty && !(draft.destinationMediaOverrides[accountID] ?? draft.sharedMediaPaths).isEmpty {
                         throw WorkspaceCommandError("Local attachments cannot be sent through this API yet. Use a public media URL where supported, or publish manually.")
                     }
@@ -1016,6 +1021,19 @@ struct ContentRecordEditor: View {
         encoder.dateEncodingStrategy = .iso8601
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
         return try encoder.encode(item)
+    }
+    private static func validateMedia(_ media: [ContentScheduledMedia], for platform: SocialPlatform) throws {
+        guard !media.isEmpty else { return }
+        switch platform {
+        case .facebookPages:
+            guard media.count == 1, media.first?.kind == .image else {
+                throw WorkspaceCommandError("Facebook Pages supports one hosted photo per API post.")
+            }
+        case .instagram, .threads:
+            break
+        default:
+            throw SocialError.unsupported(.publishMedia)
+        }
     }
     private func scheduledMedia(_ link: ComposerMediaLink) throws -> [ContentScheduledMedia] {
         let value = link.url.trimmingCharacters(in: .whitespacesAndNewlines)

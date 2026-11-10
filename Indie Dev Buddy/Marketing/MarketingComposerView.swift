@@ -125,6 +125,7 @@ struct MarketingComposerView: View {
     @State private var mentionResolutionMessage: String?
     @State private var connectedAccounts: [SocialAccount] = []
     @State private var publishableAccountIDs = Set<String>()
+    @State private var mediaPublishableAccountIDs = Set<String>()
     @State private var uncertainDeliveryAccountIDs = Set<String>()
     @State private var apiPublishedAccountIDs = Set<String>()
     @State private var publishingAccountIDs = Set<String>()
@@ -275,17 +276,23 @@ struct MarketingComposerView: View {
             guard !Task.isCancelled else { return }
             connectedAccounts = verified ?? []
             var publishable = Set<String>()
+            var mediaPublishable = Set<String>()
             for account in accounts {
                 guard let identity = account.providerIdentity,
                       (verified ?? []).contains(where: {
                           $0.platform.rawValue == identity.platform && $0.server == identity.server && $0.remoteID == identity.remoteID
                       }) else { continue }
-                if let capabilities = try? await socialPublishingRuntime.connections.capabilities(for: identity),
-                   capabilities.contains(.publishText) || capabilities.contains(.publishMedia) {
+                guard let capabilities = try? await socialPublishingRuntime.connections.capabilities(for: identity) else {
+                    continue
+                }
+                if capabilities.contains(.publishMedia) { mediaPublishable.insert(account.id) }
+                if capabilities.contains(.publishText) || capabilities.contains(.publishMedia) {
                     publishable.insert(account.id)
                 }
             }
+            guard !Task.isCancelled else { return }
             publishableAccountIDs = publishable
+            mediaPublishableAccountIDs = mediaPublishable
         }
         .onChange(of: accounts) { _, _ in
             let eligibleIDs = Set(eligibleAccounts.map(\.id))
@@ -655,7 +662,7 @@ struct MarketingComposerView: View {
                 ForEach(entries, id: \.intent.id) { entry in
                     VStack(alignment: .leading, spacing: 4) {
                         HStack {
-                            Text(entry.state.displayTitle)
+                            Text(entry.state == .queued && entry.canResumeContainer ? "Preparing on Meta" : entry.state.displayTitle)
                                 .font(.subheadline.weight(.semibold))
                             Spacer()
                             Text(entry.intent.scheduledDate.formatted(date: .abbreviated, time: .shortened))
@@ -697,7 +704,7 @@ struct MarketingComposerView: View {
                         }
                         if let url = entry.attempts.last?.publishedURL { Link("View Post", destination: url) }
                         if entry.state == .queued || entry.state == .overdue {
-                            Button("Cancel API Schedule", role: .destructive) {
+                            Button(entry.canResumeContainer ? "Cancel Delivery" : "Cancel API Schedule", role: .destructive) {
                                 Task {
                                     do {
                                         try await socialPublishingRuntime.cancel([entry.intent.id])
@@ -723,9 +730,11 @@ struct MarketingComposerView: View {
         let root = contentFolderURL.deletingLastPathComponent().deletingLastPathComponent()
         let history = await socialPublishingRuntime.history(workspaceID: workspaceID, workspaceRoot: root)
         deliveryHistory = history
-        uncertainDeliveryAccountIDs.formUnion(history.compactMap { entry in
-            entry.intent.contentID == contentID && entry.state == .outcomeUnknown ? entry.intent.destinationID : nil
-        })
+        let current = history.filter { $0.intent.contentID == contentID }
+        let unknown = Set(current.filter { $0.state == .outcomeUnknown }.map(\.intent.destinationID))
+        let confirmed = Set(current.filter { $0.state == .delivered }.map(\.intent.destinationID))
+        uncertainDeliveryAccountIDs.subtract(confirmed.subtracting(unknown))
+        uncertainDeliveryAccountIDs.formUnion(unknown)
     }
 
     private var publishingProgress: some View {
@@ -788,7 +797,7 @@ struct MarketingComposerView: View {
                 Text("Idea").tag("Idea")
                 Text("Draft").tag("Draft")
                 Text("Ready").tag("Ready")
-                if canSchedule || destinationStatuses[id] == "Scheduled" { Text("Scheduled").tag("Scheduled") }
+                if canSchedule || destinationStatuses[id] == "Scheduled" { Text("Scheduled on This Mac").tag("Scheduled") }
                 Text("Manually Scheduled").tag("Manually Scheduled")
                 if destinationStatuses[id] == "Published" { Text("Published").tag("Published") }
             }
@@ -806,11 +815,14 @@ struct MarketingComposerView: View {
                 if let recipient {
                     Label("API recipient: \(recipient.username) on \(recipient.platform.workspaceTitle)", systemImage: "person.crop.circle.badge.checkmark")
                         .font(.caption)
+                    if let status = socialPublishingRuntime.metaCredentialStatus[recipient.id] {
+                        Text(status).font(.caption).foregroundStyle(.secondary)
+                    }
                 }
-                DatePicker("API post time", selection: destinationScheduleDateBinding(id),
+                DatePicker("Local delivery time", selection: destinationScheduleDateBinding(id),
                            displayedComponents: [.date, .hourAndMinute])
                     .disabled(hasSavedAPISchedule && !rescheduleAccountIDs.contains(id))
-                Text("API scheduling requires a verified connected account. The app must be open and the Mac awake at this time.")
+                Text("Indie Dev Buddy sends this post at the selected time. Keep the app open and the Mac awake.")
                     .font(.caption).foregroundStyle(.secondary)
                 if account.apiPlatform == .threads || account.apiPlatform == .instagram {
                     TextField(account.apiPlatform == .instagram ? "Public media URL" : "Public media URL (optional)",
@@ -826,6 +838,16 @@ struct MarketingComposerView: View {
                 }
             } else if !canSchedule {
                 Text("API scheduling is not configured for this account. You can still mark it Manually Scheduled.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            if account.apiPlatform == .facebookPages,
+               mediaPublishableAccountIDs.contains(id) || destinationMediaLinks[id]?.url.isEmpty == false,
+               destinationStatuses[id] != "Published", destinationStatuses[id] != "Manually Scheduled" {
+                let savedScheduleIsLocked = destinationStatuses[id] == "Scheduled" &&
+                    savedAPIScheduledAccountIDs.contains(id) && !rescheduleAccountIDs.contains(id)
+                TextField("Public photo URL (optional)", text: destinationMediaLinkBinding(id).url)
+                    .disabled(savedScheduleIsLocked)
+                Text("Enter a public HTTPS link to a single photo. Facebook downloads the photo from that link.")
                     .font(.caption).foregroundStyle(.secondary)
             }
             if destinationStatuses[id] == "Manually Scheduled" {
@@ -847,7 +869,11 @@ struct MarketingComposerView: View {
                         .datePickerStyle(.field)
                 }
             } else {
-                if publishableAccountIDs.contains(id) && !uncertainDeliveryAccountIDs.contains(id) {
+                let isPreparing = deliveryHistory.contains {
+                    $0.intent.contentID == contentID && $0.intent.destinationID == id &&
+                        ($0.state == .sending || ($0.state == .queued && $0.canResumeContainer))
+                }
+                if publishableAccountIDs.contains(id) && !uncertainDeliveryAccountIDs.contains(id) && !isPreparing {
                     Button(publishingAccountIDs.contains(id) ? "Publishing…" : "Publish Now") {
                         var draft = currentDraft
                         // An explicit immediate send retires any still-queued schedule for this account.
@@ -856,10 +882,15 @@ struct MarketingComposerView: View {
                         onPublishNow(draft, id) { message in
                             publishingAccountIDs.remove(id)
                             deliveryError = message
+                            Task { await refreshDeliveryHistory() }
                         }
                     }
                         .buttonStyle(.borderedProminent)
                     .disabled(publishingAccountIDs.contains(id))
+                }
+                if isPreparing {
+                    Label("Delivery is in progress.", systemImage: "clock")
+                        .font(.caption).foregroundStyle(.secondary)
                 }
                 if uncertainDeliveryAccountIDs.contains(id) {
                     Label("Check the provider before retrying this uncertain delivery.", systemImage: "exclamationmark.triangle")

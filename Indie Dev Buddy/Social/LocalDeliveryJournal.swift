@@ -1,6 +1,7 @@
 import CryptoKit
 import Darwin
 import Foundation
+import SocialKit
 
 /// Device-local authority for schedules that have been explicitly approved in the app.
 /// Workspace JSON is a projection and cannot independently authorize a network write.
@@ -11,7 +12,15 @@ actor LocalDeliveryJournal {
         var state: ContentDeliveryState
         var approvedAt: Date
         var attempts: [ContentDeliveryAttempt]
+        var checkpoint: MetaPublishingCheckpoint?
+        var containerStagedAt: Date?
+        var retryAfter: Date?
+        var immediate: Bool?
+
+        var canResumeContainer: Bool { checkpoint?.publishStarted == false }
     }
+
+    static let recoveryWindow: TimeInterval = 86_400
 
     private struct File: Codable, Equatable {
         var schemaVersion = 1
@@ -56,6 +65,11 @@ actor LocalDeliveryJournal {
             var recovered = loaded
             for id in Array(recovered.entries.keys) {
                 guard var entry = recovered.entries[id], entry.state == .sending else { continue }
+                if entry.canResumeContainer {
+                    entry.state = .queued
+                    recovered.entries[id] = entry
+                    continue
+                }
                 entry.state = .outcomeUnknown
                 if let index = entry.attempts.indices.last {
                     entry.attempts[index].state = .outcomeUnknown
@@ -81,6 +95,7 @@ actor LocalDeliveryJournal {
               intent.media.allSatisfy({ $0.publicURL.scheme?.lowercased() == "https" && $0.publicURL.host != nil }) else {
                 throw JournalError.invalidIntent
             }
+            guard !Self.hasUnresolvedDelivery(for: intent, in: updated) else { throw JournalError.duplicateIntent }
             let fingerprint = try Self.fingerprint(intent, encoder: encoder)
             if let existing = updated.entries[intent.id] {
                 guard existing.payloadFingerprint == fingerprint, existing.state == .queued else {
@@ -95,20 +110,24 @@ actor LocalDeliveryJournal {
     }
 
     /// Records an explicit Publish Now request before any provider write begins.
-    func beginImmediate(_ intent: ContentDeliveryIntent, at now: Date = Date()) throws {
+    func beginImmediate(_ intent: ContentDeliveryIntent, at now: Date = Date()) throws -> Entry {
         guard !intent.workspaceID.isEmpty, !intent.contentID.isEmpty, !intent.destinationID.isEmpty,
               !intent.workspaceRootPath.isEmpty, !intent.recipient.platform.isEmpty,
               !intent.recipient.remoteID.isEmpty, intent.recipient.server.scheme?.lowercased() == "https",
               intent.media.allSatisfy({ $0.publicURL.scheme?.lowercased() == "https" && $0.publicURL.host != nil }),
               file.entries[intent.id] == nil else { throw JournalError.invalidIntent }
+        guard !Self.hasUnresolvedDelivery(for: intent, in: file) else { throw JournalError.duplicateIntent }
         let fingerprint = try Self.fingerprint(intent, encoder: encoder)
         var updated = file
-        updated.entries[intent.id] = Entry(
+        let entry = Entry(
             intent: intent, payloadFingerprint: fingerprint, state: .sending,
             approvedAt: now,
-            attempts: [ContentDeliveryAttempt(intentID: intent.id, state: .sending, startedAt: now)]
+            attempts: [ContentDeliveryAttempt(intentID: intent.id, state: .sending, startedAt: now)],
+            immediate: true
         )
+        updated.entries[intent.id] = entry
         try commit(updated)
+        return entry
     }
 
     /// Marks jobs that were already due before this awake app session as overdue.
@@ -117,7 +136,7 @@ actor LocalDeliveryJournal {
         var updated = file
         for id in file.entries.keys {
             guard var entry = file.entries[id], entry.state == .queued,
-                  entry.intent.scheduledDate < sessionStartedAt,
+                  !entry.canResumeContainer, entry.intent.scheduledDate < sessionStartedAt,
                   entry.intent.scheduledDate <= now else { continue }
             entry.state = .overdue
             updated.entries[id] = entry
@@ -128,17 +147,75 @@ actor LocalDeliveryJournal {
     }
 
     /// Atomically records `sending` before returning a single intent for a provider write.
-    func claimNextDue(sessionStartedAt: Date, now: Date) throws -> ContentDeliveryIntent? {
-        guard let pair = file.entries
-            .filter({ $0.value.state == .queued && $0.value.intent.scheduledDate >= sessionStartedAt && $0.value.intent.scheduledDate <= now })
-            .min(by: { $0.value.intent.scheduledDate < $1.value.intent.scheduledDate }) else { return nil }
+    func claimNextDue(sessionStartedAt: Date, now: Date) throws -> Entry? {
+        guard let pair = file.entries.filter({ _, entry in
+            guard entry.state == .queued, !Self.hasUnresolvedDelivery(for: entry.intent, in: file) else { return false }
+            if entry.canResumeContainer { return (entry.retryAfter ?? .distantPast) <= now }
+            return entry.intent.scheduledDate >= sessionStartedAt && entry.intent.scheduledDate <= now
+        }).min(by: { $0.value.intent.scheduledDate < $1.value.intent.scheduledDate }) else { return nil }
         var entry = pair.value
         entry.state = .sending
-        entry.attempts.append(ContentDeliveryAttempt(intentID: pair.key, state: .sending, startedAt: now))
+        if !entry.canResumeContainer {
+            entry.attempts.append(ContentDeliveryAttempt(intentID: pair.key, state: .sending, startedAt: now))
+        }
         var updated = file
         updated.entries[pair.key] = entry
         try commit(updated)
-        return entry.intent
+        return entry
+    }
+
+    func saveCheckpoint(_ checkpoint: MetaPublishingCheckpoint, for id: UUID, at now: Date = Date()) throws {
+        guard var entry = file.entries[id], entry.state == .sending,
+              entry.intent.recipient.platform == SocialPlatform.instagram.rawValue ||
+                entry.intent.recipient.platform == SocialPlatform.threads.rawValue else {
+            throw JournalError.invalidTransition
+        }
+        if let previous = entry.checkpoint {
+            guard !previous.publishStarted, checkpoint.publishStarted, previous.containerID == checkpoint.containerID else {
+                throw JournalError.invalidTransition
+            }
+        } else {
+            guard !checkpoint.publishStarted else { throw JournalError.invalidTransition }
+            entry.containerStagedAt = now
+        }
+        entry.checkpoint = checkpoint
+        var updated = file
+        updated.entries[id] = entry
+        try commit(updated)
+    }
+
+    /// Only a staged container can return to the queue. Once publish starts, the result is uncertain.
+    func pausePolling(_ id: UUID, at now: Date = Date()) throws -> ContentDeliveryResult {
+        guard var entry = file.entries[id], entry.state == .sending, entry.canResumeContainer else {
+            throw JournalError.invalidTransition
+        }
+        if let stagedAt = entry.containerStagedAt, now.timeIntervalSince(stagedAt) < Self.recoveryWindow {
+            entry.state = .queued
+            entry.retryAfter = now.addingTimeInterval(60)
+            var updated = file
+            updated.entries[id] = entry
+            try commit(updated)
+            return ContentDeliveryResult(state: .queued, message: "Meta is still preparing this post. Polling will resume while the app is open and the Mac is awake.")
+        }
+        let result = ContentDeliveryResult(state: .failed, message: "Meta did not finish preparing the post before the local recovery window ended.")
+        try finish(id, result: result, at: now)
+        return result
+    }
+
+    func confirmPublishedContainer(_ id: UUID, at now: Date = Date()) throws {
+        guard var entry = file.entries[id], entry.state == .outcomeUnknown,
+              entry.checkpoint != nil, let index = entry.attempts.indices.last else {
+            throw JournalError.invalidTransition
+        }
+        entry.state = .delivered
+        entry.checkpoint = nil
+        entry.containerStagedAt = nil
+        entry.attempts[index].state = .delivered
+        entry.attempts[index].finishedAt = now
+        entry.attempts[index].message = "Meta confirmed publication. The published post ID was unavailable."
+        var updated = file
+        updated.entries[id] = entry
+        try commit(updated)
     }
 
     func finish(_ id: UUID, result: ContentDeliveryResult, at now: Date = Date()) throws {
@@ -146,6 +223,11 @@ actor LocalDeliveryJournal {
               [.delivered, .failed, .outcomeUnknown, .overdue].contains(result.state),
               let index = entry.attempts.indices.last else { throw JournalError.invalidTransition }
         entry.state = result.state
+        if result.state != .outcomeUnknown {
+            entry.checkpoint = nil
+            entry.containerStagedAt = nil
+        }
+        entry.retryAfter = nil
         entry.attempts[index].state = result.state
         entry.attempts[index].finishedAt = now
         entry.attempts[index].providerPostID = result.providerPostID
@@ -163,6 +245,13 @@ actor LocalDeliveryJournal {
             guard entry.state != .sending, entry.state != .delivered else { throw JournalError.invalidTransition }
             guard [.queued, .overdue].contains(entry.state) else { continue }
             entry.state = .canceled
+            if let index = entry.attempts.indices.last, entry.attempts[index].state == .sending {
+                entry.attempts[index].state = .canceled
+                entry.attempts[index].finishedAt = Date()
+            }
+            entry.checkpoint = nil
+            entry.containerStagedAt = nil
+            entry.retryAfter = nil
             updated.entries[id] = entry
         }
         try commit(updated)
@@ -172,6 +261,17 @@ actor LocalDeliveryJournal {
         file.entries.values
             .filter { workspaceID == nil || $0.intent.workspaceID == workspaceID }
             .sorted { $0.intent.scheduledDate < $1.intent.scheduledDate }
+    }
+
+    private static func hasUnresolvedDelivery(for intent: ContentDeliveryIntent, in file: File) -> Bool {
+        file.entries.values.contains { entry in
+            let other = entry.intent
+            return other.id != intent.id && other.workspaceID == intent.workspaceID &&
+                other.workspaceRootPath == intent.workspaceRootPath && other.contentID == intent.contentID &&
+                other.recipient == intent.recipient &&
+                (entry.state == .sending || (entry.state == .outcomeUnknown && entry.checkpoint != nil) ||
+                 (entry.state == .queued && entry.canResumeContainer))
+        }
     }
 
     private func commit(_ updated: File) throws {
