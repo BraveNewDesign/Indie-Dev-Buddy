@@ -653,7 +653,7 @@ struct ManagementWorkspaceView: View {
         return resolved
     }
 
-    private static func safeWorkspacePhotoURL(root: URL, photoPath: String?) -> URL? {
+    fileprivate static func safeWorkspacePhotoURL(root: URL, photoPath: String?) -> URL? {
         guard let photoPath, !photoPath.isEmpty, !photoPath.hasPrefix("/"),
               !photoPath.split(separator: "/").contains("..") else { return nil }
         let resolvedRoot = root.standardizedFileURL.resolvingSymlinksInPath()
@@ -1498,6 +1498,25 @@ private struct SocialAccountRecordEditor: View {
     private let platforms = ["Bluesky", "Threads", "Instagram", "X", "Facebook", "LinkedIn", "Mastodon", "Other"]
     private var platformValue: String { platform == "Other" ? customPlatform : platform }
     private var apiPlatform: SocialPlatform? { SocialPlatform.workspacePlatform(platformValue) }
+
+    init(record: SocialAccountRecord?, owners: [OwnerChoice], identities: [IdentityRecord], workspaceStore: WorkspaceStore, onDirtyChange: @escaping (Bool) -> Void, onSave: @escaping (SocialAccountRecord) async -> Bool) {
+        self.record = record
+        self.owners = owners
+        self.identities = identities
+        self.workspaceStore = workspaceStore
+        self.onDirtyChange = onDirtyChange
+        self.onSave = onSave
+
+        let ownerID = record?.owner.map { "\($0.type.rawValue):\($0.id)" } ?? ""
+        let ownerIdentity = ownerID.hasPrefix("identity:")
+            ? identities.first { $0.id == String(ownerID.dropFirst("identity:".count)) }
+            : nil
+        _ownerID = State(initialValue: ownerID)
+        _avatarPath = State(initialValue: record?.avatarPath)
+        _avatarPreview = State(initialValue: Self.loadImage(path: record?.avatarPath, root: workspaceStore.rootURL))
+        _identityAvatarPreview = State(initialValue: Self.loadImage(path: ownerIdentity?.photoPath, root: workspaceStore.rootURL))
+    }
+
     var body: some View {
         Form {
             Section("Social account") {
@@ -1580,8 +1599,8 @@ private struct SocialAccountRecordEditor: View {
             if SocialPlatform.workspacePlatform(newValue)?.rawValue != providerIdentity?.platform { providerIdentity = nil }
         }
         .onChange(of: dirtySignature) { _, _ in onDirtyChange(isDirty) }
-        .onChange(of: ownerID) { _, _ in Task { await loadIdentityAvatarPreview() } }
-        .onChange(of: selectedIdentity?.photoPath) { _, _ in Task { await loadIdentityAvatarPreview() } }
+        .onChange(of: ownerID) { _, _ in loadIdentityAvatarPreview() }
+        .onChange(of: selectedIdentity?.photoPath) { _, _ in loadIdentityAvatarPreview() }
         .fileImporter(isPresented: $showingAvatarPicker, allowedContentTypes: [.image], allowsMultipleSelection: false) { result in
             switch result {
             case .success(let urls):
@@ -1644,7 +1663,6 @@ private struct SocialAccountRecordEditor: View {
     private func load() {
         guard let record else {
             ownerID = owners.first?.id ?? ""
-            Task { await loadIdentityAvatarPreview() }
             return
         }
         draftID = record.id
@@ -1654,8 +1672,8 @@ private struct SocialAccountRecordEditor: View {
         handle = record.handle ?? ""; displayName = record.displayName ?? ""; profileURL = record.profileURL?.absoluteString ?? ""; enabled = record.enabled
         providerIdentity = record.providerIdentity
         avatarPath = record.avatarPath
-        if let avatarPath { Task { await loadAvatarPreview(relativePath: avatarPath) } }
-        Task { await loadIdentityAvatarPreview() }
+        avatarPreview = Self.loadImage(path: record.avatarPath, root: workspaceStore.rootURL)
+        loadIdentityAvatarPreview()
     }
     private var selectedIdentity: IdentityRecord? {
         guard ownerID.hasPrefix("identity:") else { return nil }
@@ -1663,28 +1681,13 @@ private struct SocialAccountRecordEditor: View {
         return identities.first { $0.id == identityID }
     }
     private var displayedAvatarPreview: NSImage? { avatarPath == nil ? identityAvatarPreview : (avatarPreview ?? identityAvatarPreview) }
-    private func loadIdentityAvatarPreview() async {
-        guard let path = selectedIdentity?.photoPath else { identityAvatarPreview = nil; return }
-        do {
-            let data = try await workspaceStore.read(relativePath: path).data
-            guard selectedIdentity?.photoPath == path else { return }
-            identityAvatarPreview = NSImage(data: data)
-        } catch {
-            guard selectedIdentity?.photoPath == path else { return }
-            identityAvatarPreview = nil
-        }
+    private func loadIdentityAvatarPreview() {
+        identityAvatarPreview = Self.loadImage(path: selectedIdentity?.photoPath, root: workspaceStore.rootURL)
     }
-    private func loadAvatarPreview(relativePath: String) async {
-        do {
-            let imageData = try await workspaceStore.read(relativePath: relativePath).data
-            guard avatarPath == relativePath else { return }
-            avatarPreview = NSImage(data: imageData)
-            if avatarPreview == nil { avatarError = "The linked avatar file is not a readable image. Replace it or clear the avatar." }
-        } catch {
-            guard avatarPath == relativePath else { return }
-            avatarPreview = nil
-            avatarError = "The linked avatar is unavailable. Replace it or clear the avatar. \(error.localizedDescription)"
-        }
+
+    private static func loadImage(path: String?, root: URL) -> NSImage? {
+        guard let url = ManagementWorkspaceView.safeWorkspacePhotoURL(root: root, photoPath: path) else { return nil }
+        return NSImage(contentsOf: url)
     }
     private func importAvatar(from sourceURL: URL) async {
         let access = sourceURL.startAccessingSecurityScopedResource()
