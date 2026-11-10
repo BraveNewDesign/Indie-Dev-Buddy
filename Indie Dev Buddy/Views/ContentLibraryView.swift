@@ -427,6 +427,10 @@ private struct ContentLibraryRow: View {
                     }
                 }
                 .font(.caption).foregroundStyle(.secondary)
+                if let scheduleSummary {
+                    Label(scheduleSummary, systemImage: "calendar.badge.clock")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
                 Group {
                     if isPostedRow, let date = latestPublishedDate {
                         Label("Published \(date.formatted(date: .abbreviated, time: .omitted))", systemImage: "checkmark.circle")
@@ -464,6 +468,18 @@ private struct ContentLibraryRow: View {
     private var isPostedRow: Bool {
         if item.kind == .social { return !item.destinations.isEmpty && item.destinations.allSatisfy { $0.status == .published } }
         return item.status == .published
+    }
+
+    private var scheduleSummary: String? {
+        let apiCount = item.destinations.filter { $0.status == .scheduled && $0.schedule?.mode == .api }.count
+        let manualCount = item.destinations.filter { $0.status == .manuallyScheduled || ($0.status == .scheduled && $0.schedule?.mode == .manual) }.count
+        let overdueCount = item.destinations.filter { $0.status == .scheduled && $0.schedule?.state == .overdue }.count
+        guard apiCount + manualCount > 0 else { return nil }
+        var parts: [String] = []
+        if overdueCount > 0 { parts.append("\(overdueCount) missed") }
+        if apiCount > overdueCount { parts.append("\(apiCount - overdueCount) automatic") }
+        if manualCount > 0 { parts.append("\(manualCount) manual") }
+        return parts.joined(separator: " · ")
     }
 }
 
@@ -535,7 +551,7 @@ struct ContentRecordEditor: View {
                         originalText: bodyText, customizedText: variantText,
                         characterGuidelines: ["threads": 500, "instagram": 2200, "x": 280, "facebook": 63206, "linkedin": 3000],
                         requestedNavigationID: $requestedNavigationID,
-                        onSave: saveSocial, onOpenRelated: open,
+                        onSave: saveSocial, onPublishNow: publishNow, onOpenRelated: open,
                         onNavigationConfirmed: onNavigationConfirmed,
                         onDirtyChange: { dirty in
                             socialComposerHasUnsavedChanges = dirty
@@ -929,6 +945,71 @@ struct ContentRecordEditor: View {
             isSaving = false
             completion(false)
         } }
+    }
+
+    private func publishNow(_ draft: ComposerDraft, accountID: String, completion: @escaping (String?) -> Void) {
+        saveSocial(draft) { success in
+            guard success, let item = edited,
+                  let account = snapshot.socialAccountsByID[accountID],
+                  let identity = account.providerIdentity,
+                  let platform = SocialPlatform.workspacePlatform(account.platform) else {
+                completion("Save the post before publishing.")
+                return
+            }
+            Task {
+                do {
+                    let media = try scheduledMedia(draft.destinationMediaLinks[accountID] ?? ComposerMediaLink())
+                    if media.isEmpty && !(draft.destinationMediaOverrides[accountID] ?? draft.sharedMediaPaths).isEmpty {
+                        throw WorkspaceCommandError("Local attachments cannot be sent through this API yet. Use a public media URL where supported, or publish manually.")
+                    }
+                    if platform == .instagram && media.isEmpty {
+                        throw WorkspaceCommandError("Instagram requires a public image or video URL.")
+                    }
+                    let text: String
+                    var candidate = draft.customizedText[accountID] ?? draft.originalText
+                    if draft.includeArticleLink,
+                       let sourceID = item.sourceContentId,
+                       let source = snapshot.contentByID[sourceID], source.status == .published,
+                       let url = source.publishedURL {
+                        candidate = candidate.isEmpty ? url.absoluteString : "\(candidate)\n\n\(url.absoluteString)"
+                    }
+                    text = candidate
+                    guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !media.isEmpty else {
+                        throw SocialError.invalidInput
+                    }
+                    let key = UUID()
+                    let createdAt = Date(timeIntervalSince1970: floor(Date().timeIntervalSince1970))
+                    let resolved = draft.mentionResolutions[accountID]
+                    let mentions = platform == .bluesky && resolved?.textSnapshot == text ? (resolved?.mentions ?? []) : []
+                    if platform == .bluesky {
+                        let expression = try NSRegularExpression(pattern: #"(?<![A-Za-z0-9._-])@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+"#)
+                        let expected = expression.numberOfMatches(in: text, range: NSRange(text.startIndex..<text.endIndex, in: text))
+                        guard expected == mentions.count else {
+                            throw WorkspaceCommandError("Resolve Bluesky @mentions before publishing through the API.")
+                        }
+                    }
+                    let intent = ContentDeliveryIntent(
+                        id: key, workspaceID: snapshot.manifest.id,
+                        workspaceRootPath: store.rootURL.standardizedFileURL.resolvingSymlinksInPath().path,
+                        contentID: item.id, destinationID: accountID, recipient: identity,
+                        scheduledDate: Date(), draftID: key, draftCreatedAt: createdAt,
+                        text: text, media: media, mentions: mentions
+                    )
+                    let result = try await socialPublishingRuntime.publishNow(intent)
+                    if result.state == .delivered {
+                        refresh()
+                        error = nil
+                        completion(nil)
+                    } else {
+                        error = result.message ?? "The post was not confirmed as published. Review the delivery history before retrying."
+                        completion(error)
+                    }
+                } catch {
+                    self.error = error.localizedDescription
+                    completion(error.localizedDescription)
+                }
+            }
+        }
     }
     private func encodedContentRecord(_ item: ContentRecord) throws -> Data {
         let encoder = JSONEncoder()

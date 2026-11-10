@@ -79,6 +79,25 @@ actor PublishingCoordinator {
         try await journal.authorize(intents, at: now)
     }
 
+    func deliverNow(_ intent: ContentDeliveryIntent) async throws -> ContentDeliveryResult {
+        try await journal.beginImmediate(intent)
+        let result: ContentDeliveryResult
+        do {
+            result = try await sender(intent)
+        } catch {
+            result = ContentDeliveryResult(
+                state: .outcomeUnknown,
+                message: "Delivery result is unclear. Check the provider before retrying."
+            )
+        }
+        try await journal.finish(intent.id, result: result)
+        if let entry = await journal.entries().first(where: { $0.intent.id == intent.id }) {
+            try await projector(entry)
+            projectedStates[intent.id] = entry.state
+        }
+        return result
+    }
+
     func cancel(_ intentIDs: Set<UUID>) async throws {
         try await journal.cancel(intentIDs)
     }

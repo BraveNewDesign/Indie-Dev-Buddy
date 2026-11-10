@@ -2,6 +2,21 @@ import Foundation
 import SocialKit
 
 extension WorkspaceStore {
+    func canPublishNow(_ intent: ContentDeliveryIntent) throws -> Bool {
+        try withWorkspaceLock(exclusive: false) {
+            let snapshot = try load(installAgentGuidance: false)
+            guard snapshot.manifest.id == intent.workspaceID,
+                  rootURL.standardizedFileURL.resolvingSymlinksInPath().path == intent.workspaceRootPath,
+                  let record = snapshot.contentByID[intent.contentID],
+                  record.destinations.filter({ $0.accountId == intent.destinationID }).count == 1,
+                  snapshot.socialDestinationSelection(for: record).selectedAccountIDs.contains(intent.destinationID),
+                  let account = snapshot.socialAccountsByID[intent.destinationID], account.isEligibleDestination,
+                  account.providerIdentity == intent.recipient,
+                  SocialPlatform.workspacePlatform(account.platform)?.rawValue == intent.recipient.platform else { return false }
+            return true
+        }
+    }
+
     func canDeliver(_ intent: ContentDeliveryIntent) throws -> Bool {
         try withWorkspaceLock(exclusive: false) {
             let snapshot = try load(installAgentGuidance: false)
@@ -38,7 +53,9 @@ extension WorkspaceStore {
         if !newAttempts.isEmpty {
             destination.deliveryHistory = (destination.deliveryHistory ?? []) + newAttempts
         }
-        if var schedule = destination.schedule, schedule.matches(intent), destination.status == .scheduled {
+        if var schedule = destination.schedule,
+           (schedule.matches(intent) || schedule.state == .overdue),
+           destination.status == .scheduled {
             schedule.state = entry.state
             schedule.lastError = entry.attempts.last?.message
             destination.schedule = schedule
@@ -47,6 +64,11 @@ extension WorkspaceStore {
                 destination.publishedDate = receipt.finishedAt
                 destination.publishedURL = receipt.publishedURL
             }
+        } else if entry.state == .delivered, let receipt = entry.attempts.last {
+            destination.status = .published
+            destination.publishedDate = receipt.finishedAt
+            destination.publishedURL = receipt.publishedURL
+            destination.schedule = nil
         }
         guard destination != record.destinations[index] else { return }
         record.destinations[index] = destination

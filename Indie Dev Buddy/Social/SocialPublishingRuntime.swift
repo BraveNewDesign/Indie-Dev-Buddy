@@ -76,6 +76,25 @@ final class SocialPublishingRuntime {
         try await coordinator.cancel(ids)
     }
 
+    func publishNow(_ intent: ContentDeliveryIntent) async throws -> ContentDeliveryResult {
+        guard Self.isRegisteredWorkspace(intent.workspaceRootPath) else {
+            throw SocialError.invalidConfiguration
+        }
+        let store = WorkspaceStore(rootURL: URL(fileURLWithPath: intent.workspaceRootPath, isDirectory: true))
+        guard try await store.canPublishNow(intent) else { throw SocialError.invalidConfiguration }
+        guard let coordinator else { throw LocalDeliveryJournal.JournalError.storageFailure }
+        var immediateIntent = intent
+        if let existing = await coordinator.history(workspaceID: intent.workspaceID).first(where: { $0.intent.id == intent.id }) {
+            guard existing.state == .queued || existing.state == .overdue else {
+                throw LocalDeliveryJournal.JournalError.invalidTransition
+            }
+            try await coordinator.cancel([intent.id])
+            immediateIntent.id = UUID()
+            immediateIntent.draftID = immediateIntent.id
+        }
+        return try await coordinator.deliverNow(immediateIntent)
+    }
+
     private func setEligible(_ eligible: Bool) {
         guard let coordinator else { return }
         let time = Date()

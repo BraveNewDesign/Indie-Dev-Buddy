@@ -94,6 +94,23 @@ actor LocalDeliveryJournal {
         try commit(updated)
     }
 
+    /// Records an explicit Publish Now request before any provider write begins.
+    func beginImmediate(_ intent: ContentDeliveryIntent, at now: Date = Date()) throws {
+        guard !intent.workspaceID.isEmpty, !intent.contentID.isEmpty, !intent.destinationID.isEmpty,
+              !intent.workspaceRootPath.isEmpty, !intent.recipient.platform.isEmpty,
+              !intent.recipient.remoteID.isEmpty, intent.recipient.server.scheme?.lowercased() == "https",
+              intent.media.allSatisfy({ $0.publicURL.scheme?.lowercased() == "https" && $0.publicURL.host != nil }),
+              file.entries[intent.id] == nil else { throw JournalError.invalidIntent }
+        let fingerprint = try Self.fingerprint(intent, encoder: encoder)
+        var updated = file
+        updated.entries[intent.id] = Entry(
+            intent: intent, payloadFingerprint: fingerprint, state: .sending,
+            approvedAt: now,
+            attempts: [ContentDeliveryAttempt(intentID: intent.id, state: .sending, startedAt: now)]
+        )
+        try commit(updated)
+    }
+
     /// Marks jobs that were already due before this awake app session as overdue.
     func markOverdue(before sessionStartedAt: Date, now: Date) throws -> [ContentDeliveryIntent] {
         var changed: [ContentDeliveryIntent] = []

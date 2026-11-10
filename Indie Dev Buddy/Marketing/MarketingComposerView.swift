@@ -86,6 +86,7 @@ struct MarketingComposerView: View {
     let unavailableDestinationIDs: Set<String>
     let characterGuidelines: [String: Int]
     let onSave: (ComposerDraft, @escaping (Bool) -> Void) -> Void
+    let onPublishNow: (ComposerDraft, String, @escaping (String?) -> Void) -> Void
     let onOpenRelated: (String) -> Void
     @Binding var requestedNavigationID: String?
     let onNavigationConfirmed: (String) -> Void
@@ -119,9 +120,14 @@ struct MarketingComposerView: View {
     @State private var isSaving = false
     @State private var showingGuidanceSettings = false
     @State private var deliveryHistory: [LocalDeliveryJournal.Entry] = []
+    @State private var dismissedDeliveryIDs = Set<UUID>()
     @State private var deliveryError: String?
     @State private var mentionResolutionMessage: String?
     @State private var connectedAccounts: [SocialAccount] = []
+    @State private var publishableAccountIDs = Set<String>()
+    @State private var uncertainDeliveryAccountIDs = Set<String>()
+    @State private var apiPublishedAccountIDs = Set<String>()
+    @State private var publishingAccountIDs = Set<String>()
     private enum EditorSection: String, CaseIterable {
         case content = "Content"
         case publishing = "Accounts & Publishing"
@@ -266,7 +272,20 @@ struct MarketingComposerView: View {
         }
         .task(id: accounts) {
             let verified = try? await socialPublishingRuntime.connections.accounts()
-            if !Task.isCancelled { connectedAccounts = verified ?? [] }
+            guard !Task.isCancelled else { return }
+            connectedAccounts = verified ?? []
+            var publishable = Set<String>()
+            for account in accounts {
+                guard let identity = account.providerIdentity,
+                      (verified ?? []).contains(where: {
+                          $0.platform.rawValue == identity.platform && $0.server == identity.server && $0.remoteID == identity.remoteID
+                      }) else { continue }
+                if let capabilities = try? await socialPublishingRuntime.connections.capabilities(for: identity),
+                   capabilities.contains(.publishText) || capabilities.contains(.publishMedia) {
+                    publishable.insert(account.id)
+                }
+            }
+            publishableAccountIDs = publishable
         }
         .onChange(of: accounts) { _, _ in
             let eligibleIDs = Set(eligibleAccounts.map(\.id))
@@ -626,7 +645,7 @@ struct MarketingComposerView: View {
     }
 
     @ViewBuilder private var deliveryHistorySection: some View {
-        let entries = deliveryHistory.filter { $0.intent.contentID == contentID }
+        let entries = deliveryHistory.filter { $0.intent.contentID == contentID && !dismissedDeliveryIDs.contains($0.intent.id) }
         if !entries.isEmpty {
             VStack(alignment: .leading, spacing: 8) {
                 sectionTitle("API Delivery History")
@@ -649,6 +668,32 @@ struct MarketingComposerView: View {
                         if entry.state == .outcomeUnknown {
                             Text("Check the account before taking another action. Indie Dev Buddy will not retry automatically.")
                                 .font(.caption).foregroundStyle(.orange)
+                        }
+                        if entry.state == .overdue {
+                            Label("Missed while the app was closed or Mac was asleep. This post was not sent automatically.", systemImage: "exclamationmark.clock")
+                                .font(.caption).foregroundStyle(.orange)
+                            HStack {
+                                Button("Submit Now") {
+                                    Task {
+                                        do {
+                                            let result = try await socialPublishingRuntime.publishNow(entry.intent)
+                                            if result.state == .delivered { deliveryError = nil }
+                                            else { deliveryError = result.message ?? "The post was not confirmed as published." }
+                                        } catch { deliveryError = error.localizedDescription }
+                                        await refreshDeliveryHistory()
+                                    }
+                                }
+                                Button("Reschedule…") {
+                                    selectedAccountID = entry.intent.destinationID
+                                    selectedAccountIDs.insert(entry.intent.destinationID)
+                                    destinationStatuses[entry.intent.destinationID] = "Scheduled"
+                                    destinationScheduleDates[entry.intent.destinationID] = Date().addingTimeInterval(3600)
+                                    rescheduleAccountIDs.insert(entry.intent.destinationID)
+                                    section = .publishing
+                                    deliveryError = "Choose the new API post time, then save to confirm the reschedule."
+                                }
+                                Button("Dismiss") { dismissedDeliveryIDs.insert(entry.intent.id) }
+                            }
                         }
                         if let url = entry.attempts.last?.publishedURL { Link("View Post", destination: url) }
                         if entry.state == .queued || entry.state == .overdue {
@@ -676,7 +721,11 @@ struct MarketingComposerView: View {
 
     private func refreshDeliveryHistory() async {
         let root = contentFolderURL.deletingLastPathComponent().deletingLastPathComponent()
-        deliveryHistory = await socialPublishingRuntime.history(workspaceID: workspaceID, workspaceRoot: root)
+        let history = await socialPublishingRuntime.history(workspaceID: workspaceID, workspaceRoot: root)
+        deliveryHistory = history
+        uncertainDeliveryAccountIDs.formUnion(history.compactMap { entry in
+            entry.intent.contentID == contentID && entry.state == .outcomeUnknown ? entry.intent.destinationID : nil
+        })
     }
 
     private var publishingProgress: some View {
@@ -696,7 +745,9 @@ struct MarketingComposerView: View {
                             SocialPlatformIcon(platform: account.platform, size: 20)
                             Text(account.displayName).fontWeight(.medium)
                             Spacer(minLength: 8)
-                            Text(posted ? "Posted" : destinationStatuses[account.id] ?? "Draft")
+                            Text(posted
+                                 ? (apiPublishedAccountIDs.contains(account.id) ? "Published via API" : "Recorded manually")
+                                 : destinationStatuses[account.id] ?? "Draft")
                                 .foregroundStyle(posted ? Color.green : .secondary)
                         }
                         if posted, let date = destinationPublicationDates[account.id] {
@@ -739,7 +790,7 @@ struct MarketingComposerView: View {
                 Text("Ready").tag("Ready")
                 if canSchedule || destinationStatuses[id] == "Scheduled" { Text("Scheduled").tag("Scheduled") }
                 Text("Manually Scheduled").tag("Manually Scheduled")
-                Text("Posted").tag("Published")
+                if destinationStatuses[id] == "Published" { Text("Published").tag("Published") }
             }
             if destinationStatuses[id] == "Scheduled" {
                 let hasSavedAPISchedule = savedAPIScheduledAccountIDs.contains(id)
@@ -784,6 +835,9 @@ struct MarketingComposerView: View {
                     .font(.caption).foregroundStyle(.secondary)
             }
             if destinationStatuses[id] == "Published" {
+                Label(apiPublishedAccountIDs.contains(id) ? "Published through the connected API" : "Recorded as already posted",
+                      systemImage: apiPublishedAccountIDs.contains(id) ? "checkmark.seal.fill" : "checkmark.circle")
+                    .font(.caption).foregroundStyle(apiPublishedAccountIDs.contains(id) ? .green : .secondary)
                 TextField("Post URL (optional)", text: destinationURLBinding(id))
                     .textFieldStyle(.roundedBorder)
                 Toggle("Record publication date", isOn: destinationPublicationDatePresenceBinding(id))
@@ -793,7 +847,27 @@ struct MarketingComposerView: View {
                         .datePickerStyle(.field)
                 }
             } else {
-                Button("Mark as Posted") { destinationStatusBinding(id).wrappedValue = "Published" }
+                if publishableAccountIDs.contains(id) && !uncertainDeliveryAccountIDs.contains(id) {
+                    Button(publishingAccountIDs.contains(id) ? "Publishing…" : "Publish Now") {
+                        var draft = currentDraft
+                        // An explicit immediate send retires any still-queued schedule for this account.
+                        draft.destinationStatuses[id] = "Ready"
+                        publishingAccountIDs.insert(id)
+                        onPublishNow(draft, id) { message in
+                            publishingAccountIDs.remove(id)
+                            deliveryError = message
+                        }
+                    }
+                        .buttonStyle(.borderedProminent)
+                    .disabled(publishingAccountIDs.contains(id))
+                }
+                if uncertainDeliveryAccountIDs.contains(id) {
+                    Label("Check the provider before retrying this uncertain delivery.", systemImage: "exclamationmark.triangle")
+                        .font(.caption).foregroundStyle(.orange)
+                }
+                Button("Record as Already Posted") { destinationStatusBinding(id).wrappedValue = "Published" }
+                Text("Use this only if you posted outside the app. API publishing records a verified receipt and post link.")
+                    .font(.caption).foregroundStyle(.secondary)
             }
         }
     }
@@ -1213,6 +1287,7 @@ extension MarketingComposerView {
         characterGuidelines: [String: Int] = [:],
         requestedNavigationID: Binding<String?>,
         onSave: @escaping (ComposerDraft, @escaping (Bool) -> Void) -> Void,
+        onPublishNow: @escaping (ComposerDraft, String, @escaping (String?) -> Void) -> Void = { _, _, completion in completion(nil) },
         onOpenRelated: @escaping (String) -> Void,
         onNavigationConfirmed: @escaping (String) -> Void,
         onDirtyChange: @escaping (Bool) -> Void
@@ -1235,6 +1310,7 @@ extension MarketingComposerView {
             unavailableDestinationIDs: unavailableIDs,
             characterGuidelines: characterGuidelines,
             onSave: onSave,
+            onPublishNow: onPublishNow,
             onOpenRelated: onOpenRelated,
             requestedNavigationID: requestedNavigationID,
             onNavigationConfirmed: onNavigationConfirmed,
@@ -1257,6 +1333,14 @@ extension MarketingComposerView {
         }, uniquingKeysWith: { _, latest in latest }))
         _savedAPIScheduledAccountIDs = State(initialValue: Set(content.destinations.compactMap { destination in
             destination.schedule?.mode == .api ? destination.accountId : nil
+        }))
+        _uncertainDeliveryAccountIDs = State(initialValue: Set(content.destinations.compactMap { destination in
+            destination.schedule?.state == .outcomeUnknown || destination.deliveryHistory?.last?.state == .outcomeUnknown
+                ? destination.accountId : nil
+        }))
+        _apiPublishedAccountIDs = State(initialValue: Set(content.destinations.compactMap { destination in
+            destination.status == .published && destination.deliveryHistory?.contains(where: { $0.state == .delivered }) == true
+                ? destination.accountId : nil
         }))
         let mediaLinks = Dictionary(content.destinations.compactMap { destination in
             destination.schedule?.media?.first.map {
