@@ -98,7 +98,7 @@
         "PRODUCT_BUNDLE_IDENTIFIER": "com.bravenewdesign.Indie-Dev-Buddy",
         "PRODUCT_NAME": "$(TARGET_NAME)",
         "SPARKLE_FEED_URL": "https://bravenewdesign.github.io/Indie-Dev-Buddy/appcast.xml",
-        "SPARKLE_PUBLIC_ED_KEY": "",
+        "SPARKLE_PUBLIC_ED_KEY": "aHVSlLlyAIXja6P90OSHeuHGNGRHwZsi6RSPs2kpD3o=",
         "STRING_CATALOG_GENERATE_SYMBOLS": "YES",
         "SWIFT_APPROACHABLE_CONCURRENCY": "YES",
         "SWIFT_DEFAULT_ACTOR_ISOLATION": "MainActor",
