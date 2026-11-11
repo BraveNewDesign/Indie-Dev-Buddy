@@ -7,7 +7,8 @@ SCHEME="Indie Dev Buddy"
 APP_NAME="Indie Dev Buddy"
 BUILD_DIR="$ROOT_DIR/.release"
 ARCHIVE_PATH="$BUILD_DIR/$APP_NAME.xcarchive"
-APP_PATH="$ARCHIVE_PATH/Products/Applications/$APP_NAME.app"
+EXPORT_DIR="$BUILD_DIR/export"
+APP_PATH="$EXPORT_DIR/$APP_NAME.app"
 UPDATES_DIR="$ROOT_DIR/docs/updates"
 
 fail() { printf 'error: %s\n' "$1" >&2; exit 1; }
@@ -28,6 +29,7 @@ BUILD_NUMBER="${2:-$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$ROOT_
 
 mkdir -p "$BUILD_DIR" "$UPDATES_DIR"
 rm -rf "$ARCHIVE_PATH"
+rm -rf "$EXPORT_DIR"
 
 xcodebuild archive \
   -project "$PROJECT_PATH" \
@@ -35,14 +37,20 @@ xcodebuild archive \
   -configuration Release \
   -archivePath "$ARCHIVE_PATH" \
   -derivedDataPath "$BUILD_DIR/DerivedData" \
-  CODE_SIGN_IDENTITY="$DEVELOPER_ID_APPLICATION" \
   CODE_SIGN_STYLE=Automatic \
   SPARKLE_FEED_URL="$SPARKLE_FEED_URL" \
   SPARKLE_PUBLIC_ED_KEY="$SPARKLE_PUBLIC_ED_KEY" \
   MARKETING_VERSION="$VERSION" \
   CURRENT_PROJECT_VERSION="$BUILD_NUMBER"
 
-[[ -d "$APP_PATH" ]] || fail "Archive did not contain $APP_NAME.app."
+ARCHIVED_APP_PATH="$ARCHIVE_PATH/Products/Applications/$APP_NAME.app"
+[[ -d "$ARCHIVED_APP_PATH" ]] || fail "Archive did not contain $APP_NAME.app."
+mkdir -p "$EXPORT_DIR"
+ditto "$ARCHIVED_APP_PATH" "$APP_PATH"
+codesign --force --deep --options runtime --timestamp \
+  --entitlements "$ROOT_DIR/Indie Dev Buddy.entitlements" \
+  --sign "$DEVELOPER_ID_APPLICATION" "$APP_PATH"
+codesign --verify --deep --strict "$APP_PATH"
 
 PRE_NOTARY_ZIP="$BUILD_DIR/$APP_NAME-$VERSION-notarize.zip"
 ditto -c -k --sequesterRsrc --keepParent "$APP_PATH" "$PRE_NOTARY_ZIP"
@@ -58,6 +66,8 @@ ditto "$APP_PATH" "$DMG_STAGE/$APP_NAME.app"
 ln -s /Applications "$DMG_STAGE/Applications"
 hdiutil create -volname "$APP_NAME" -srcfolder "$DMG_STAGE" -ov -format UDZO "$DMG_PATH"
 rm -rf "$DMG_STAGE"
+codesign --force --timestamp --sign "$DEVELOPER_ID_APPLICATION" "$DMG_PATH"
+codesign --verify --verbose=2 "$DMG_PATH"
 xcrun notarytool submit "$DMG_PATH" --keychain-profile "$NOTARY_PROFILE" --wait
 xcrun stapler staple "$DMG_PATH"
 

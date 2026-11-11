@@ -1,0 +1,14 @@
+<?xml version="1.0" standalone="yes"?>
+<rss xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" version="2.0">
+    <channel>
+        <title>Indie Dev Buddy</title>
+        <item>
+            <title>1.0</title>
+            <pubDate>Wed, 11 Nov 2026 11:28:40 -0500</pubDate>
+            <sparkle:version>1</sparkle:version>
+            <sparkle:shortVersionString>1.0</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>27.2</sparkle:minimumSystemVersion>
+            <enclosure url="https://bravenewdesign.github.io/Indie-Dev-Buddy/updates/Indie%20Dev%20Buddy-1.0.zip" length="3180454" type="application/octet-stream" sparkle:edSignature="LASLa7zUtUjFTkoc673fVnLHaZdbeBnp4iWqJbhqoOJ70wYw0oU3ETKoI0puSqn+KlkImHAOir4pZnUn82jGBg=="/>
+        </item>
+    </channel>
+</rss>

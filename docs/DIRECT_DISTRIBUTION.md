@@ -16,7 +16,8 @@ DMG and source release can be attached to GitHub Releases.
    Keychain profile. The release script never stores signing credentials in Git.
 5. Resolve Sparkle's package, run its `generate_keys` tool once, and keep the
    private key in the login Keychain. Put only its public key in
-   `SPARKLE_PUBLIC_ED_KEY` when building releases.
+   `SPARKLE_PUBLIC_ED_KEY` when building releases. When `generate_appcast`
+   first signs an update feed, approve its Keychain access to that private key.
 
 ## Prepare a release
 
