@@ -4,6 +4,10 @@ Indie Dev Buddy is a local-first macOS workspace for indie software makers to or
 
 **Status:** early access. This release is a local Mac app; it has no hosted account service or cloud scheduler.
 
+## Download
+
+Download the signed, notarized Apple silicon build from [GitHub Releases](https://github.com/BraveNewDesign/Indie-Dev-Buddy/releases/latest). Open the DMG and drag Indie Dev Buddy to Applications. Requires macOS 27.2 or later. The app checks for updates through Sparkle.
+
 ## What it does
 
 - Organize app and website records, ideas, release information, and marketing content in a workspace folder of ordinary files.
@@ -22,7 +26,7 @@ Indie Dev Buddy is a local-first macOS workspace for indie software makers to or
 
 ## Build
 
-The app target currently requires macOS 27.2 or later and Xcode 27.2 or later. Open `Indie Dev Buddy.xcodeproj` in Xcode and build the **Indie Dev Buddy** scheme.
+The released app currently supports Apple silicon and requires macOS 27.2 or later. Building from source requires Xcode 27.2 or later. Open `Indie Dev Buddy.xcodeproj` in Xcode and build the **Indie Dev Buddy** scheme.
 
 The project depends on the public SocialKit package at version 0.1.0. Publish the matching `v0.1.0` SocialKit tag before building a fresh clone.
 
