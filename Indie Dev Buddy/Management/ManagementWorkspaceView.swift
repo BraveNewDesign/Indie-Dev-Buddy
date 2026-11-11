@@ -1522,7 +1522,7 @@ private struct SocialAccountRecordEditor: View {
     @State private var providerIdentity: ContentRecipientIdentity?
     @State private var connectedAccount: SocialAccount?
     @State private var saving = false
-    private let platforms = ["Bluesky", "Threads", "Instagram", "X", "Facebook", "LinkedIn", "Mastodon", "Other"]
+    private let platforms = ["Bluesky", "Threads", "Instagram", "X", "Facebook", "LinkedIn", "Mastodon", "GitHub", "Other"]
     private var platformValue: String { platform == "Other" ? customPlatform : platform }
     private var apiPlatform: SocialPlatform? { SocialPlatform.workspacePlatform(platformValue) }
 

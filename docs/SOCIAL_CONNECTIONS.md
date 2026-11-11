@@ -15,6 +15,7 @@ For Instagram and Threads, the local journal stores the staged container ID with
 | X | Public client ID and registered callback with OAuth 2.0 authorization code flow | Text |
 | LinkedIn | Public client ID, registered HTTPS callback, trusted exchange service, and optional organization URN | Text |
 | Mastodon | Trusted HTTPS server and callback. The connection dialog suggests the app’s custom callback. | Text |
+| GitHub | Manual account metadata and scheduling only; no provider API connection. | Text |
 | Other accounts | Workspace account metadata | Manual |
 
 Provider account permissions determine what works in the signed app. Local workspace attachments are never uploaded automatically. The Facebook Pages, Threads, and Instagram composer accepts a public HTTPS media link without embedded credentials, query parameters, or fragments. Enter a single image for Facebook Pages. The provider fetches the file from its URL. Provider-held Facebook Page scheduling requires live validation of creation, status, and cancellation with the configured Meta app.

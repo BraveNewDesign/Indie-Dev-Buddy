@@ -11,9 +11,12 @@ struct SocialPlatformIcon: View {
             .filter { $0.isLetter || $0.isNumber }
 
         return switch normalized {
+        case "bluesky": "social-bluesky"
         case "facebook": "social-facebook"
+        case "github": "social-github"
         case "instagram": "social-instagram"
         case "linkedin": "social-linkedin"
+        case "mastodon": "social-mastodon"
         case "threads": "social-threads"
         case "x", "twitter": "social-x"
         default: nil
