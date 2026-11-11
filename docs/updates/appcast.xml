@@ -3,6 +3,29 @@
     <channel>
         <title>Indie Dev Buddy</title>
         <item>
+            <title>1.1</title>
+            <pubDate>Wed, 11 Nov 2026 18:06:27 -0500</pubDate>
+            <sparkle:version>2</sparkle:version>
+            <sparkle:shortVersionString>1.1</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>27.2</sparkle:minimumSystemVersion>
+            <description sparkle:format="markdown"><![CDATA[## New in 1.1
+
+- Start from a visual workspace dashboard with a featured item, app artwork, draft previews, and shortcuts to the records you use.
+- See the next seven days of publishing plans, filter by channel, and spot failed or uncertain deliveries. Manual plans and API schedules are labeled separately.
+- Use native macOS menus and keyboard shortcuts to open recent workspaces, create records, save, and search. Open Settings with Command–comma.
+- Right-click apps, content, and accounts to open records, copy saved text or handles, view published links, and reconnect accounts.
+- Move between Write, Publish, and Details in the composer while keeping the title and save state visible.
+- Switch workspaces with unsaved edits without losing your selected destination. If the destination can’t be opened, the current editor stays open.
+- A refreshed app icon.
+
+Requires Apple silicon and macOS 27.2 or later.
+]]></description>
+            <enclosure url="https://bravenewdesign.github.io/Indie-Dev-Buddy/updates/Indie%20Dev%20Buddy-1.1.zip" length="5670570" type="application/octet-stream" sparkle:edSignature="Eh/wfFaKqRBcUJZ6Gq+hKf6BRqhgmqYt5ZWO5WtOw5KCtRYidJwEsXYbzCRs+w8C+LFKRX+AJHeVmWqdnwmoDw=="/>
+            <sparkle:deltas>
+                <enclosure url="https://bravenewdesign.github.io/Indie-Dev-Buddy/updates/Indie%20Dev%20Buddy2-1.delta" sparkle:deltaFrom="1" length="2069754" type="application/octet-stream" sparkle:deltaFromSparkleExecutableSize="976432" sparkle:deltaFromSparkleLocales="de,he,ar,el,ja,fa,uk" sparkle:edSignature="j5qu/fU+XbdmpyfiBAfvL/U3sQV7TNjeT3WHH2WNe5ZIS2xNGvVTLpwqq4lRTxNbFVtOSFv5LWZm79+o3J+XBw=="/>
+            </sparkle:deltas>
+        </item>
+        <item>
             <title>1.0</title>
             <pubDate>Wed, 11 Nov 2026 11:28:40 -0500</pubDate>
             <sparkle:version>1</sparkle:version>
