@@ -1,0 +1,24 @@
+{
+  "originHash" : "da26c817d70e16d04f13585b92b8422857400c1f38f508dc06a22f533c4598d7",
+  "pins" : [
+    {
+      "identity" : "socialkit",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/BraveNewDesign/SocialKit",
+      "state" : {
+        "revision" : "66a78ca78b87fe225a2917a9c15f3d9acf11da5d",
+        "version" : "0.1.0"
+      }
+    },
+    {
+      "identity" : "sparkle",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/sparkle-project/Sparkle",
+      "state" : {
+        "revision" : "ab7d71291238df6e0492143b120c9b696a35f603",
+        "version" : "2.10.1"
+      }
+    }
+  ],
+  "version" : 3
+}
