@@ -2,7 +2,7 @@
 <rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle">
   <channel>
     <title>Indie Dev Buddy Updates</title>
-    <link>https://bravenewdesign.github.io/Indie-Dev-Buddy/</link>
+    <link>https://github.com/BraveNewDesign/Indie-Dev-Buddy</link>
     <description>Updates for Indie Dev Buddy</description>
     <language>en</language>
   </channel>
