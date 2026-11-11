@@ -6,6 +6,7 @@ DerivedData/
 **/DerivedData/
 build/
 **/build/
+.release/
 *.xcuserstate
 xcuserdata/
 **/xcuserdata/
