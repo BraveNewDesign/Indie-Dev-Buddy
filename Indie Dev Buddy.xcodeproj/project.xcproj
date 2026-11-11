@@ -12,8 +12,11 @@
   },
   "packages": [
     {
-      "kind": "local",
-      "path": "../../../SocialKit",
+      "kind": "remote",
+      "repository": "https://github.com/BraveNewDesign/SocialKit",
+      "version": {
+        "up-to-next-major-version": "0.1.0",
+      },
     },
     {
       "kind": "remote",
@@ -61,6 +64,7 @@
       ],
       "package-product-members": [
         {
+          "package": "SocialKit",
           "product-name": "SocialKit",
           "build-phase": { "build-phase": "frameworks" },
         },
@@ -93,7 +97,7 @@
         "MARKETING_VERSION": "1.0",
         "PRODUCT_BUNDLE_IDENTIFIER": "com.bravenewdesign.Indie-Dev-Buddy",
         "PRODUCT_NAME": "$(TARGET_NAME)",
-        "SPARKLE_FEED_URL": "",
+        "SPARKLE_FEED_URL": "https://bravenewdesign.github.io/Indie-Dev-Buddy/appcast.xml",
         "SPARKLE_PUBLIC_ED_KEY": "",
         "STRING_CATALOG_GENERATE_SYMBOLS": "YES",
         "SWIFT_APPROACHABLE_CONCURRENCY": "YES",

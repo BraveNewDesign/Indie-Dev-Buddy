@@ -24,7 +24,7 @@ Indie Dev Buddy is a local-first macOS workspace for indie software makers to or
 
 The app target currently requires macOS 27.2 or later and Xcode 27.2 or later. Open `Indie Dev Buddy.xcodeproj` in Xcode and build the **Indie Dev Buddy** scheme.
 
-The project currently references SocialKit through a local sibling checkout. Before a tagged public source release, this dependency needs to point to SocialKit’s public, versioned Swift package so a fresh clone can build without the original development workspace.
+The project depends on the public SocialKit package at version 0.1.0. Publish the matching `v0.1.0` SocialKit tag before building a fresh clone.
 
 The direct-download release path and Sparkle update setup are documented in [Direct distribution](docs/DIRECT_DISTRIBUTION.md).
 

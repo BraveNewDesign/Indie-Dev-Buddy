@@ -7,12 +7,11 @@ DMG and source release can be attached to GitHub Releases.
 
 ## One-time setup
 
-1. Publish SocialKit, then change this app's local SocialKit dependency to its
-   public versioned package before making the source repository public.
-2. Create a public GitHub repository and enable Pages with **GitHub Actions** as
+1. Publish and tag SocialKit, then use the same version in this app's Swift
+   package dependency. The project is configured for SocialKit `0.1.0`.
+2. Enable Pages for `BraveNewDesign/Indie-Dev-Buddy` with **GitHub Actions** as
    the build and deployment source. The included workflow publishes `docs/`.
-3. In `docs/appcast.xml`, replace the example link with the repository's Pages
-   URL. Set the app's feed URL to the full `appcast.xml` URL.
+3. The appcast and app feed URL are configured for the repository's Pages site.
 4. Install a Developer ID Application certificate and configure a `notarytool`
    Keychain profile. The release script never stores signing credentials in Git.
 5. Resolve Sparkle's package, run its `generate_keys` tool once, and keep the
