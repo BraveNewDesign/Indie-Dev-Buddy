@@ -19,14 +19,16 @@ enum ManagementRecordType: Equatable {
 struct ManagementRecordSelection: Equatable {
     let type: ManagementRecordType
     let id: String
+    var opensAppStore = false
 }
 
 enum ManagementCreateRequest: Equatable {
-    case app, website, socialAccount
+    case app, identity, website, socialAccount
 
     var section: ManagementSection {
         switch self {
         case .app: .apps
+        case .identity: .identities
         case .website: .websites
         case .socialAccount: .socialAccounts
         }
@@ -58,6 +60,8 @@ struct ManagementWorkspaceView: View {
     var onAppSelectionChange: (String?) -> Void = { _ in }
 
     @State private var selectedID: String?
+    @State private var opensAppStore = false
+    @State private var reconnectAccountID: String?
     @State private var ownerFilterID = "all"
     @State private var creating = false
     @State private var editorIsDirty = false
@@ -234,6 +238,7 @@ struct ManagementWorkspaceView: View {
                     }
                     .padding(.vertical, 6)
                     .tag(Optional(row.id))
+                    .contextMenu { managementRowActions(row) }
                 }
             }
             .overlay {
@@ -243,6 +248,30 @@ struct ManagementWorkspaceView: View {
                 }
             }
 
+        }
+    }
+
+    @ViewBuilder
+    private func managementRowActions(_ row: ManagementRow) -> some View {
+        Button(section == .apps ? "Open App Details" : "Edit \(singularName)", systemImage: "arrow.right") {
+            requestSelection(row.id)
+        }
+        if section == .socialAccounts, let account = snapshot.socialAccountsByID[row.id] {
+            if let handle = account.handle, !handle.isEmpty {
+                Button("Copy Handle", systemImage: "doc.on.doc") {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(handle, forType: .string)
+                }
+            }
+            if let profileURL = account.profileURL, let url = optionalWebURL(profileURL.absoluteString) {
+                Link("Open Profile", destination: url)
+            }
+            if SocialPlatform.workspacePlatform(account.platform) != nil {
+                Divider()
+                Button(account.providerIdentity == nil ? "Connect…" : "Reconnect…", systemImage: "link") {
+                    requestNavigation(.connectAccount(row.id))
+                }
+            }
         }
     }
 
@@ -351,7 +380,7 @@ struct ManagementWorkspaceView: View {
     }
 
     @ViewBuilder private func editor(for record: AppRecord?) -> some View {
-        AppRecordEditor(record: record, identities: snapshot.identities, websites: snapshot.websites, snapshot: snapshot, workspaceStore: store, onOpenMarketingContent: onOpenMarketingContent, onSnapshotChanged: onSnapshotChanged, onDirtyChange: setDirty, onSave: { await save($0, category: "Apps", name: $0.name, expectedRevision: loadedRevision) }).id("\(record?.id ?? "new-app")-\(editorGeneration)")
+        AppRecordEditor(record: record, opensAppStore: opensAppStore, identities: snapshot.identities, websites: snapshot.websites, snapshot: snapshot, workspaceStore: store, onOpenMarketingContent: onOpenMarketingContent, onSnapshotChanged: onSnapshotChanged, onDirtyChange: setDirty, onSave: { await save($0, category: "Apps", name: $0.name, expectedRevision: loadedRevision) }).id("\(record?.id ?? "new-app")-\(editorGeneration)")
     }
     @ViewBuilder private func editor(for record: IdentityRecord?) -> some View {
         VStack(spacing: 0) {
@@ -371,7 +400,7 @@ struct ManagementWorkspaceView: View {
     }
     @ViewBuilder private func editor(for record: SocialAccountRecord?) -> some View {
         VStack(spacing: 0) {
-            SocialAccountRecordEditor(record: record, owners: ownerChoices, identities: snapshot.identities, workspaceStore: store, onDirtyChange: setDirty, onSave: { await save($0, category: "SocialAccounts", name: $0.platform, expectedRevision: loadedRevision) }).id("\(record?.id ?? "new-social-account")-\(editorGeneration)")
+            SocialAccountRecordEditor(record: record, owners: ownerChoices, identities: snapshot.identities, workspaceStore: store, onDirtyChange: setDirty, onSave: { await save($0, category: "SocialAccounts", name: $0.platform, expectedRevision: loadedRevision) }, connectionRequest: $reconnectAccountID).id("\(record?.id ?? "new-social-account")-\(editorGeneration)")
             if let owner = record?.owner {
                 relatedRecords(owner: owner, excludingAccountID: record?.id)
             }
@@ -439,7 +468,7 @@ struct ManagementWorkspaceView: View {
 
     private func selectExternally(_ request: ManagementRecordSelection) {
         guard request.type.section == section else { return }
-        requestNavigation(.record(request.id))
+        requestNavigation(.record(request.id, opensAppStore: request.opensAppStore))
     }
 
     private func createExternally(_ request: ManagementCreateRequest) {
@@ -469,12 +498,19 @@ struct ManagementWorkspaceView: View {
     }
 
     private func applyNavigation(_ value: PendingManagementNavigation) {
+        opensAppStore = false
         switch value {
         case .selection(let next): selectedID = next; creating = false
-        case .record(let id):
+        case .record(let id, let showAppStore):
+            opensAppStore = showAppStore
             selectedID = id
             creating = false
             if section == .websites || section == .socialAccounts { ownerFilterID = "all" }
+        case .connectAccount(let id):
+            if selectedID == id && editorIsDirty { editorGeneration += 1 }
+            selectedID = id
+            creating = false
+            reconnectAccountID = id
         case .create: selectedID = nil; creating = true
         case .ownerFilter(let value): ownerFilterID = value; selectedID = nil; creating = false
         }
@@ -672,7 +708,8 @@ struct ManagementWorkspaceView: View {
 
 private enum PendingManagementNavigation {
     case selection(String?)
-    case record(String)
+    case record(String, opensAppStore: Bool = false)
+    case connectAccount(String)
     case create
     case ownerFilter(String)
 }
@@ -697,6 +734,7 @@ private struct OwnerChoice: Identifiable, Hashable {
 
 private struct AppRecordEditor: View {
     let record: AppRecord?
+    let opensAppStore: Bool
     let identities: [IdentityRecord]
     let websites: [WebsiteRecord]
     let snapshot: WorkspaceSnapshot
@@ -811,6 +849,12 @@ private struct AppRecordEditor: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .navigationTitle(record == nil ? "New App" : name)
+        .onChange(of: opensAppStore, initial: true) { _, open in
+            if open { detailTab = "App Store" }
+        }
+        .focusedSceneValue(\.workspaceSaveAction, overviewIsDirty && canSaveApp ? WorkspaceSaveAction { completion in
+            Task { completion(await save()) }
+        } : nil)
         .onAppear(perform: load)
         .onChange(of: record) { _, _ in
             if !editingOverview { load() }
@@ -1102,6 +1146,10 @@ private struct AppRecordEditor: View {
         return nil
     }
 
+    private var canSaveApp: Bool {
+        !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !saving
+    }
+
     private var saveBar: some View {
         Section {
             HStack {
@@ -1113,7 +1161,7 @@ private struct AppRecordEditor: View {
                 }
                 Button("Save App") { Task { await save() } }
                     .buttonStyle(.borderedProminent)
-                    .disabled(name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || saving)
+                    .disabled(!canSaveApp)
             }
         }
     }
@@ -1128,7 +1176,10 @@ private struct AppRecordEditor: View {
         if iconPath != nil { Task { await loadAppIconPreview() } }
         resolveProjectLocation()
     }
-    private func save(_ requestedRecord: AppRecord? = nil) async {
+    @discardableResult
+    private func save(_ requestedRecord: AppRecord? = nil) async -> Bool {
+        guard !saving else { return false }
+        if requestedRecord == nil && !canSaveApp { return false }
         saving = true
         defer { saving = false }
         do {
@@ -1149,10 +1200,12 @@ private struct AppRecordEditor: View {
                 iconError = nil
                 editingOverview = false
                 reportOverviewDirty(false)
+                return true
             }
         } catch {
             iconError = "Could not save the app icon: \(error.localizedDescription)"
         }
+        return false
     }
 
     private var targetAppFolderRelativePath: String? {
@@ -1372,10 +1425,13 @@ private struct IdentityRecordEditor: View {
                     }
                 }
             }
-            Section { HStack { Spacer(); Button("Save Identity") { Task { await save() } }.buttonStyle(.borderedProminent).disabled(name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || saving) } }
+            Section { HStack { Spacer(); Button("Save Identity") { Task { await save() } }.buttonStyle(.borderedProminent).disabled(!canSave) } }
         }
         .formStyle(.grouped)
         .navigationTitle(record == nil ? "New Identity" : name)
+        .focusedSceneValue(\.workspaceSaveAction, canSave ? WorkspaceSaveAction { completion in
+            Task { completion(await save()) }
+        } : nil)
         .onAppear {
             if let record {
                 draftID = record.id
@@ -1397,9 +1453,19 @@ private struct IdentityRecordEditor: View {
             }
         }
     }
-    private func save() async {
+    private var canSave: Bool {
+        !(name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || saving)
+    }
+
+    @discardableResult
+    private func save() async -> Bool {
+        guard canSave else { return false }
         saving = true; defer { saving = false }
-        if await onSave(IdentityRecord(id: draftID, name: name.trimmingCharacters(in: .whitespacesAndNewlines), kind: kind, photoPath: photoPath)) { onDirtyChange(false) }
+        if await onSave(IdentityRecord(id: draftID, name: name.trimmingCharacters(in: .whitespacesAndNewlines), kind: kind, photoPath: photoPath)) {
+            onDirtyChange(false)
+            return true
+        }
+        return false
     }
     private func loadPhotoPreview(relativePath: String) async {
         do {
@@ -1466,10 +1532,13 @@ private struct WebsiteRecordEditor: View {
                 Toggle("Enable as a blog destination", isOn: $blogEnabled)
                 if blogEnabled { TextField("Blog index URL (optional)", text: $blogIndexURL) }
             }
-            Section { HStack { Spacer(); Button("Save Website") { Task { await save() } }.buttonStyle(.borderedProminent).disabled(name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || URL(string: baseURL)?.scheme == nil || ownerID.isEmpty || saving) } }
+            Section { HStack { Spacer(); Button("Save Website") { Task { await save() } }.buttonStyle(.borderedProminent).disabled(!canSave) } }
         }
         .formStyle(.grouped)
         .navigationTitle(record == nil ? "New Website" : name)
+        .focusedSceneValue(\.workspaceSaveAction, canSave ? WorkspaceSaveAction { completion in
+            Task { completion(await save()) }
+        } : nil)
         .onAppear { if let record { name = record.name; ownerID = "\(record.owner.type.rawValue):\(record.owner.id)"; baseURL = record.baseURL.absoluteString; blogEnabled = record.blogEnabled; blogIndexURL = record.blogIndexURL?.absoluteString ?? "" } else { ownerID = owners.first?.id ?? "" } }
         .onChange(of: dirtySignature) { _, _ in onDirtyChange(isDirty) }
     }
@@ -1479,11 +1548,21 @@ private struct WebsiteRecordEditor: View {
             ForEach(owners) { choice in Text("\(choice.title) (\(choice.detail))").tag(choice.id) }
         }
     }
-    private func save() async {
-        guard let choice = owners.first(where: { $0.id == ownerID }), let url = URL(string: baseURL) else { return }
+    private var canSave: Bool {
+        !(name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || URL(string: baseURL)?.scheme == nil || ownerID.isEmpty || saving)
+    }
+
+    @discardableResult
+    private func save() async -> Bool {
+        guard canSave else { return false }
+        guard let choice = owners.first(where: { $0.id == ownerID }), let url = URL(string: baseURL) else { return false }
         saving = true; defer { saving = false }
         let value = WebsiteRecord(id: record?.id ?? UUID().uuidString.lowercased(), name: name.trimmingCharacters(in: .whitespacesAndNewlines), owner: choice.owner, baseURL: url, blogEnabled: blogEnabled, blogIndexURL: optionalWebURL(blogIndexURL))
-        if await onSave(value) { onDirtyChange(false) }
+        if await onSave(value) {
+            onDirtyChange(false)
+            return true
+        }
+        return false
     }
     private var dirtySignature: String { "\(name)|\(ownerID)|\(baseURL)|\(blogEnabled)|\(blogIndexURL)" }
     private var isDirty: Bool {
@@ -1502,6 +1581,7 @@ private struct SocialAccountRecordEditor: View {
     let workspaceStore: WorkspaceStore
     let onDirtyChange: (Bool) -> Void
     let onSave: (SocialAccountRecord) async -> Bool
+    @Binding var connectionRequest: String?
     @State private var platform = "Threads"
     @State private var customPlatform = ""
     @State private var ownerID = ""
@@ -1526,7 +1606,8 @@ private struct SocialAccountRecordEditor: View {
     private var platformValue: String { platform == "Other" ? customPlatform : platform }
     private var apiPlatform: SocialPlatform? { SocialPlatform.workspacePlatform(platformValue) }
 
-    init(record: SocialAccountRecord?, owners: [OwnerChoice], identities: [IdentityRecord], workspaceStore: WorkspaceStore, onDirtyChange: @escaping (Bool) -> Void, onSave: @escaping (SocialAccountRecord) async -> Bool) {
+    init(record: SocialAccountRecord?, owners: [OwnerChoice], identities: [IdentityRecord], workspaceStore: WorkspaceStore, onDirtyChange: @escaping (Bool) -> Void, onSave: @escaping (SocialAccountRecord) async -> Bool, connectionRequest: Binding<String?>) {
+        self._connectionRequest = connectionRequest
         self.record = record
         self.owners = owners
         self.identities = identities
@@ -1595,10 +1676,13 @@ private struct SocialAccountRecordEditor: View {
                     }
                 }
             }
-            Section { HStack { Spacer(); Button("Save Social Account") { Task { await save() } }.buttonStyle(.borderedProminent).disabled(platformValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || ownerID.isEmpty || (handle.isEmpty && profileURL.isEmpty) || saving) } }
+            Section { HStack { Spacer(); Button("Save Social Account") { Task { await save() } }.buttonStyle(.borderedProminent).disabled(!canSave) } }
         }
         .formStyle(.grouped)
         .navigationTitle(record == nil ? "New Social Account" : platformValue)
+        .focusedSceneValue(\.workspaceSaveAction, canSave ? WorkspaceSaveAction { completion in
+            Task { completion(await save()) }
+        } : nil)
         .sheet(isPresented: $showingBlueskyConnect) {
             BlueskyConnectionSheet(initialHandle: handle, onConnected: applyConnection)
         }
@@ -1617,7 +1701,13 @@ private struct SocialAccountRecordEditor: View {
                 SocialAccountActivityView(identity: providerIdentity, account: connectedAccount)
             }
         }
-        .onAppear(perform: load)
+        .onAppear {
+            load()
+            openRequestedConnection()
+        }
+        .onChange(of: connectionRequest) { _, _ in
+            openRequestedConnection()
+        }
         .task(id: providerIdentity) {
             connectedAccount = nil
             guard let identity = providerIdentity else { return }
@@ -1675,8 +1765,7 @@ private struct SocialAccountRecordEditor: View {
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 Button(providerIdentity == nil ? "Connect \(apiPlatform.workspaceTitle)…" : "Reconnect \(apiPlatform.workspaceTitle)…") {
-                    if apiPlatform == .bluesky { showingBlueskyConnect = true }
-                    else { showingOAuthConnect = true }
+                    presentConnection(for: apiPlatform)
                 }
                 if providerIdentity != nil {
                     Button("Unlink from This Workspace Account", role: .destructive) { providerIdentity = nil }
@@ -1687,6 +1776,17 @@ private struct SocialAccountRecordEditor: View {
                 Label("Manual posting", systemImage: "hand.tap")
             }
         }
+    }
+
+    private func openRequestedConnection() {
+        guard let record, connectionRequest == record.id, let apiPlatform else { return }
+        connectionRequest = nil
+        presentConnection(for: apiPlatform)
+    }
+
+    private func presentConnection(for platform: SocialPlatform) {
+        if platform == .bluesky { showingBlueskyConnect = true }
+        else { showingOAuthConnect = true }
     }
 
     private func applyConnection(_ account: SocialAccount) {
@@ -1777,10 +1877,20 @@ private struct SocialAccountRecordEditor: View {
         let slug = pieces.prefix(8).joined(separator: "-")
         return slug.isEmpty ? "record" : slug
     }
-    private func save() async {
-        guard let choice = owners.first(where: { $0.id == ownerID }) else { return }
+    private var canSave: Bool {
+        !(platformValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || ownerID.isEmpty || (handle.isEmpty && profileURL.isEmpty) || saving)
+    }
+
+    @discardableResult
+    private func save() async -> Bool {
+        guard canSave else { return false }
+        guard let choice = owners.first(where: { $0.id == ownerID }) else { return false }
         saving = true; defer { saving = false }
-        if await onSave(SocialAccountRecord(id: record?.id ?? draftID, platform: platformValue.trimmingCharacters(in: .whitespacesAndNewlines), owner: choice.owner, handle: handle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : handle.trimmingCharacters(in: .whitespacesAndNewlines), displayName: displayName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : displayName.trimmingCharacters(in: .whitespacesAndNewlines), profileURL: optionalWebURL(profileURL), avatarPath: avatarPath, providerIdentity: providerIdentity, enabled: enabled)) { onDirtyChange(false) }
+        if await onSave(SocialAccountRecord(id: record?.id ?? draftID, platform: platformValue.trimmingCharacters(in: .whitespacesAndNewlines), owner: choice.owner, handle: handle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : handle.trimmingCharacters(in: .whitespacesAndNewlines), displayName: displayName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : displayName.trimmingCharacters(in: .whitespacesAndNewlines), profileURL: optionalWebURL(profileURL), avatarPath: avatarPath, providerIdentity: providerIdentity, enabled: enabled)) {
+            onDirtyChange(false)
+            return true
+        }
+        return false
     }
     private var dirtySignature: String { "\(platform)|\(customPlatform)|\(ownerID)|\(handle)|\(displayName)|\(profileURL)|\(enabled)|\(avatarPath ?? "")|\(providerIdentity?.platform ?? "")|\(providerIdentity?.server.absoluteString ?? "")|\(providerIdentity?.remoteID ?? "")" }
     private var isDirty: Bool {

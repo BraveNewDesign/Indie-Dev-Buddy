@@ -23,6 +23,7 @@ struct ContentLibraryView: View {
     @State private var requestedNavigationID: String?
     @State private var pendingCreateKind: ContentKind?
     @State private var confirmingDelete = false
+    @State private var copyError: String?
     private let createRequestMarker = "__indie_dev_buddy_create__"
     private let filters = ["All", "To Post", "Posted", "Drafts", "Ideas"]
     private var records: [ContentRecord] {
@@ -121,6 +122,11 @@ struct ContentLibraryView: View {
             }
         }
         .alert("Could not create content", isPresented: Binding(get: { error != nil }, set: { if !$0 { error = nil } })) { Button("OK") { error = nil } } message: { Text(error ?? "") }
+        .alert("Could not copy text", isPresented: Binding(get: { copyError != nil }, set: { if !$0 { copyError = nil } })) {
+            Button("OK") { copyError = nil }
+        } message: {
+            Text(copyError ?? "")
+        }
         .alert("Delete this content?", isPresented: $confirmingDelete) {
             Button("Delete", role: .destructive) { deleteSelectedContent() }
             Button("Cancel", role: .cancel) { }
@@ -217,8 +223,67 @@ struct ContentLibraryView: View {
                     ContentLibraryRow(item: item, apps: appNames(for: item), snapshot: snapshot,
                                       statusText: displayStatus(item), publishedCount: publishedCount(item))
                     .tag(item.id)
+                    .contextMenu { contentRowActions(item) }
                 }
             }
+        }
+    }
+
+    @ViewBuilder
+    private func contentRowActions(_ item: ContentRecord) -> some View {
+        Button("Open", systemImage: "arrow.right") { requestSelection(item.id) }
+        Button("Copy Original Text", systemImage: "doc.on.doc") {
+            Task { await copyOriginalText(item.id) }
+        }
+        let publishedURLs = publishedLinks(for: item)
+        if publishedURLs.count == 1, let link = publishedURLs.first {
+            Divider()
+            Link("View Published Post", destination: link.id)
+        } else if !publishedURLs.isEmpty {
+            Divider()
+            Menu("View Published Posts") {
+                ForEach(publishedURLs) { link in
+                    Link(link.title, destination: link.id)
+                }
+            }
+        }
+    }
+
+    private struct PublishedLink: Identifiable {
+        let id: URL
+        let title: String
+    }
+
+    private func publishedLinks(for item: ContentRecord) -> [PublishedLink] {
+        var links: [PublishedLink] = []
+        if item.status == .published, let url = item.publishedURL, isWebLink(url) {
+            links.append(PublishedLink(id: url, title: "Original Post"))
+        }
+        for destination in item.destinations where destination.status == .published {
+            guard let url = destination.publishedURL, isWebLink(url),
+                  !links.contains(where: { $0.id == url }) else { continue }
+            let account = snapshot.socialAccountsByID[destination.accountId]
+            let title = account?.displayName ?? account?.handle ?? account?.platform ?? url.absoluteString
+            links.append(PublishedLink(id: url, title: title))
+        }
+        return links
+    }
+
+    private func isWebLink(_ url: URL) -> Bool {
+        ["http", "https"].contains(url.scheme?.lowercased() ?? "") && url.host != nil
+    }
+
+    private func copyOriginalText(_ id: String) async {
+        do {
+            let record = try await store.readRecord(.content, id: id)
+            guard let body = record.body, !body.isEmpty else {
+                copyError = "This item has no saved original text."
+                return
+            }
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(body, forType: .string)
+        } catch {
+            copyError = error.localizedDescription
         }
     }
 
@@ -571,7 +636,6 @@ struct ContentRecordEditor: View {
                             Spacer()
                             Button(isSaving ? "Saving…" : "Save") { save(value.wrappedValue, body: bodyText) }
                                 .buttonStyle(.borderedProminent)
-                                .keyboardShortcut("s", modifiers: .command)
                                 .disabled(isSaving)
                         }
                         TextField("Title", text: value.title).font(.title2.bold()).textFieldStyle(.roundedBorder)
@@ -649,6 +713,7 @@ struct ContentRecordEditor: View {
                     .frame(maxWidth: 760)
                     .frame(maxWidth: .infinity)
                 }
+                .focusedSceneValue(\.workspaceSaveAction, isSaving ? nil : WorkspaceSaveAction(saveCurrent))
             }
         }
         .task { await load() }

@@ -8,94 +8,181 @@ import AppKit
     var error: String?
     var workspaceURL: URL?
     var knownWorkspaces: [URL] = []
+    var failedWorkspaceURL: URL?
+    var workspaceOpenError: String?
+    var isOpening = false
+
+    @ObservationIgnored private var didRestore = false
+    static let recentWorkspacesKey = "recentWorkspacePaths"
+
+    static func orderedWorkspaces(_ workspaces: [URL], recentData: Data) -> [URL] {
+        let recentPaths = (try? JSONDecoder().decode([String].self, from: recentData)) ?? []
+        let byPath = Dictionary(workspaces.map { ($0.path, $0) }, uniquingKeysWith: { first, _ in first })
+        let recent = recentPaths.compactMap { byPath[$0] }
+        let recentSet = Set(recentPaths)
+        return recent + workspaces.filter { !recentSet.contains($0.path) }
+    }
+
+    private func reloadKnownWorkspaces() throws {
+        knownWorkspaces = Self.orderedWorkspaces(
+            try WorkspaceRegistry.workspaces(),
+            recentData: UserDefaults.standard.data(forKey: Self.recentWorkspacesKey) ?? Data()
+        )
+    }
+
+    private func updateRecents(_ url: URL, removing: Bool = false) {
+        let defaults = UserDefaults.standard
+        let data = defaults.data(forKey: Self.recentWorkspacesKey) ?? Data()
+        var paths = (try? JSONDecoder().decode([String].self, from: data)) ?? []
+        paths.removeAll { $0 == url.path }
+        if !removing { paths.insert(url.path, at: 0) }
+        if let updated = try? JSONEncoder().encode(paths) {
+            defaults.set(updated, forKey: Self.recentWorkspacesKey)
+        }
+    }
 
     func restore() {
+        guard !didRestore else { return }
+        didRestore = true
         do {
-            let saved = try WorkspaceRegistry.workspaces()
-            knownWorkspaces = saved
-            if let workspace = saved.first { open(workspace) }
-        } catch { self.error = "Could not reopen the workspace: \(error.localizedDescription)" }
+            try reloadKnownWorkspaces()
+            if let workspace = knownWorkspaces.first {
+                open(.existing(workspace))
+            }
+        } catch {
+            workspaceOpenError = error.localizedDescription
+        }
     }
-    func choose(create: Bool) {
+
+    enum Destination {
+        case existing(URL)
+        case create(in: URL)
+
+        var label: String {
+            switch self {
+            case .existing(let url): url.lastPathComponent
+            case .create: "a new workspace"
+            }
+        }
+    }
+
+    func choose(create: Bool, near previousURL: URL? = nil) -> Destination? {
         let panel = NSOpenPanel()
-        panel.canChooseDirectories = true; panel.canChooseFiles = false; panel.canCreateDirectories = true
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.canCreateDirectories = create
+        panel.directoryURL = previousURL?.deletingLastPathComponent()
         panel.prompt = create ? "Choose Save Location" : "Open Workspace"
         panel.message = create
-            ? "Choose where to save the workspace. Indie Dev Buddy will create a new “Indie Dev Buddy Workspace” folder inside the selected folder."
+            ? "Choose a location for the new workspace folder."
             : "Choose an existing Indie Dev Buddy workspace folder."
-        guard panel.runModal() == .OK, let url = panel.url else { return }
-        if create {
-            Task {
-                do {
-                    let baseName = "Indie Dev Buddy Workspace"
-                    var destination = url.appendingPathComponent(baseName, isDirectory: true)
-                    var suffix = 2
-                    while FileManager.default.fileExists(atPath: destination.path) {
-                        destination = url.appendingPathComponent("\(baseName) \(suffix)", isDirectory: true)
-                        suffix += 1
-                    }
-                    let newStore = WorkspaceStore(rootURL: destination)
-                    _ = try await newStore.createWorkspace(at: destination, name: destination.lastPathComponent)
-                    open(destination)
-                }
-                catch { self.error = error.localizedDescription }
-            }
-        } else { open(url) }
+        guard panel.runModal() == .OK, let url = panel.url else { return nil }
+        return create ? .create(in: url) : .existing(url)
     }
-    func open(_ url: URL) {
-        let newStore = WorkspaceStore(rootURL: url)
-        Task { [weak self] in
-            guard let self else { return }
+
+    func open(_ destination: Destination, onOpened: @escaping () -> Void = {}) {
+        guard !isOpening else { return }
+        isOpening = true
+        workspaceOpenError = nil
+        failedWorkspaceURL = nil
+        Task { [self] in
+            defer { isOpening = false }
+            var url: URL
+            switch destination {
+            case .existing(let existing):
+                url = existing.standardizedFileURL
+            case .create(let parent):
+                let baseName = "Indie Dev Buddy Workspace"
+                url = parent.appendingPathComponent(baseName, isDirectory: true)
+                var suffix = 2
+                while FileManager.default.fileExists(atPath: url.path) {
+                    url = parent.appendingPathComponent("\(baseName) \(suffix)", isDirectory: true)
+                    suffix += 1
+                }
+            }
+            let newStore = WorkspaceStore(rootURL: url)
             do {
+                if case .create = destination {
+                    _ = try await newStore.createWorkspace(at: url, name: url.lastPathComponent)
+                }
                 let loaded = try await newStore.load()
                 try WorkspaceRegistry.addWorkspace(url)
-                knownWorkspaces = try WorkspaceRegistry.workspaces()
+                updateRecents(url)
+                try reloadKnownWorkspaces()
                 if let previous = store { await previous.stopWatching() }
+                onOpened()
                 workspaceURL = url
                 store = newStore
                 snapshot = loaded
                 snapshotGeneration &+= 1
                 await newStore.startWatching { [weak self] in Task { @MainActor in self?.refresh() } }
             } catch {
-                self.error = error.localizedDescription
+                if store == nil {
+                    failedWorkspaceURL = url
+                    workspaceOpenError = error.localizedDescription
+                } else {
+                    self.error = "Could not open \(url.lastPathComponent). \(error.localizedDescription)"
+                }
             }
         }
     }
-    func forget(_ url: URL) {
+    func forget(_ url: URL, onRemoved: @escaping () -> Void) {
+        guard !isOpening else { return }
+        isOpening = true
         Task {
+            defer { isOpening = false }
+            do {
+                try WorkspaceRegistry.removeWorkspace(url)
+                updateRecents(url.standardizedFileURL, removing: true)
+                try reloadKnownWorkspaces()
+            } catch {
+                self.error = "Could not remove the workspace from the app. \(error.localizedDescription)"
+                return
+            }
             if workspaceURL?.standardizedFileURL.path == url.standardizedFileURL.path {
                 if let store { await store.stopWatching() }
                 self.workspaceURL = nil
                 self.store = nil
                 snapshot = nil
             }
-            try? WorkspaceRegistry.removeWorkspace(url)
-            knownWorkspaces = (try? WorkspaceRegistry.workspaces()) ?? []
+            onRemoved()
         }
     }
     func refresh() {
         guard let store else { return }
         Task {
             do {
-                snapshot = try await store.load()
+                let loaded = try await store.load()
+                guard self.store === store else { return }
+                snapshot = loaded
                 snapshotGeneration &+= 1
-            } catch { self.error = error.localizedDescription }
+            } catch {
+                if self.store === store { self.error = error.localizedDescription }
+            }
         }
     }
     func reload() async {
         guard let store else { return }
         do {
-            snapshot = try await store.load()
+            let loaded = try await store.load()
+            guard self.store === store else { return }
+            snapshot = loaded
             snapshotGeneration &+= 1
-        } catch { self.error = error.localizedDescription }
+        } catch {
+            if self.store === store { self.error = error.localizedDescription }
+        }
     }
 }
 
 struct ContentView: View {
     @State private var session = WorkspaceSession()
-    @AppStorage("rootSection") private var section = "Apps"
+    @AppStorage("rootSection") private var section = "Dashboard"
     @State private var hasUnsavedEdits = false
-    @State private var pendingWorkspaceChange = false
+    @State private var pendingWorkspaceChange: WorkspaceSession.Destination?
+    @State private var pendingWorkspaceSaveAction: WorkspaceSaveAction?
+    @State private var savingBeforeSwitch = false
+    @FocusedValue(\.workspaceSaveAction) private var workspaceSaveAction
+    @State private var sidebarVisibility: NavigationSplitViewVisibility = .automatic
     @State private var pendingWorkspaceToForget: URL?
     @AppStorage("marketingSelectionID") private var marketingSelectionID: String?
     @State private var contentCreateRequest: ContentKind?
@@ -134,121 +221,32 @@ struct ContentView: View {
     var body: some View {
         Group {
             if let snapshot = session.snapshot, let store = session.store {
-                NavigationSplitView {
-                    Group {
-                        if searchText.isEmpty {
-                            List(selection: Binding(get: { Optional(section) }, set: { (selection: String?) in
-                                if let value = selection, value != section { requestRootAction(.section(value)) }
-                            })) {
-                                Label("Apps", systemImage: "square.stack.3d.up")
-                                    .badge(snapshot.apps.count).tag("Apps")
-                                Label("Marketing Content", systemImage: "megaphone")
-                                    .badge(snapshot.content.count).tag("Marketing Content")
-                                    .contentShape(Rectangle())
-                                    .onTapGesture {
-                                        if section == "Marketing Content" { requestRootAction(.showContentList) }
-                                    }
-                                Label("Files", systemImage: "folder").tag("Files")
-                                Section("Profiles") {
-                                    Label("Identities", systemImage: "person.crop.circle")
-                                        .tag(ManagementSection.identities.rawValue)
-                                    Label("Websites", systemImage: "globe")
-                                        .tag(ManagementSection.websites.rawValue)
-                                    Label("Social Accounts", systemImage: "at")
-                                        .tag(ManagementSection.socialAccounts.rawValue)
-                                }
-                            }
-                        } else if searchResults(snapshot).isEmpty {
-                            ContentUnavailableView.search(text: searchText)
-                                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                        } else {
-                            List {
-                            Section("Workspace Results") {
-                                ForEach(searchResults(snapshot)) { result in
-                                    Button {
-                                        selectSearchResult(result)
-                                    } label: {
-                                        Label {
-                                            VStack(alignment: .leading, spacing: 3) {
-                                                Text(result.title)
-                                                Text(result.detail).font(.caption).foregroundStyle(.secondary).lineLimit(1)
-                                            }
-                                        } icon: {
-                                            if let socialPlatform = result.socialPlatform {
-                                                SocialPlatformIcon(platform: socialPlatform, size: 20)
-                                            } else {
-                                                Image(systemName: result.symbol).foregroundStyle(.secondary)
-                                            }
-                                        }
-                                    }
-                                    .buttonStyle(.plain)
-                                }
-                            }
-                            }
-                        }
+                NavigationSplitView(columnVisibility: $sidebarVisibility) {
+                    VStack(alignment: .leading, spacing: 0) {
+                        workspaceSwitcher(snapshot.manifest.name)
+                        Divider()
+                        sidebarNavigation(snapshot)
+                            .disabled(commandActions.isBusy)
                     }
                     .searchable(text: $searchText, placement: .sidebar, prompt: "Search workspace")
                     .searchFocused($searchFocused)
+                    .onExitCommand { clearSearch() }
                     .navigationSplitViewColumnWidth(min: 200, ideal: 240, max: 320)
                 } detail: {
-                    VStack(spacing: 0) {
-                        if !snapshot.errors.isEmpty {
-                            DisclosureGroup("\(snapshot.errors.count) workspace file issue(s)") {
-                                ForEach(snapshot.errors) { issue in Text("\(issue.path): \(issue.message)").textSelection(.enabled) }
-                            }.padding().background(.orange.opacity(0.12))
-                        }
-                        switch section {
-                        case "Marketing Content": ContentLibraryView(snapshot: snapshot, snapshotGeneration: session.snapshotGeneration, store: store, refresh: session.refresh, initialSelectionID: marketingSelectionID, onInitialSelectionHandled: { marketingSelectionID = nil }, listResetGeneration: contentListResetGeneration, onUnsavedChangesChange: { hasUnsavedEdits = $0 }, initialCreateKind: contentCreateRequest, onCreateRequestHandled: { contentCreateRequest = nil })
-                        case "Files": WorkspaceFilesBrowser(root: store.rootURL)
-                        default: ManagementWorkspaceView(section: ManagementSection(rawValue: section) ?? .apps, snapshot: snapshot, store: store, onSnapshotChanged: session.refresh, onReloadSnapshot: session.reload, onUnsavedEditsChanged: { hasUnsavedEdits = $0 }, onOpenMarketingContent: { id in requestRootAction(.content(id)); session.refresh() }, onOpenRecord: { requestRootAction(.management($0)) }, selectionRequest: managementSelectionRequest, createRequest: managementCreateRequest, onExternalRequestHandled: { managementSelectionRequest = nil; managementCreateRequest = nil }, restoredAppID: selectedAppID, onAppSelectionChange: { selectedAppID = $0 }).id(section == "Apps" ? "Apps-\(appsOverviewGeneration)" : section)
-                        }
-                    }
-                    .toolbar {
-                        ToolbarItem {
-                            Menu {
-                                ForEach(session.knownWorkspaces, id: \.path) { workspace in
-                                    Menu(workspace.lastPathComponent) {
-                                        Button("Open Workspace", systemImage: "folder") {
-                                            if hasUnsavedEdits { pendingWorkspaceChange = true }
-                                            else { session.open(workspace) }
-                                        }
-                                        Button("Remove from App", systemImage: "minus.circle", role: .destructive) {
-                                            requestForgetWorkspace(workspace)
-                                        }
-                                    }
-                                }
-                                if !session.knownWorkspaces.isEmpty { Divider() }
-                                Button("Refresh Workspace", systemImage: "arrow.clockwise", action: session.refresh)
-                                Button("Add Existing Workspace…", systemImage: "folder.badge.plus") { session.choose(create: false) }
-                                Button("Create New Workspace…", systemImage: "plus") { session.choose(create: true) }
-                            } label: { Label("Workspaces", systemImage: "folder") }
-                                .labelStyle(.iconOnly)
-                        }
-                    }
+                    workspaceDetail(snapshot, store: store)
+                        .disabled(session.isOpening || savingBeforeSwitch)
                 }
+                .id(store.rootURL)
             } else {
-                VStack(spacing: 16) {
-                    Image(systemName: "folder.badge.gearshape").font(.system(size: 48)).foregroundStyle(.tint)
-                    Text("Welcome to Indie Dev Buddy").font(.largeTitle.bold())
-                    Text("Your information is saved as ordinary files in a dedicated workspace folder. When creating one, choose the parent location and Indie Dev Buddy will create the workspace folder there.")
-                        .foregroundStyle(.secondary).multilineTextAlignment(.center).frame(maxWidth: 430)
-                    HStack { Button("Open Existing Workspace") { session.choose(create: false) }; Button("Create New Workspace…") { session.choose(create: true) }.buttonStyle(.borderedProminent) }
-                }.padding(40).frame(minWidth: 620, minHeight: 420)
+                welcomeView
             }
         }
-        .confirmationDialog("Discard unsaved changes?", isPresented: Binding(get: { pendingRootAction != nil || pendingWorkspaceChange || pendingWorkspaceToForget != nil }, set: { if !$0 { pendingRootAction = nil; pendingWorkspaceChange = false; pendingWorkspaceToForget = nil } })) {
-            Button("Discard Changes", role: .destructive) {
-                hasUnsavedEdits = false
-                if let pendingRootAction {
-                    self.pendingRootAction = nil
-                    applyRootAction(pendingRootAction)
-                } else if pendingWorkspaceChange { session.choose(create: false) }
-                else if let workspace = pendingWorkspaceToForget { session.forget(workspace) }
-                pendingWorkspaceChange = false
-                pendingWorkspaceToForget = nil
-            }
-            Button("Keep Editing", role: .cancel) { pendingRootAction = nil; pendingWorkspaceChange = false; pendingWorkspaceToForget = nil }
-        } message: { Text("Save your changes before leaving this editor, or discard them. Removing a workspace only removes it from this app; its folder and files stay where they are.") }
+        .focusedSceneValue(\.workspaceCommands, commandActions)
+        .confirmationDialog(pendingDialogTitle, isPresented: pendingDialogPresentation, titleVisibility: .visible) {
+            pendingDialogActions
+        } message: {
+            pendingDialogMessage
+        }
         .task {
             if section == "Websites & Social Accounts" {
                 section = ManagementSection.websites.rawValue
@@ -258,6 +256,323 @@ struct ContentView: View {
         .alert("Workspace", isPresented: Binding(get: { session.error != nil }, set: { if !$0 { session.error = nil } })) {
             Button("OK") { session.error = nil }
         } message: { Text(session.error ?? "") }
+    }
+
+    private var pendingDialogTitle: String {
+        if let destination = pendingWorkspaceChange { return "Switch to \(destination.label)?" }
+        if let workspace = pendingWorkspaceToForget { return "Remove “\(workspace.lastPathComponent)” from the app?" }
+        return "Discard unsaved changes?"
+    }
+
+    private var pendingDialogPresentation: Binding<Bool> {
+        Binding(
+            get: { pendingRootAction != nil || pendingWorkspaceChange != nil || pendingWorkspaceToForget != nil },
+            set: { if !$0 { clearPendingAction() } }
+        )
+    }
+
+    @ViewBuilder private var pendingDialogActions: some View {
+        if let destination = pendingWorkspaceChange {
+            if let saveAction = pendingWorkspaceSaveAction ?? workspaceSaveAction {
+                Button("Save and Switch") {
+                    clearPendingAction()
+                    savingBeforeSwitch = true
+                    saveAction.perform { success in
+                        savingBeforeSwitch = false
+                        if success { openWorkspace(destination) }
+                    }
+                }
+            }
+            Button("Discard and Switch", role: .destructive) {
+                clearPendingAction()
+                openWorkspace(destination)
+            }
+        } else if pendingWorkspaceToForget != nil {
+            Button(hasUnsavedEdits ? "Discard Changes and Remove" : "Remove Workspace",
+                   role: .destructive, action: discardAndContinue)
+        } else {
+            Button("Discard Changes", role: .destructive, action: discardAndContinue)
+        }
+        Button("Cancel", role: .cancel, action: clearPendingAction)
+    }
+
+    @ViewBuilder private var pendingDialogMessage: some View {
+        if hasUnsavedEdits { Text("The current editor has unsaved changes.") }
+        else if pendingWorkspaceToForget != nil { Text("The workspace folder and its files stay on your Mac.") }
+    }
+
+    private var commandActions: WorkspaceCommandActions {
+        WorkspaceCommandActions(
+            recent: session.knownWorkspaces,
+            hasWorkspace: session.store != nil,
+            isBusy: session.isOpening || savingBeforeSwitch,
+            open: { chooseWorkspace(create: false) },
+            create: { chooseWorkspace(create: true) },
+            openRecent: { requestWorkspaceChange(.existing($0)) },
+            newContent: requestCreateContent,
+            newRecord: requestCreateManagement,
+            find: {
+                sidebarVisibility = .all
+                searchFocused = true
+            },
+            refresh: session.refresh
+        )
+    }
+
+    private func workspaceSwitcher(_ name: String) -> some View {
+        Menu {
+            ForEach(commandActions.recent, id: \.path) { workspace in
+                Button {
+                    requestWorkspaceChange(.existing(workspace))
+                } label: {
+                    if workspace.path == session.workspaceURL?.path {
+                        Label(workspace.lastPathComponent, systemImage: "checkmark")
+                    } else {
+                        Text(workspace.lastPathComponent)
+                    }
+                }
+                .help(workspace.path)
+            }
+            Divider()
+            Button("Open Workspace…", systemImage: "folder", action: commandActions.open)
+            Button("New Workspace…", systemImage: "plus", action: commandActions.create)
+            Button("Refresh Workspace", systemImage: "arrow.clockwise", action: session.refresh)
+            if let url = session.workspaceURL {
+                Button("Show in Finder", systemImage: "arrow.up.forward.app") {
+                    NSWorkspace.shared.activateFileViewerSelecting([url])
+                }
+                Divider()
+                Button("Remove Workspace from App…", systemImage: "minus.circle") {
+                    requestForgetWorkspace(url)
+                }
+            }
+        } label: {
+            Label(name, systemImage: "folder")
+                .lineLimit(1)
+        }
+        .menuStyle(.borderlessButton)
+        .font(.headline)
+        .help("Switch or manage workspaces")
+        .accessibilityLabel("Workspace: \(name)")
+        .disabled(commandActions.isBusy)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+    }
+
+    @ViewBuilder
+    private func sidebarNavigation(_ snapshot: WorkspaceSnapshot) -> some View {
+        if searchText.isEmpty {
+            List(selection: Binding(get: { Optional(section) }, set: { (selection: String?) in
+                if let value = selection, value != section { requestRootAction(.section(value)) }
+            })) {
+                Label("Dashboard", systemImage: "rectangle.grid.2x2").tag("Dashboard")
+                Section("Products") {
+                    Label("Apps", systemImage: "square.stack.3d.up")
+                        .badge(snapshot.apps.count).tag("Apps")
+                    Label("Websites", systemImage: "globe")
+                        .tag(ManagementSection.websites.rawValue)
+                }
+                Section("Workspace") {
+                    Label("Content", systemImage: "megaphone")
+                        .badge(snapshot.content.count).tag("Marketing Content")
+                        .contentShape(Rectangle())
+                        .onTapGesture {
+                            if section == "Marketing Content" { requestRootAction(.showContentList) }
+                        }
+                    Label("Files", systemImage: "folder").tag("Files")
+                }
+                Section("Accounts") {
+                    Label("Identities", systemImage: "person.crop.circle")
+                        .tag(ManagementSection.identities.rawValue)
+                    Label("Social Accounts", systemImage: "at")
+                        .tag(ManagementSection.socialAccounts.rawValue)
+                }
+            }
+        } else {
+            let results = searchResults(snapshot)
+            if results.isEmpty {
+                ContentUnavailableView.search(text: searchText)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                List {
+                    Section("Workspace Results") {
+                        ForEach(results) { result in
+                            Button {
+                                selectSearchResult(result)
+                            } label: {
+                                Label {
+                                    VStack(alignment: .leading, spacing: 3) {
+                                        Text(result.title)
+                                        Text(result.detail).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                                    }
+                                } icon: {
+                                    if let socialPlatform = result.socialPlatform {
+                                        SocialPlatformIcon(platform: socialPlatform, size: 20)
+                                    } else {
+                                        Image(systemName: result.symbol).foregroundStyle(.secondary)
+                                    }
+                                }
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private func workspaceDetail(_ snapshot: WorkspaceSnapshot, store: WorkspaceStore) -> some View {
+        VStack(spacing: 0) {
+            if !snapshot.errors.isEmpty {
+                DisclosureGroup("\(snapshot.errors.count) workspace file issue(s)") {
+                    ForEach(snapshot.errors) { issue in Text("\(issue.path): \(issue.message)").textSelection(.enabled) }
+                }.padding().background(.orange.opacity(0.12))
+            }
+            switch section {
+            case "Dashboard":
+                WorkspaceDashboardView(
+                    snapshot: snapshot,
+                    workspaceRoot: store.rootURL,
+                    generation: session.snapshotGeneration,
+                    openSection: { requestRootAction(.section($0)) },
+                    openContent: { requestRootAction(.content($0)) },
+                    openRecord: { requestRootAction(.management($0)) },
+                    createContent: requestCreateContent,
+                    createRecord: requestCreateManagement
+                )
+            case "Marketing Content":
+                ContentLibraryView(
+                    snapshot: snapshot,
+                    snapshotGeneration: session.snapshotGeneration,
+                    store: store,
+                    refresh: session.refresh,
+                    initialSelectionID: marketingSelectionID,
+                    onInitialSelectionHandled: { marketingSelectionID = nil },
+                    listResetGeneration: contentListResetGeneration,
+                    onUnsavedChangesChange: { hasUnsavedEdits = $0 },
+                    initialCreateKind: contentCreateRequest,
+                    onCreateRequestHandled: { contentCreateRequest = nil }
+                )
+            case "Files":
+                WorkspaceFilesBrowser(root: store.rootURL)
+            default:
+                ManagementWorkspaceView(
+                    section: ManagementSection(rawValue: section) ?? .apps,
+                    snapshot: snapshot,
+                    store: store,
+                    onSnapshotChanged: session.refresh,
+                    onReloadSnapshot: session.reload,
+                    onUnsavedEditsChanged: { hasUnsavedEdits = $0 },
+                    onOpenMarketingContent: { id in
+                        requestRootAction(.content(id))
+                        session.refresh()
+                    },
+                    onOpenRecord: { requestRootAction(.management($0)) },
+                    selectionRequest: managementSelectionRequest,
+                    createRequest: managementCreateRequest,
+                    onExternalRequestHandled: {
+                        managementSelectionRequest = nil
+                        managementCreateRequest = nil
+                    },
+                    restoredAppID: selectedAppID,
+                    onAppSelectionChange: { selectedAppID = $0 }
+                )
+                .id(section == "Apps" ? "Apps-\(appsOverviewGeneration)" : section)
+            }
+        }
+    }
+
+    private var welcomeView: some View {
+        VStack(spacing: 16) {
+            if session.isOpening {
+                ProgressView("Opening Workspace…")
+            } else if let error = session.workspaceOpenError {
+                Image(systemName: "folder.badge.questionmark")
+                    .font(.system(size: 44)).foregroundStyle(.secondary)
+                    .accessibilityHidden(true)
+                Text(session.failedWorkspaceURL.map { "Can’t open “\($0.lastPathComponent)”" } ?? "Can’t restore your workspace")
+                    .font(.title.bold())
+                Text(error).foregroundStyle(.secondary).multilineTextAlignment(.center)
+                HStack {
+                    Button("Choose Another…") { chooseWorkspace(create: false) }
+                    Button("Locate Workspace…") { chooseWorkspace(create: false, near: session.failedWorkspaceURL) }
+                        .buttonStyle(.borderedProminent)
+                }
+                Button("Create Workspace…") { chooseWorkspace(create: true) }
+                    .buttonStyle(.link)
+            } else {
+                Image(systemName: "folder.badge.gearshape")
+                    .font(.system(size: 44)).foregroundStyle(.tint)
+                    .accessibilityHidden(true)
+                Text("Welcome to Indie Dev Buddy").font(.largeTitle.bold())
+                Text("Your apps, drafts, and accounts live in a folder of ordinary files on your Mac.")
+                    .foregroundStyle(.secondary).multilineTextAlignment(.center)
+                HStack {
+                    Button("Open Workspace…") { chooseWorkspace(create: false) }
+                    Button("Create Workspace…") { chooseWorkspace(create: true) }
+                        .buttonStyle(.borderedProminent)
+                }
+            }
+        }
+        .frame(maxWidth: 450)
+        .padding(32)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .frame(minWidth: 520, minHeight: 360)
+    }
+
+    private func chooseWorkspace(create: Bool, near previousURL: URL? = nil) {
+        guard !session.isOpening, !savingBeforeSwitch else { return }
+        if let destination = session.choose(create: create, near: previousURL) {
+            requestWorkspaceChange(destination)
+        }
+    }
+
+    private func requestWorkspaceChange(_ destination: WorkspaceSession.Destination) {
+        guard !session.isOpening, !savingBeforeSwitch else { return }
+        if case .existing(let url) = destination, url.standardizedFileURL.path == session.workspaceURL?.path { return }
+        if hasUnsavedEdits {
+            pendingWorkspaceSaveAction = workspaceSaveAction
+            pendingWorkspaceChange = destination
+        } else {
+            openWorkspace(destination)
+        }
+    }
+
+    private func openWorkspace(_ destination: WorkspaceSession.Destination) {
+        session.open(destination) {
+            hasUnsavedEdits = false
+            selectedAppID = nil
+            marketingSelectionID = nil
+            managementSelectionRequest = nil
+            managementCreateRequest = nil
+            contentCreateRequest = nil
+            clearSearch()
+        }
+    }
+
+    private func clearSearch() {
+        searchText = ""
+        searchFocused = false
+    }
+
+    private func clearPendingAction() {
+        pendingRootAction = nil
+        pendingWorkspaceChange = nil
+        pendingWorkspaceSaveAction = nil
+        pendingWorkspaceToForget = nil
+    }
+
+    private func discardAndContinue() {
+        let action = pendingRootAction
+        let workspaceToForget = pendingWorkspaceToForget
+        clearPendingAction()
+        if let action {
+            applyRootAction(action)
+        } else if let workspaceToForget {
+            session.forget(workspaceToForget) {
+                hasUnsavedEdits = false
+            }
+        }
     }
 
     private func requestRootAction(_ action: RootAction) {
@@ -295,8 +610,8 @@ struct ContentView: View {
     }
 
     private func requestForgetWorkspace(_ url: URL) {
-        if hasUnsavedEdits { pendingWorkspaceToForget = url }
-        else { session.forget(url) }
+        guard !commandActions.isBusy else { return }
+        pendingWorkspaceToForget = url
     }
 
     private func requestCreateManagement(_ kind: ManagementCreateRequest) {
@@ -306,8 +621,7 @@ struct ContentView: View {
     }
 
     private func selectSearchResult(_ result: SearchResult) {
-        searchText = ""
-        searchFocused = false
+        clearSearch()
         switch result.destination {
         case .content(let id):
             if section == "Marketing Content" { marketingSelectionID = id }
