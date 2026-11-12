@@ -59,6 +59,7 @@ struct ManagementWorkspaceView: View {
     var restoredAppID: String?
     var onAppSelectionChange: (String?) -> Void = { _ in }
 
+    @AppStorage private var pinnedSocialAccountData: Data
     @State private var selectedID: String?
     @State private var opensAppStore = false
     @State private var reconnectAccountID: String?
@@ -75,6 +76,7 @@ struct ManagementWorkspaceView: View {
     @State private var confirmingDelete = false
 
     init(section: ManagementSection, snapshot: WorkspaceSnapshot, store: WorkspaceStore, onSnapshotChanged: @escaping () -> Void, onReloadSnapshot: @escaping () async -> Void = {}, onUnsavedEditsChanged: @escaping (Bool) -> Void = { _ in }, onOpenMarketingContent: @escaping (String) -> Void, onOpenRecord: @escaping (ManagementRecordSelection) -> Void = { _ in }, selectionRequest: ManagementRecordSelection? = nil, createRequest: ManagementCreateRequest? = nil, onExternalRequestHandled: @escaping () -> Void = {}, restoredAppID: String? = nil, onAppSelectionChange: @escaping (String?) -> Void = { _ in }) {
+        _pinnedSocialAccountData = AppStorage(wrappedValue: Data(), "pinnedSocialAccounts.\(snapshot.manifest.id)")
         self.section = section
         self.snapshot = snapshot
         self.store = store
@@ -182,7 +184,12 @@ struct ManagementWorkspaceView: View {
     }
 
     private var recordList: some View {
-        VStack(spacing: 0) {
+        let pinnedIDs = section == .socialAccounts ? pinnedSocialAccountIDs : []
+        let visibleRows = rows
+        let orderedRows = visibleRows.filter { pinnedIDs.contains($0.id) }
+            + visibleRows.filter { !pinnedIDs.contains($0.id) }
+
+        return VStack(spacing: 0) {
             if section == .apps {
                 Text(snapshot.apps.count == 1 ? "1 app" : "\(snapshot.apps.count) apps")
                     .foregroundStyle(.secondary)
@@ -207,7 +214,8 @@ struct ManagementWorkspaceView: View {
             }
 
             List(selection: Binding(get: { selectedID }, set: requestSelection)) {
-                ForEach(rows) { row in
+                ForEach(orderedRows) { row in
+                    let isPinned = pinnedIDs.contains(row.id)
                     HStack(spacing: 10) {
                         Group {
                             if let iconURL = row.iconURL, let image = NSImage(contentsOf: iconURL) {
@@ -231,18 +239,21 @@ struct ManagementWorkspaceView: View {
                             }
                         }
                         Spacer(minLength: 8)
-                        if section == .apps {
+                        if isPinned {
+                            Image(systemName: "pin.fill").font(.caption).foregroundStyle(.secondary)
+                                .accessibilityLabel("Pinned")
+                        } else if section == .apps {
                             Image(systemName: "chevron.right").font(.caption).foregroundStyle(.secondary)
                                 .accessibilityHidden(true)
                         }
                     }
                     .padding(.vertical, 6)
                     .tag(Optional(row.id))
-                    .contextMenu { managementRowActions(row) }
+                    .contextMenu { managementRowActions(row, isPinned: isPinned) }
                 }
             }
             .overlay {
-                if rows.isEmpty {
+                if orderedRows.isEmpty {
                     ContentUnavailableView("No \(section.rawValue)", systemImage: sectionSymbol, description: Text("Add a record to manage it in this workspace."))
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
@@ -251,12 +262,29 @@ struct ManagementWorkspaceView: View {
         }
     }
 
+    private var pinnedSocialAccountIDs: Set<String> {
+        (try? JSONDecoder().decode(Set<String>.self, from: pinnedSocialAccountData)) ?? []
+    }
+
+    private func toggleSocialAccountPin(_ id: String) {
+        var pinnedIDs = pinnedSocialAccountIDs
+        if !pinnedIDs.insert(id).inserted {
+            pinnedIDs.remove(id)
+        }
+        if let data = try? JSONEncoder().encode(pinnedIDs) {
+            pinnedSocialAccountData = data
+        }
+    }
+
     @ViewBuilder
-    private func managementRowActions(_ row: ManagementRow) -> some View {
+    private func managementRowActions(_ row: ManagementRow, isPinned: Bool) -> some View {
         Button(section == .apps ? "Open App Details" : "Edit \(singularName)", systemImage: "arrow.right") {
             requestSelection(row.id)
         }
         if section == .socialAccounts, let account = snapshot.socialAccountsByID[row.id] {
+            Button(isPinned ? "Unpin" : "Pin to Top", systemImage: isPinned ? "pin.slash" : "pin") {
+                toggleSocialAccountPin(row.id)
+            }
             if let handle = account.handle, !handle.isEmpty {
                 Button("Copy Handle", systemImage: "doc.on.doc") {
                     NSPasteboard.general.clearContents()
