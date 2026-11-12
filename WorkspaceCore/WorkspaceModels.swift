@@ -350,8 +350,7 @@ nonisolated public struct ContentRecord: Codable, Sendable, Identifiable, Equata
     public var appIds: [String]
     public var websiteId: String?
     public var sourceContentId: String?
-    /// Legacy association retained so existing workspace records remain readable.
-    /// The current UI does not create, resolve, or display release associations.
+    /// Existing local release ID or the App Store Connect version ID for a draft created from release notes.
     public var releaseId: String?
     public var relatedGroupId: String?
     public var originalBodyPath: String?

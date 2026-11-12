@@ -14,7 +14,7 @@ This is a developer reference for intended product scope and implementation. It 
 
 > **Product promise:** Your apps, websites, social accounts, files, and marketing content in one understandable, local-first workspace.
 
-**App Store Connect scope:** Apps may optionally link to an App Store Connect record through the user's installed `asc` CLI. The app can read listing identity, review/release status, submission history, and localized What's New text; workspace field changes require an explicit preview and apply action. Indie Dev Buddy does not upload metadata or submit releases. This integration does not restore the deferred release/version tracker or content-to-release links.
+**App Store Connect scope.** Apps can link to App Store Connect through the installed `asc` CLI. The App Store tab reads release history, listing information, screenshots, feedback, existing analytics reports, and readiness findings. Release notes can seed a local marketing draft, and screenshot copies can be imported into the workspace's Files library.
 
 ### Existing Xcode project and code locations
 
@@ -50,9 +50,11 @@ Incoming social-mentions inboxes and social analytics, automatic website publish
 ### Optional App Store Connect CLI
 
 - On a saved app's **App Store** page, users can select a matching ASC record, link it by stable ASC app ID, and preview importing the app name, bundle ID, and listing URL. Only checked fields are applied to the local workspace record.
-- The user must have `asc` installed and authenticated. Indie Dev Buddy invokes native `asc` read commands and does not read, store, or transmit credentials. Remote reads include the release dashboard, current App Review state/history, and localized What's New text.
-- What's New is loaded into an editable local draft for reuse or copying. It is never uploaded by this flow. Review state and release notes are shown as App Store Connect data, separate from the workspace's manually chosen development status and app description.
-- If the CLI is unavailable or authentication fails, explain the issue and preserve the user's existing app record.
+- The user must have `asc` installed and authenticated. The app runs the CLI in read-only mode using the active profile.
+- Choose a platform and version to see release and review activity. Edit or copy localized What’s New, or create an app-associated social draft and select profiles in the existing composer.
+- Preview remote screenshots by version, language, and display type. **Files → Import from App Store Connect** copies selected images into the app’s asset library for use in marketing content.
+- Listing includes localized metadata and a read-only readiness check for the selected version. Customer reviews, TestFlight feedback, and analytics depend on the active profile’s permissions. Analytics uses existing reports. Report availability and freshness depend on App Store Connect.
+- Failed reads show an error in the affected area. Previous results remain visible during refresh where available.
 
 ## 2. Terminology and relationships
 

@@ -14,6 +14,7 @@ struct AssetLibraryView: View {
     var selectionTitle = "Add to Post"
     var onSelect: (([WorkspaceAsset]) -> Void)? = nil
     var embedded = false
+    var refreshID = 0
 
     enum Location: Hashable {
         case all, recent, unfiled, screenshots, owner(AssetOwner), folder(UUID), category(AppAssetCategory)
@@ -141,6 +142,7 @@ struct AssetLibraryView: View {
             if let defaultOwner, scope == nil { location = .owner(defaultOwner) }
             await reload()
         }
+        .onChange(of: refreshID) { _, _ in Task { await reload() } }
         .onChange(of: location) { old, _ in
             if onSelect == nil { selected.removeAll() }
             if old == .screenshots { Task { await reload() } }
@@ -216,8 +218,18 @@ struct AssetLibraryView: View {
 
     private var controls: some View {
         HStack {
+            Button("Refresh", systemImage: "arrow.clockwise") { Task { await reload() } }
+                .disabled(working)
             Button("Import Files", systemImage: "square.and.arrow.down") { importer = true }
                 .disabled(working)
+            if onSelect == nil {
+                AppStoreScreenshotImportEntry(
+                    apps: snapshot.apps.filter { scope == nil || scope == AssetOwner(.app, $0.id) },
+                    store: store,
+                    onImportFinished: { Task { await reload() } }
+                )
+                .disabled(working)
+            }
             if onSelect == nil {
                 Button("New Folder", systemImage: "folder.badge.plus") {
                     editingFolder = nil

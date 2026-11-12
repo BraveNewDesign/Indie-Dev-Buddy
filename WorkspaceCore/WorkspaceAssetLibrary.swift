@@ -32,6 +32,8 @@ nonisolated public struct WorkspaceAsset: Identifiable, Codable, Sendable {
     public var folderID: UUID?
     public var category: AppAssetCategory?
     public var tags: [String] = []
+    /// Stable remote identifier for an App Store Connect screenshot import.
+    public var appStoreConnectScreenshotID: String? = nil
     public let added: Date
 
     public var reference: String {
@@ -55,6 +57,10 @@ nonisolated public struct ScreenshotSet: Identifiable, Codable, Sendable {
     public var version: String
     public var name: String
     public var assetIDs: [UUID] = []
+    /// Stable remote identifier for an App Store Connect screenshot set.
+    public var appStoreConnectSetID: String? = nil
+    /// Original App Store Connect display category (for example, APP_IPHONE_67).
+    public var appStoreConnectDisplayType: String? = nil
 
     public var categoryName: String { ScreenshotSpecifications.category(categoryID)?.title ?? categoryID }
     public var title: String { name.isEmpty ? categoryName : name }
@@ -113,7 +119,8 @@ extension WorkspaceStore {
 
     public func importAsset(_ source: URL, owner: AssetOwner, folderID: UUID? = nil,
                             displayName: String? = nil, category: AppAssetCategory? = nil, into setID: UUID? = nil,
-                            replacing replacedID: UUID? = nil) throws -> WorkspaceAsset {
+                            replacing replacedID: UUID? = nil, appStoreConnectScreenshotID: String? = nil,
+                            remoteScreenshotOrder: [String]? = nil, remoteScreenshotSet: ScreenshotSet? = nil) throws -> WorkspaceAsset {
         let accessed = source.startAccessingSecurityScopedResource()
         defer { if accessed { source.stopAccessingSecurityScopedResource() } }
         let values = try source.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey])
@@ -125,19 +132,37 @@ extension WorkspaceStore {
             let ext = source.pathExtension.lowercased()
             let fromManagedFolder = source.standardizedFileURL.deletingLastPathComponent().path ==
                 rootURL.appendingPathComponent("\(AssetLibrary.directory)/Files").path
-            let existing = displayName == nil && fromManagedFolder ? library.assets.first { asset in
+            let existingRemote = appStoreConnectScreenshotID.flatMap { remoteID in
+                library.assets.first { $0.owner == owner && $0.appStoreConnectScreenshotID == remoteID }
+            }
+            let existing = existingRemote ?? (displayName == nil && fromManagedFolder ? library.assets.first { asset in
                 guard let path = AssetLibrary.managedPath(asset.reference) else { return false }
                 return rootURL.appendingPathComponent(path).path == source.standardizedFileURL.path
-            } : nil
+            } : nil)
             let asset = existing ?? WorkspaceAsset(
                 id: UUID(),
                 fileExtension: ext.range(of: "^[a-z0-9]{1,16}$", options: .regularExpression) == nil ? "" : ext,
                 originalFilename: source.lastPathComponent,
                 name: displayName ?? source.lastPathComponent, owner: owner,
                 folderID: library.folders.contains { $0.id == folderID && $0.owner == owner } ? folderID : nil,
-                category: category, added: Date()
+                category: category, appStoreConnectScreenshotID: appStoreConnectScreenshotID, added: Date()
             )
             if existing == nil { library.assets.append(asset) }
+            if let remoteScreenshotSet {
+                var set = library.screenshotSets.first {
+                    $0.appID == remoteScreenshotSet.appID && $0.appStoreConnectSetID == remoteScreenshotSet.appStoreConnectSetID
+                }
+                    ?? remoteScreenshotSet
+                set.platform = remoteScreenshotSet.platform
+                set.categoryID = remoteScreenshotSet.categoryID
+                set.locale = remoteScreenshotSet.locale
+                set.version = remoteScreenshotSet.version
+                set.appStoreConnectSetID = remoteScreenshotSet.appStoreConnectSetID
+                set.appStoreConnectDisplayType = remoteScreenshotSet.appStoreConnectDisplayType
+                if !library.screenshotSets.contains(where: { $0.id == set.id }) {
+                    library.screenshotSets.append(set)
+                }
+            }
             if let setID {
                 guard let index = library.screenshotSets.firstIndex(where: { $0.id == setID }) else {
                     throw WorkspaceCommandError("The screenshot set is no longer available.")
@@ -154,8 +179,23 @@ extension WorkspaceStore {
                     library.screenshotSets[index].assetIDs.append(asset.id)
                 }
             }
+            if let remoteScreenshotSet, let remoteScreenshotOrder {
+                guard let index = library.screenshotSets.firstIndex(where: {
+                    $0.appID == remoteScreenshotSet.appID && $0.appStoreConnectSetID == remoteScreenshotSet.appStoreConnectSetID
+                }) else { throw WorkspaceCommandError("The App Store screenshot set could not be created.") }
+                let importedByRemoteID = Dictionary(
+                    library.assets.compactMap { item -> (String, UUID)? in
+                        guard item.owner == owner, let remoteID = item.appStoreConnectScreenshotID else { return nil }
+                        return (remoteID, item.id)
+                    }, uniquingKeysWith: { first, _ in first }
+                )
+                let orderedRemoteIDs = remoteScreenshotOrder.compactMap { importedByRemoteID[$0] }
+                let orderedRemoteSet = Set(orderedRemoteIDs)
+                let preservedAssets = library.screenshotSets[index].assetIDs.filter { !orderedRemoteSet.contains($0) }
+                library.screenshotSets[index].assetIDs = orderedRemoteIDs + preservedAssets
+            }
             if existing != nil {
-                if setID != nil { _ = try writeAssetIndex(library, revision: revision) }
+                if setID != nil || remoteScreenshotSet != nil { _ = try writeAssetIndex(library, revision: revision) }
                 return asset
             }
             let destination = try resolveContentMedia(asset.reference, recordFolder: "")

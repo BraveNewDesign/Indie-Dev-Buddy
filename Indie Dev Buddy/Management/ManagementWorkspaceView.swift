@@ -853,18 +853,24 @@ private struct AppRecordEditor: View {
                         .accessibilityHidden(detailTab != "Marketing")
                 }
                 if let record {
-                    AppStoreConnectView(app: record, onConnect: { appStoreConnectID in
-                        var updated = draftRecord
+                    AppStoreConnectView(app: record, store: workspaceStore,
+                                        marketingContent: snapshot.content.filter { $0.appIds.contains(record.id) && $0.releaseId != nil },
+                                        isActive: detailTab == "App Store", actionsEnabled: !overviewIsDirty,
+                                        onOpenFiles: { detailTab = "Files" },
+                                        onOpenMarketingDraft: onOpenMarketingContent,
+                                        onConnect: { appStoreConnectID in
+                        var updated = record
                         updated.appStoreConnectAppId = appStoreConnectID.isEmpty ? nil : appStoreConnectID
                         Task { await save(updated) }
                     }, onImport: { remoteApp, selection in
-                        var updated = draftRecord
+                        var updated = record
                         updated.appStoreConnectAppId = remoteApp.id
                         if selection.name { updated.name = remoteApp.name }
                         if selection.bundleID, !remoteApp.bundleID.isEmpty { updated.bundleIDs = [remoteApp.bundleID] }
                         if selection.listingURL { updated.appStoreURL = remoteApp.listingURL }
                         Task { await save(updated) }
                     })
+                    .id(record.appStoreConnectAppId)
                     .opacity(detailTab == "App Store" ? 1 : 0)
                     .allowsHitTesting(detailTab == "App Store")
                     .accessibilityHidden(detailTab != "App Store")
@@ -1313,6 +1319,7 @@ private struct AppRecordEditor: View {
         if var record {
             // Older records omit the state; the editor displays the same default.
             if record.developmentStatus == nil { record.developmentStatus = .development }
+            if record.bundleIDs?.isEmpty == true { record.bundleIDs = nil }
             return draftRecord != record
         }
         return !draftRecord.name.isEmpty || !appDescription.isEmpty || !bundleIDs.isEmpty || developmentStatus != AppDevelopmentStatus.development.rawValue || developerID != "" || !platforms.isEmpty || !projectPath.isEmpty || !repositoryURL.isEmpty || !appStoreURL.isEmpty || !testFlightURL.isEmpty || iconPath != nil || !links.isEmpty

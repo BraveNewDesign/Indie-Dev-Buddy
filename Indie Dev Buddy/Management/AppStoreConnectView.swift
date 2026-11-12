@@ -2,229 +2,14 @@ import AppKit
 import SwiftUI
 import UniformTypeIdentifiers
 
-nonisolated struct ASCAppSummary: Sendable, Equatable, Identifiable {
-    let id: String
-    let name: String
-    let bundleID: String
-    let primaryLocale: String?
-
-    var listingURL: URL? { URL(string: "https://apps.apple.com/app/id\(id)") }
-    var pickerTitle: String {
-        bundleID.isEmpty ? name : "\(name) · \(bundleID)"
-    }
-}
-
-nonisolated struct ASCImportSelection: Sendable {
-    var name = true
-    var bundleID = true
-    var listingURL = true
-}
-
-nonisolated struct ASCStatusSnapshot: Sendable {
-    let releaseDashboard: String
-    let reviewStatus: String
-    let reviewHistory: String
-}
-
-nonisolated struct ASCReleaseNotes: Sendable {
-    let version: String
-    let localizedNotes: [String: String]
-}
-
-nonisolated enum ASCIntegrationError: LocalizedError {
-    case invalidResponse
-    case appNotFound
-    case releaseNotesUnavailable
-    case processFailed(String)
-
-    var errorDescription: String? {
-        switch self {
-        case .invalidResponse:
-            "The asc command returned data Indie Dev Buddy couldn’t read."
-        case .appNotFound:
-            "No matching App Store Connect app was found. Check the bundle ID and the asc account."
-        case .releaseNotesUnavailable:
-            "App Store Connect returned no What's New text for the selected version."
-        case .processFailed(let detail): detail
-        }
-    }
-}
-
-nonisolated enum ASCIntegration {
-    static func installedExecutable() -> URL? {
-        let manager = FileManager.default
-        let home = manager.homeDirectoryForCurrentUser
-        let commonPaths = [
-            home.appendingPathComponent(".local/bin/asc").path,
-            "/opt/homebrew/bin/asc",
-            "/usr/local/bin/asc",
-            "/usr/bin/asc"
-        ]
-        let environmentPaths = (ProcessInfo.processInfo.environment["PATH"] ?? "")
-            .split(separator: ":")
-            .map { URL(fileURLWithPath: String($0), isDirectory: true).appendingPathComponent("asc").path }
-        return (commonPaths + environmentPaths)
-            .first(where: { manager.isExecutableFile(atPath: $0) })
-            .map { URL(fileURLWithPath: $0) }
-    }
-
-    static func findApps(executablePath: String, bundleIDs: [String], name: String) async throws -> [ASCAppSummary] {
-        var arguments = ["apps", "list"]
-        let ids = bundleIDs.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
-        if !ids.isEmpty {
-            arguments += ["--bundle-id", ids.joined(separator: ",")]
-        } else if !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            arguments += ["--name", name]
-        }
-        arguments += ["--paginate", "--output", "json"]
-        let data = try await run(executablePath: executablePath, arguments: arguments)
-        let summaries = try decodeApps(data)
-        if !summaries.isEmpty { return summaries }
-
-        if !ids.isEmpty, !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            let fallback = try await run(executablePath: executablePath, arguments: [
-                "apps", "list", "--name", name, "--paginate", "--output", "json"
-            ])
-            return try decodeApps(fallback)
-        }
-        return []
-    }
-
-    static func fetchStatus(executablePath: String, appID: String, platform: String) async -> ASCStatusSnapshot {
-        async let dashboard = runText(executablePath: executablePath, arguments: [
-            "status", "--app", appID, "--platform", platform,
-            "--include", "builds,appstore,submission,review", "--output", "table"
-        ])
-        async let review = runText(executablePath: executablePath, arguments: [
-            "review", "status", "--app", appID, "--platform", platform, "--output", "table"
-        ])
-        async let history = runText(executablePath: executablePath, arguments: [
-            "review", "history", "--app", appID, "--platform", platform, "--limit", "10", "--output", "table"
-        ])
-        return await ASCStatusSnapshot(releaseDashboard: dashboard, reviewStatus: review, reviewHistory: history)
-    }
-
-    static func fetchReleaseNotes(executablePath: String, appID: String, platform: String) async throws -> ASCReleaseNotes {
-        let directory = FileManager.default.temporaryDirectory
-            .appendingPathComponent("IndieDevBuddy-ASC-\(UUID().uuidString)", isDirectory: true)
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: directory) }
-
-        _ = try await run(executablePath: executablePath, arguments: [
-            "metadata", "pull", "--app", appID, "--platform", platform,
-            "--dir", directory.path, "--output", "json"
-        ])
-
-        let versionRoot = directory.appendingPathComponent("version", isDirectory: true)
-        let versionFolders = (try? FileManager.default.contentsOfDirectory(at: versionRoot, includingPropertiesForKeys: [.isDirectoryKey])) ?? []
-        let versionFolder = versionFolders
-            .filter { (try? $0.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true }
-            .sorted { $0.lastPathComponent.localizedStandardCompare($1.lastPathComponent) == .orderedDescending }
-            .first
-        guard let versionFolder else { throw ASCIntegrationError.appNotFound }
-
-        let files = (try? FileManager.default.contentsOfDirectory(at: versionFolder, includingPropertiesForKeys: nil)) ?? []
-        var localizedNotes: [String: String] = [:]
-        for file in files where file.pathExtension.lowercased() == "json" {
-            guard let data = try? Data(contentsOf: file),
-                  let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                  let notes = object["whatsNew"] as? String,
-                  !notes.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { continue }
-            localizedNotes[file.deletingPathExtension().lastPathComponent] = notes
-        }
-        guard !localizedNotes.isEmpty else { throw ASCIntegrationError.releaseNotesUnavailable }
-        return ASCReleaseNotes(version: versionFolder.lastPathComponent, localizedNotes: localizedNotes)
-    }
-
-    static func generateReleaseNotes(executablePath: String, projectPath: String, sinceReference: String) async throws -> String {
-        var isDirectory: ObjCBool = false
-        guard FileManager.default.fileExists(atPath: projectPath, isDirectory: &isDirectory) else {
-            throw ASCIntegrationError.processFailed("The linked project location is unavailable. Relink it before generating notes.")
-        }
-        let workingDirectory = isDirectory.boolValue ? projectPath : URL(fileURLWithPath: projectPath).deletingLastPathComponent().path
-        let data = try await run(
-            executablePath: executablePath,
-            arguments: ["release-notes", "generate", "--since-ref", sinceReference, "--until-ref", "HEAD", "--max-chars", "4000", "--output", "markdown"],
-            workingDirectory: workingDirectory
-        )
-        let draft = String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !draft.isEmpty else { throw ASCIntegrationError.invalidResponse }
-        return draft
-    }
-
-    private static func runText(executablePath: String, arguments: [String]) async -> String {
-        do {
-            let data = try await run(executablePath: executablePath, arguments: arguments)
-            let text = String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
-            return text.isEmpty ? "No data returned." : text
-        } catch {
-            return error.localizedDescription
-        }
-    }
-
-    private static func run(executablePath: String, arguments: [String], workingDirectory: String? = nil) async throws -> Data {
-        try await Task.detached(priority: .userInitiated) {
-            try execute(executablePath: executablePath, arguments: arguments, workingDirectory: workingDirectory)
-        }.value
-    }
-
-    private static func execute(executablePath: String, arguments: [String], workingDirectory: String?) throws -> Data {
-        let process = Process()
-        let output = Pipe()
-        let errorURL = FileManager.default.temporaryDirectory.appendingPathComponent("IndieDevBuddy-ASC-error-\(UUID().uuidString).log")
-        guard FileManager.default.createFile(atPath: errorURL.path, contents: nil),
-              let errorFile = try? FileHandle(forWritingTo: errorURL) else {
-            throw ASCIntegrationError.processFailed("Could not prepare a temporary error log for asc.")
-        }
-        defer {
-            try? errorFile.close()
-            try? FileManager.default.removeItem(at: errorURL)
-        }
-        process.executableURL = URL(fileURLWithPath: executablePath)
-        process.arguments = ["--read-only"] + arguments
-        process.environment = ProcessInfo.processInfo.environment.merging(["ASC_READ_ONLY": "1"]) { _, new in new }
-        if let workingDirectory { process.currentDirectoryURL = URL(fileURLWithPath: workingDirectory, isDirectory: true) }
-        process.standardOutput = output
-        process.standardError = errorFile
-        do {
-            try process.run()
-        } catch {
-            throw ASCIntegrationError.processFailed("Could not start asc: \(error.localizedDescription)")
-        }
-        let data = output.fileHandleForReading.readDataToEndOfFile()
-        process.waitUntilExit()
-        guard process.terminationStatus == 0 else {
-            try? errorFile.synchronize()
-            let errorData = try? Data(contentsOf: errorURL)
-            let detail = String(decoding: errorData ?? Data(), as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
-            throw ASCIntegrationError.processFailed(detail.isEmpty ? "asc exited with code \(process.terminationStatus)." : detail)
-        }
-        return data
-    }
-
-    private static func decodeApps(_ data: Data) throws -> [ASCAppSummary] {
-        let root = try JSONSerialization.jsonObject(with: data)
-        let objects: [[String: Any]]
-        if let dictionary = root as? [String: Any] {
-            objects = (dictionary["data"] as? [[String: Any]])
-                ?? (dictionary["apps"] as? [[String: Any]])
-                ?? (dictionary["items"] as? [[String: Any]])
-                ?? []
-        } else {
-            objects = root as? [[String: Any]] ?? []
-        }
-        return objects.compactMap { object in
-            let attributes = object["attributes"] as? [String: Any] ?? object
-            guard let id = (object["id"] as? String) ?? (attributes["id"] as? String),
-                  let name = attributes["name"] as? String else { return nil }
-            let bundleID = (attributes["bundleId"] as? String) ?? (attributes["bundleID"] as? String) ?? ""
-            return ASCAppSummary(id: id, name: name, bundleID: bundleID, primaryLocale: attributes["primaryLocale"] as? String)
-        }
-    }
-}
-
 struct AppStoreConnectView: View {
     let app: AppRecord
+    let store: WorkspaceStore
+    let marketingContent: [ContentRecord]
+    let isActive: Bool
+    let actionsEnabled: Bool
+    let onOpenFiles: () -> Void
+    let onOpenMarketingDraft: (String) -> Void
     let onConnect: (String) -> Void
     let onImport: (ASCAppSummary, ASCImportSelection) -> Void
 
@@ -235,14 +20,55 @@ struct AppStoreConnectView: View {
     @State private var includeBundleID = true
     @State private var includeListingURL = true
     @State private var isSearching = false
-    @State private var isRefreshing = false
-    @State private var isFetchingNotes = false
     @State private var isGeneratingDraft = false
-    @State private var status: ASCStatusSnapshot?
-    @State private var lastStatusRefresh: Date?
-    @State private var notes: ASCReleaseNotes?
+    @State private var platform = ""
+    @State private var area = Area.releases
+    @State private var refreshID = 0
+    @State private var versions: [ASCVersion]?
+    @State private var releaseStates: [String: ReleaseState] = [:]
+    @State private var localizations: [String: [ASCVersionLocalization]] = [:]
+    @State private var selectedVersionID: String?
     @State private var selectedLocale = ""
-    @State private var editedNotes = ""
+    @State private var editedNotes: [String: [String: String]] = [:]
+    @State private var versionsError: String?
+    @State private var notesError: String?
+    @State private var loadingVersions = false
+    @State private var loadingStatus = false
+    @State private var loadingNotes = false
+    @State private var creatingMarketingDraft = false
+
+    private enum Area: String, CaseIterable {
+        case releases = "Releases"
+        case listing = "Listing"
+        case screenshots = "Screenshots"
+        case feedback = "Feedback"
+        case analytics = "Analytics"
+    }
+
+    private struct ReleaseState {
+        var status: ASCReleaseStatus?
+        var history: [ASCReviewHistoryEntry]?
+        var statusError: String?
+        var historyError: String?
+        var refreshedAt: Date?
+    }
+
+    private struct Request: Equatable {
+        let executable: String
+        let appID: String
+        let refreshID: Int
+    }
+
+    private struct PlatformRequest: Equatable {
+        let request: Request
+        let platform: String
+    }
+
+    private struct NotesRequest: Equatable {
+        let request: Request
+        let versionID: String
+    }
+
     @State private var sinceReference = ""
     @State private var generatedDraft = ""
     @State private var errorMessage: String?
@@ -256,46 +82,92 @@ struct AppStoreConnectView: View {
     }
     private var selectedCandidate: ASCAppSummary? { candidates.first { $0.id == selectedCandidateID } }
     private var connectedAppID: String? { app.appStoreConnectAppId }
-    private var platform: String {
-        let platforms = app.platforms.joined(separator: " ").lowercased()
-        if platforms.contains("vision") { return "VISION_OS" }
-        if platforms.contains("tv") { return "TV_OS" }
-        if platforms.contains("mac") { return "MAC_OS" }
-        return "IOS"
+    private var configuredPlatforms: [String] {
+        app.platforms.compactMap { name in
+            switch name.lowercased().filter(\.isLetter) {
+            case "ios", "iphone", "ipados", "ipad": "IOS"
+            case "macos", "mac", "osx": "MAC_OS"
+            case "tvos", "appletv": "TV_OS"
+            case "visionos", "visionpro": "VISION_OS"
+            default: nil
+            }
+        }
+    }
+
+    private var platforms: [String] {
+        let discovered = Set(versions?.map(\.platform) ?? [])
+        let values = discovered.union(configuredPlatforms)
+        return values.isEmpty ? ["IOS"] : values.sorted()
+    }
+    private var currentPlatform: String {
+        if !platform.isEmpty, platforms.contains(platform) { return platform }
+        let discovered = versions?.map(\.platform) ?? []
+        return configuredPlatforms.first { discovered.isEmpty || discovered.contains($0) }
+            ?? discovered.sorted().first
+            ?? platforms[0]
+    }
+    private var platformVersions: [ASCVersion] { (versions ?? []).filter { $0.platform == currentPlatform } }
+    private var selectedVersion: ASCVersion? {
+        platformVersions.first { $0.id == selectedVersionID } ?? platformVersions.first
+    }
+    private var release: ReleaseState { releaseStates[currentPlatform] ?? ReleaseState() }
+    private var request: Request? {
+        guard isActive, let executableURL, let connectedAppID else { return nil }
+        return Request(executable: executableURL.path, appID: connectedAppID, refreshID: refreshID)
+    }
+    private var platformRequest: PlatformRequest? {
+        request.map { PlatformRequest(request: $0, platform: currentPlatform) }
+    }
+    private var notesRequest: NotesRequest? {
+        guard area == .releases || area == .listing, let request, let selectedVersion else { return nil }
+        return NotesRequest(request: request, versionID: selectedVersion.id)
     }
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 20) {
-                header
-                if executableURL == nil {
-                    ContentUnavailableView {
-                        Label("App Store Connect CLI Not Found", systemImage: "terminal")
-                    } description: {
-                        Text("Install asc and configure its authentication, or choose the asc executable on this Mac.")
-                    } actions: {
-                        Button("Choose asc…", systemImage: "folder") { chooseExecutable() }
+        VStack(spacing: 0) {
+            if let connectedAppID, executableURL != nil {
+                VStack(alignment: .leading, spacing: 12) {
+                    linkedHeader(appID: connectedAppID)
+                    Picker("App Store section", selection: $area) {
+                        ForEach(Area.allCases, id: \.self) { Text($0.rawValue).tag($0) }
                     }
-                } else {
-                    connectionSection
-                    if connectedAppID != nil {
-                        liveStatusSection
-                        releaseNotesSection
-                    }
-                    gitDraftSection
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
                 }
-                if let errorMessage {
-                    Label(errorMessage, systemImage: "exclamationmark.triangle.fill")
-                        .foregroundStyle(.orange)
-                        .textSelection(.enabled)
-                }
-                Text("Indie Dev Buddy uses your existing asc authentication. These actions only read App Store Connect; importing details updates this workspace after you choose the fields.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                .frame(maxWidth: 980, alignment: .leading)
+                .padding(.horizontal, 20)
+                .padding(.vertical, 12)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                Divider()
             }
-            .frame(maxWidth: 820, alignment: .leading)
-            .padding(24)
-            .frame(maxWidth: .infinity, alignment: .topLeading)
+            ScrollView {
+                VStack(alignment: .leading, spacing: 16) {
+                    if let executableURL {
+                        if let connectedAppID {
+                            if isActive { connectedArea(appID: connectedAppID, executable: executableURL.path) }
+                        } else {
+                            connectionSection
+                            gitDraftDisclosure
+                        }
+                    } else {
+                        ContentUnavailableView {
+                            Label("App Store Connect CLI Not Found", systemImage: "terminal")
+                        } description: {
+                            Text("Install asc and configure its authentication, or choose the asc executable on this Mac.")
+                        } actions: {
+                            Button("Choose asc…", systemImage: "folder") { chooseExecutable() }
+                        }
+                    }
+                    if !actionsEnabled {
+                        issue("Save or discard your app edits before changing the link or opening marketing content.")
+                    }
+                    if let errorMessage { issue(errorMessage) }
+                }
+                .frame(maxWidth: 980, alignment: .leading)
+                .padding(20)
+                .frame(maxWidth: .infinity, alignment: .topLeading)
+            }
+            .defaultScrollAnchor(.top, for: .sizeChanges)
         }
         .fileImporter(isPresented: $showingExecutablePicker, allowedContentTypes: [.executable], allowsMultipleSelection: false) { result in
             switch result {
@@ -309,49 +181,114 @@ struct AppStoreConnectView: View {
             case .failure(let error): errorMessage = error.localizedDescription
             }
         }
-        .task(id: connectedAppID) {
-            if connectedAppID != nil { await refreshStatus() }
+        .task(id: request) {
+            if let request { await loadVersions(request) }
+        }
+        .task(id: platformRequest) {
+            if let platformRequest { await loadStatus(platformRequest) }
+        }
+        .task(id: notesRequest) {
+            if let notesRequest { await loadNotes(notesRequest) }
         }
     }
 
-    private var header: some View {
-        VStack(alignment: .leading, spacing: 5) {
-            Text("App Store Connect").font(.title2.bold())
-            Text("Link this workspace app to its App Store Connect record, check review progress, and reuse release notes.")
-                .foregroundStyle(.secondary)
+    private func linkedHeader(appID: String) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .firstTextBaseline) {
+                Text(release.status?.app?.name ?? app.name)
+                    .font(.title2.weight(.semibold))
+                    .accessibilityAddTraits(.isHeader)
+                Spacer()
+                if loadingStatus || loadingVersions {
+                    ProgressView().controlSize(.small).accessibilityLabel("Refreshing releases")
+                }
+                Button("Refresh", systemImage: "arrow.clockwise") { refreshID += 1 }
+                    .help("Refresh App Store Connect")
+                Menu("Connection", systemImage: "ellipsis.circle") {
+                    Button("Choose asc…") { chooseExecutable() }
+                    Button("Unlink App", role: .destructive) { onConnect("") }
+                        .disabled(!actionsEnabled)
+                }
+                .menuStyle(.borderlessButton)
+                .fixedSize()
+            }
+            HStack {
+                if platforms.count > 1 {
+                    Picker("Platform", selection: Binding(get: { currentPlatform }, set: {
+                        platform = $0
+                        selectedVersionID = nil
+                    })) {
+                        ForEach(platforms, id: \.self) { Text(ASCDisplay.platform($0)).tag($0) }
+                    }
+                    .fixedSize()
+                } else {
+                    Text(ASCDisplay.platform(currentPlatform)).foregroundStyle(.secondary)
+                }
+                Spacer()
+                if let url = URL(string: "https://appstoreconnect.apple.com/apps/\(appID)") {
+                    Link("App Store Connect", destination: url)
+                }
+                if let url = app.appStoreURL ?? URL(string: "https://apps.apple.com/app/id\(appID)"),
+                   platformVersions.contains(where: \.isLive) || app.appStoreURL != nil {
+                    Link("View in App Store", destination: url)
+                }
+            }
+            .font(.callout)
+        }
+    }
+
+    @ViewBuilder private func connectedArea(appID: String, executable: String) -> some View {
+        switch area {
+        case .releases:
+            overview
+            Divider()
+            releaseHistory
+            Divider()
+            gitDraftDisclosure
+        case .listing:
+            if let version = selectedVersion {
+                versionPicker
+                if let notesError { issue(notesError) }
+                AppStoreListingView(executablePath: executable, appID: appID, platform: currentPlatform,
+                                    versionID: version.id, version: version.number,
+                                    primaryLocale: release.status?.app?.primaryLocale, refreshID: refreshID,
+                                    localizations: localizations[version.id], mode: .listing)
+            } else {
+                Text(loadingVersions ? "Loading versions…" : versionsError ?? "No App Store versions for this platform.")
+                    .foregroundStyle(.secondary)
+            }
+        case .screenshots:
+            if let versions {
+                AppStoreScreenshotsView(app: app, versions: versions, executablePath: executable, store: store,
+                                        refreshID: refreshID, defaultPlatform: currentPlatform, onOpenFiles: onOpenFiles)
+            } else {
+                Text(loadingVersions ? "Loading versions…" : versionsError ?? "No App Store versions are available.")
+                    .foregroundStyle(.secondary)
+            }
+        case .feedback:
+            AppStoreListingView(executablePath: executable, appID: appID, platform: currentPlatform,
+                                versionID: nil, version: nil, primaryLocale: nil, refreshID: refreshID,
+                                localizations: nil, mode: .feedback)
+        case .analytics:
+            AppStoreAnalyticsView(executablePath: executable, appID: appID, refreshID: refreshID)
         }
     }
 
     private var connectionSection: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
-                Label(connectedAppID == nil ? "App Record" : "Linked App Record", systemImage: "app.badge")
-                    .font(.headline)
+                Label("Link App Store Connect", systemImage: "app.badge").font(.headline)
                 Spacer()
                 Button("Choose asc…") { chooseExecutable() }
-                    .controlSize(.small)
             }
-            if let connectedAppID {
-                LabeledContent("App Store Connect ID", value: connectedAppID)
-                    .textSelection(.enabled)
-                Button("Find a different app…", systemImage: "arrow.triangle.2.circlepath") {
-                    onConnect("")
-                    candidates = []
-                    status = nil
-                    notes = nil
-                }
-                .controlSize(.small)
-                .disabled(isSearching || isRefreshing)
-            } else {
-                Text("Indie Dev Buddy can match by bundle ID, then show the account’s app name and bundle ID before linking.")
-                    .font(.callout).foregroundStyle(.secondary)
-                Button {
+            Text("Find the App Store Connect record by bundle ID or app name using your existing asc authentication.")
+                .foregroundStyle(.secondary)
+            HStack {
+                Button("Find App Store Connect App", systemImage: "magnifyingglass") {
                     Task { await searchApps() }
-                } label: {
-                    if isSearching { ProgressView().controlSize(.small) }
-                    else { Label("Find App Store Connect App", systemImage: "magnifyingglass") }
                 }
                 .disabled(isSearching)
+                if isSearching { ProgressView().controlSize(.small) }
             }
 
             if !candidates.isEmpty {
@@ -371,11 +308,12 @@ struct AppStoreConnectView: View {
                                 .font(.caption).foregroundStyle(.secondary)
                             HStack {
                                 Button("Link App") { onConnect(selectedCandidate.id) }
+                                    .disabled(!actionsEnabled)
                                 Button("Link and Import Selected") {
                                     onImport(selectedCandidate, ASCImportSelection(name: includeName, bundleID: includeBundleID, listingURL: includeListingURL))
                                 }
                                 .buttonStyle(.borderedProminent)
-                                .disabled(!includeName && !includeBundleID && !includeListingURL)
+                                .disabled(!actionsEnabled || (!includeName && !includeBundleID && !includeListingURL))
                             }
                         }
                         .frame(maxWidth: .infinity, alignment: .leading)
@@ -387,87 +325,194 @@ struct AppStoreConnectView: View {
         .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 12))
     }
 
-    private var liveStatusSection: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack {
-                Label("Review and Release Status", systemImage: "checkmark.seal")
-                    .font(.headline)
-                Spacer()
-                Button {
-                    Task { await refreshStatus() }
-                } label: {
-                    if isRefreshing { ProgressView().controlSize(.small) }
-                    else { Label("Refresh", systemImage: "arrow.clockwise") }
-                }
-                .disabled(isRefreshing)
+    private var overview: some View {
+        VStack(alignment: .leading, spacing: 9) {
+            Text("Release status").font(.headline).accessibilityAddTraits(.isHeader)
+            if let error = release.statusError {
+                issue(release.status == nil ? error : "Couldn’t refresh release status. Showing the previous result. \(error)")
             }
-            if let status {
-                if let lastStatusRefresh {
-                    Text("Last refreshed \(lastStatusRefresh.formatted(date: .abbreviated, time: .shortened))")
-                        .font(.caption).foregroundStyle(.secondary)
-                }
-                statusBlock("Release dashboard", text: status.releaseDashboard)
-                statusBlock("App Review", text: status.reviewStatus)
-                statusBlock("Recent review history", text: status.reviewHistory)
-            } else {
-                Text("Refresh to read the current App Store Connect status.")
-                    .foregroundStyle(.secondary)
+            if let versions {
+                let live = versions.first { $0.platform == currentPlatform && $0.isLive }
+                LabeledContent("Live version", value: live?.number ?? "None reported")
             }
+            if let status = release.status {
+                if let current = status.appstore {
+                    LabeledContent("Latest version", value: [current.version, ASCDisplay.state(current.state)].compactMap { $0 }.joined(separator: " · "))
+                }
+                if let build = status.builds?.latest {
+                    let identifier = [build.version, build.buildNumber.map { "build \($0)" }].compactMap { $0 }.joined(separator: " · ")
+                    LabeledContent("Latest build", value: [identifier.isEmpty ? nil : identifier, ASCDisplay.state(build.processingState)].compactMap { $0 }.joined(separator: " · "))
+                }
+                if let review = status.review, let state = review.state {
+                    LabeledContent("App Review", value: ASCDisplay.state(state))
+                    if let date = ASCDisplay.date(review.submittedDate) {
+                        LabeledContent("Submitted", value: date.formatted(date: .abbreviated, time: .shortened))
+                    }
+                } else if status.submission?.inFlight == true {
+                    LabeledContent("Submission", value: "In progress")
+                }
+                if status.appstore?.state == "PENDING_DEVELOPER_RELEASE" {
+                    Label("This version is ready for you to release in App Store Connect.", systemImage: "arrow.up.circle")
+                        .foregroundStyle(.secondary)
+                } else if status.summary?.health == "red" || !(status.submission?.blockingIssues ?? []).isEmpty {
+                    Label("Action required in App Store Connect", systemImage: "exclamationmark.triangle")
+                        .foregroundStyle(.orange)
+                }
+            }
+            if let refreshedAt = release.refreshedAt {
+                Text("Last refreshed \(refreshedAt.formatted(date: .abbreviated, time: .shortened))")
+                    .font(.caption).foregroundStyle(.secondary)
+            } else if loadingStatus {
+                Text("Loading release status…").foregroundStyle(.secondary)
+            }
+            DisclosureGroup("Connection details") {
+                if let connectedAppID { LabeledContent("App ID", value: connectedAppID) }
+                if let bundleID = release.status?.app?.bundleId { LabeledContent("Bundle ID", value: bundleID) }
+            }
+            .font(.callout)
+            .textSelection(.enabled)
         }
-        .padding(16)
-        .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 12))
     }
 
-    private var releaseNotesSection: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack {
-                Label("What's New", systemImage: "text.alignleft")
-                    .font(.headline)
-                Spacer()
-                Button {
-                    Task { await fetchNotes() }
-                } label: {
-                    if isFetchingNotes { ProgressView().controlSize(.small) }
-                    else { Label("Fetch Release Notes", systemImage: "arrow.down.doc") }
-                }
-                .disabled(isFetchingNotes)
+    private var releaseHistory: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Version history").font(.headline).accessibilityAddTraits(.isHeader)
+            if let versionsError {
+                issue(versions == nil ? versionsError : "Couldn’t refresh versions. Showing the previous result. \(versionsError)")
             }
-            if let notes {
-                Text("Version \(notes.version) · loaded from App Store Connect")
-                    .font(.caption).foregroundStyle(.secondary)
-                Picker("Language", selection: $selectedLocale) {
-                    ForEach(notes.localizedNotes.keys.sorted(), id: \.self) { locale in Text(locale).tag(locale) }
-                }
-                .frame(maxWidth: 240)
-                TextEditor(text: $editedNotes)
-                    .font(.body)
-                    .frame(minHeight: 120)
-                    .overlay(RoundedRectangle(cornerRadius: 8).stroke(.quaternary))
-                    .accessibilityLabel("What's New draft")
-                HStack {
-                    Button("Copy Draft", systemImage: "doc.on.doc") {
-                        NSPasteboard.general.clearContents()
-                        NSPasteboard.general.setString(editedNotes, forType: .string)
+            if let selectedVersion {
+                Table(platformVersions, selection: Binding(
+                    get: { self.selectedVersion?.id },
+                    set: { selectedVersionID = $0 }
+                )) {
+                    TableColumn("Version") { version in Text(version.number) }
+                    TableColumn("Release state") { version in
+                        Text(ASCDisplay.state(version.state))
                     }
-                    Text("Edit the copied text here; uploading it to App Store Connect is not part of this action.")
-                        .font(.caption).foregroundStyle(.secondary)
+                    TableColumn("Created") { version in
+                        if let date = version.createdDate {
+                            Text(date, format: .dateTime.year().month().day())
+                        }
+                    }
                 }
-            } else {
-                Text("Fetch the current version’s localized release notes into a private draft for review and reuse.")
-                    .foregroundStyle(.secondary)
+                .frame(height: min(220, CGFloat(30 + 26 * platformVersions.count)))
+                .accessibilityLabel("App Store version history")
+                if let date = selectedVersion.earliestReleaseDate {
+                    LabeledContent("Earliest release", value: date.formatted(date: .abbreviated, time: .shortened))
+                }
+                if let historyError = release.historyError {
+                    issue(release.history == nil ? historyError : "Couldn’t refresh review history. \(historyError)")
+                }
+                let submissions = release.history?.filter { $0.matches(selectedVersion) } ?? []
+                if !submissions.isEmpty {
+                    DisclosureGroup("Review submissions (\(submissions.count))") {
+                        ForEach(submissions) { submission in
+                            HStack {
+                                Text(ASCDisplay.state(submission.state))
+                                if let outcome = submission.outcome, ["approved", "rejected"].contains(outcome.lowercased()) {
+                                    Text(outcome.capitalized).foregroundStyle(.secondary)
+                                }
+                                Spacer()
+                                if let date = ASCDisplay.date(submission.submittedDate) {
+                                    Text(date.formatted(date: .abbreviated, time: .shortened)).foregroundStyle(.secondary)
+                                }
+                            }
+                            .padding(.vertical, 3)
+                        }
+                    }
+                }
+                releaseNotes(for: selectedVersion)
+                let linkedDrafts = marketingContent.filter { $0.releaseId == selectedVersion.id }
+                if !linkedDrafts.isEmpty {
+                    DisclosureGroup("Marketing content (\(linkedDrafts.count))") {
+                        ForEach(linkedDrafts) { draft in
+                            Button(draft.title, systemImage: "arrow.up.right.square") {
+                                onOpenMarketingDraft(draft.id)
+                            }
+                            .buttonStyle(.link)
+                            .disabled(!actionsEnabled)
+                        }
+                    }
+                }
+            } else if loadingVersions {
+                Text("Loading version history…").foregroundStyle(.secondary)
+            } else if versions != nil {
+                Text("No App Store versions for this platform.").foregroundStyle(.secondary)
             }
         }
-        .padding(16)
-        .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 12))
-        .onChange(of: selectedLocale) { _, locale in
-            editedNotes = notes?.localizedNotes[locale] ?? ""
+    }
+
+    private var versionPicker: some View {
+        Picker("Version", selection: Binding(get: { selectedVersion?.id ?? "" }, set: { selectedVersionID = $0 })) {
+            ForEach(platformVersions) { version in
+                Text("\(version.number) · \(ASCDisplay.state(version.state))").tag(version.id)
+            }
         }
+        .fixedSize(horizontal: true, vertical: false)
+    }
+
+    private func releaseNotes(for version: ASCVersion) -> some View {
+        let notes = (localizations[version.id] ?? []).filter {
+            !($0.whatsNew ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }
+        let locale = notes.first { $0.locale == selectedLocale }
+            ?? notes.first { $0.locale == release.status?.app?.primaryLocale }
+            ?? notes.first
+        return VStack(alignment: .leading, spacing: 8) {
+            Text("What’s New").font(.subheadline.weight(.semibold))
+            if let notesError { issue(notesError) }
+            if let locale {
+                let draft = Binding(
+                    get: { editedNotes[version.id]?[locale.locale] ?? locale.whatsNew ?? "" },
+                    set: { editedNotes[version.id, default: [:]][locale.locale] = $0 }
+                )
+                Picker("Language", selection: Binding(get: { locale.locale }, set: { selectedLocale = $0 })) {
+                    ForEach(notes) { note in
+                        Text(Locale.current.localizedString(forIdentifier: note.locale) ?? note.locale).tag(note.locale)
+                    }
+                }
+                .fixedSize()
+                TextEditor(text: draft)
+                    .font(.body)
+                    .frame(minHeight: 110)
+                    .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(.quaternary))
+                    .accessibilityLabel("What’s New draft")
+                HStack {
+                    Button("Copy", systemImage: "doc.on.doc") { copy(draft.wrappedValue) }
+                    Button("Create Marketing Draft", systemImage: "square.and.pencil") {
+                        let text = draft.wrappedValue
+                        Task { await createMarketingDraft(version: version, text: text) }
+                    }
+                    .disabled(!actionsEnabled || creatingMarketingDraft || draft.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    if creatingMarketingDraft { ProgressView().controlSize(.small) }
+                }
+            } else if loadingNotes {
+                Text("Loading localized release notes…").foregroundStyle(.secondary)
+            } else if localizations[version.id] != nil {
+                Text("This version has no What’s New text.").foregroundStyle(.secondary)
+            }
+        }
+        .padding(.top, 4)
+    }
+
+    private var gitDraftDisclosure: some View {
+        DisclosureGroup("Draft from Project History") { gitDraftSection.padding(.top, 6) }
+    }
+
+    private func issue(_ message: String) -> some View {
+        Label(message, systemImage: "exclamationmark.triangle")
+            .font(.callout)
+            .foregroundStyle(.orange)
+            .textSelection(.enabled)
+    }
+
+    private func copy(_ text: String) {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text, forType: .string)
     }
 
     private var gitDraftSection: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Label("Draft from Project History", systemImage: "arrow.triangle.branch")
-                .font(.headline)
             Text("Use the linked project’s git history to prepare a What's New draft. Choose the previous release tag or commit so unrelated changes stay out.")
                 .foregroundStyle(.secondary)
             HStack {
@@ -497,18 +542,6 @@ struct AppStoreConnectView: View {
                 }
             }
         }
-        .padding(16)
-        .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 12))
-    }
-
-    private func statusBlock(_ title: String, text: String) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text(title).font(.subheadline.weight(.semibold))
-            Text(text).font(.system(.caption, design: .monospaced)).textSelection(.enabled)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(10)
-                .background(.background, in: RoundedRectangle(cornerRadius: 8))
-        }
     }
 
     private func searchApps() async {
@@ -525,29 +558,86 @@ struct AppStoreConnectView: View {
             candidates = found
             selectedCandidateID = found.first?.id ?? ""
             if found.isEmpty { errorMessage = ASCIntegrationError.appNotFound.localizedDescription }
-        } catch { errorMessage = error.localizedDescription }
+        } catch { errorMessage = ASCIntegration.userMessage(for: error) }
     }
 
-    private func refreshStatus() async {
-        guard let executableURL, let connectedAppID else { return }
-        isRefreshing = true
-        errorMessage = nil
-        defer { isRefreshing = false }
-        status = await ASCIntegration.fetchStatus(executablePath: executableURL.path, appID: connectedAppID, platform: platform)
-        lastStatusRefresh = .now
-    }
-
-    private func fetchNotes() async {
-        guard let executableURL, let connectedAppID else { return }
-        isFetchingNotes = true
-        errorMessage = nil
-        defer { isFetchingNotes = false }
+    private func loadVersions(_ request: Request) async {
+        loadingVersions = true
+        versionsError = nil
+        defer { if self.request == request { loadingVersions = false } }
         do {
-            let result = try await ASCIntegration.fetchReleaseNotes(executablePath: executableURL.path, appID: connectedAppID, platform: platform)
-            notes = result
-            selectedLocale = result.localizedNotes.keys.sorted().first ?? ""
-            editedNotes = result.localizedNotes[selectedLocale] ?? ""
+            let result = try await ASCIntegration.versions(executablePath: request.executable, appID: request.appID)
+            guard !Task.isCancelled, self.request == request else { return }
+            versions = result
+        } catch {
+            guard !Task.isCancelled, self.request == request else { return }
+            versionsError = ASCIntegration.userMessage(for: error)
+        }
+    }
+
+    private func loadStatus(_ key: PlatformRequest) async {
+        loadingStatus = true
+        releaseStates[key.platform, default: ReleaseState()].statusError = nil
+        releaseStates[key.platform, default: ReleaseState()].historyError = nil
+        defer { if platformRequest == key { loadingStatus = false } }
+        let request = key.request
+        async let status: Void = loadSummary(key)
+        do {
+            let history = try await ASCIntegration.reviewHistory(executablePath: request.executable, appID: request.appID, platform: key.platform)
+            if !Task.isCancelled, platformRequest == key {
+                releaseStates[key.platform, default: ReleaseState()].history = history
+            }
+        } catch {
+            if !Task.isCancelled, platformRequest == key {
+                releaseStates[key.platform, default: ReleaseState()].historyError = ASCIntegration.userMessage(for: error)
+            }
+        }
+        await status
+    }
+
+    private func loadSummary(_ key: PlatformRequest) async {
+        do {
+            let status = try await ASCIntegration.releaseStatus(executablePath: key.request.executable, appID: key.request.appID, platform: key.platform)
+            guard !Task.isCancelled, platformRequest == key else { return }
+            releaseStates[key.platform, default: ReleaseState()].status = status
+            releaseStates[key.platform, default: ReleaseState()].refreshedAt = .now
+        } catch {
+            guard !Task.isCancelled, platformRequest == key else { return }
+            releaseStates[key.platform, default: ReleaseState()].statusError = ASCIntegration.userMessage(for: error)
+        }
+    }
+
+    private func loadNotes(_ key: NotesRequest) async {
+        loadingNotes = true
+        notesError = nil
+        defer { if notesRequest == key { loadingNotes = false } }
+        do {
+            let result = try await ASCIntegration.localizations(executablePath: key.request.executable, versionID: key.versionID)
+            guard !Task.isCancelled, notesRequest == key else { return }
+            localizations[key.versionID] = result
+        } catch {
+            guard !Task.isCancelled, notesRequest == key else { return }
+            notesError = ASCIntegration.userMessage(for: error)
+        }
+    }
+
+    private func createMarketingDraft(version: ASCVersion, text: String) async {
+        guard !creatingMarketingDraft, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        creatingMarketingDraft = true
+        errorMessage = nil
+        defer { creatingMarketingDraft = false }
+        let record = Self.marketingDraft(app: app, version: version)
+        do {
+            _ = try await store.createContent(record, body: text)
+            onOpenMarketingDraft(record.id)
         } catch { errorMessage = error.localizedDescription }
+    }
+
+    static func marketingDraft(app: AppRecord, version: ASCVersion) -> ContentRecord {
+        var record = ContentRecord.draft(kind: .social, title: "\(app.name) \(version.number) · \(ASCDisplay.platform(version.platform))",
+                                         appIDs: [app.id])
+        record.releaseId = version.id
+        return record
     }
 
     private func generateDraft() async {
@@ -561,7 +651,7 @@ struct AppStoreConnectView: View {
                 projectPath: projectPath,
                 sinceReference: sinceReference.trimmingCharacters(in: .whitespacesAndNewlines)
             )
-        } catch { errorMessage = error.localizedDescription }
+        } catch { errorMessage = ASCIntegration.userMessage(for: error) }
     }
 
     private func chooseExecutable() {

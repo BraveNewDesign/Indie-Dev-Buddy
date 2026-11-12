@@ -13,7 +13,7 @@ Download the signed, notarized Apple silicon build from [GitHub Releases](https:
 - Organize app and website records, ideas, release information, and marketing content in a workspace folder of ordinary files.
 - Draft social posts and account-specific variants, attach media, and track publication status.
 - Connect supported social accounts through SocialKit and publish through their APIs when the required account access is configured.
-- Optionally use the `asc` command-line tool to find App Store Connect apps, read release and review status, and pull release text into an editable draft.
+- Link an App Store Connect app to browse releases, listing details, screenshots, and feedback. Import screenshots into Files and turn localized release notes into a marketing draft.
 - Use the bundled `indiedevbuddy` command-line tool for workspace operations from Terminal and coding agents.
 
 ## Screenshots
@@ -31,7 +31,7 @@ Download the signed, notarized Apple silicon build from [GitHub Releases](https:
 - You configure provider access and account permissions. Meta setup is documented in [Social connections](docs/SOCIAL_CONNECTIONS.md).
 - Provider credentials are stored in the macOS Keychain. Workspace records contain social account metadata, not provider tokens.
 - Scheduled API delivery is local to the Mac. Indie Dev Buddy does not provide a cloud scheduler or guarantee delivery while the Mac is asleep or the app is unavailable.
-- The App Store Connect integration requires the separate `asc` CLI to be installed and authenticated. Its ASC actions are read-only; release text can be pulled into an editable, copyable draft, but the app does not upload it or submit builds for review.
+- App Store Connect uses the installed, authenticated `asc` CLI in read-only mode. Analytics and feedback availability depend on the active profile’s permissions and existing reports.
 - Indie Dev Buddy is not affiliated with or endorsed by Apple, Meta, Bluesky, Mastodon, LinkedIn, X, or GitHub.
 
 ## Build

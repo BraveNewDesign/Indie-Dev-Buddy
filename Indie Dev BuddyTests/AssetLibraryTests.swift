@@ -5,6 +5,104 @@ import UniformTypeIdentifiers
 @testable import Indie_Dev_Buddy
 
 struct AssetLibraryTests {
+    @Test func appStoreConnectScreenshotImportMetadataRoundTripsAndOldAssetsDecode() throws {
+        let asset = WorkspaceAsset(
+            id: UUID(), fileExtension: "png", originalFilename: "remote.png", name: "Remote Screenshot",
+            owner: AssetOwner(.app, "local-app"), folderID: nil, category: .marketing, tags: [],
+            appStoreConnectScreenshotID: "remote-screenshot-123", added: Date(timeIntervalSince1970: 10)
+        )
+        let set = ScreenshotSet(
+            appID: "local-app", platform: .iPad, categoryID: "ipad-13", locale: "en-US",
+            version: "2.1", name: "App Store Connect", assetIDs: [asset.id],
+            appStoreConnectSetID: "remote-set-456", appStoreConnectDisplayType: "APP_IPAD_PRO_3GEN_129"
+        )
+        let encoder = JSONEncoder()
+        let encoded = try encoder.encode(AssetLibrary(assets: [asset], screenshotSets: [set]))
+        let restored = try JSONDecoder().decode(AssetLibrary.self, from: encoded)
+        #expect(restored.assets.first?.appStoreConnectScreenshotID == "remote-screenshot-123")
+        #expect(restored.screenshotSets.first?.appStoreConnectSetID == "remote-set-456")
+        #expect(restored.screenshotSets.first?.appStoreConnectDisplayType == "APP_IPAD_PRO_3GEN_129")
+        #expect(restored.screenshotSets.first?.assetIDs == [asset.id])
+
+        var oldShape = try #require(try JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+        var oldAssets = try #require(oldShape["assets"] as? [[String: Any]])
+        oldAssets[0].removeValue(forKey: "appStoreConnectScreenshotID")
+        oldShape["assets"] = oldAssets
+        var oldSets = try #require(oldShape["screenshotSets"] as? [[String: Any]])
+        oldSets[0].removeValue(forKey: "appStoreConnectSetID")
+        oldSets[0].removeValue(forKey: "appStoreConnectDisplayType")
+        oldShape["screenshotSets"] = oldSets
+        let decodedOld = try JSONDecoder().decode(AssetLibrary.self, from: JSONSerialization.data(withJSONObject: oldShape))
+        #expect(decodedOld.assets.first?.appStoreConnectScreenshotID == nil)
+        #expect(decodedOld.screenshotSets.first?.appStoreConnectSetID == nil)
+    }
+
+    @Test func appStoreConnectScreenshotImportDeduplicatesPerAppAndPreservesRemoteOrder() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = WorkspaceStore(rootURL: root)
+        try await store.createWorkspace(at: root)
+        let app = AppRecord(name: "Screenshots", platforms: ["iOS"])
+        let owner = AssetOwner(.app, app.id)
+        let set = ScreenshotSet(appID: app.id, platform: .iPhone, categoryID: "iphone-island-large",
+                                locale: "en-US", version: "2.0", name: "ASC",
+                                appStoreConnectSetID: "remote-set", appStoreConnectDisplayType: "APP_IPHONE_67")
+        let firstFile = root.appendingPathComponent("first.png")
+        let secondFile = root.appendingPathComponent("second.png")
+        let duplicateFile = root.appendingPathComponent("duplicate.png")
+        try Data("first image bytes".utf8).write(to: firstFile)
+        try Data("second image bytes".utf8).write(to: secondFile)
+        try Data("replacement bytes must be ignored".utf8).write(to: duplicateFile)
+
+        let first = try await store.importAsset(firstFile, owner: owner, displayName: "First",
+            category: .marketing, appStoreConnectScreenshotID: "remote-one",
+            remoteScreenshotOrder: ["remote-two", "remote-one"], remoteScreenshotSet: set)
+        let second = try await store.importAsset(secondFile, owner: owner, displayName: "Second",
+            category: .marketing, appStoreConnectScreenshotID: "remote-two",
+            remoteScreenshotOrder: ["remote-two", "remote-one"], remoteScreenshotSet: set)
+        let duplicate = try await store.importAsset(duplicateFile, owner: owner, displayName: "Changed Name",
+            category: .marketing, appStoreConnectScreenshotID: "remote-one",
+            remoteScreenshotOrder: ["remote-two", "remote-one"], remoteScreenshotSet: set)
+
+        #expect(duplicate.id == first.id)
+        let library = try await store.loadAssetLibrary().library
+        #expect(library.assets.count == 2)
+        #expect(library.screenshotSets.first?.assetIDs == [second.id, first.id])
+        let storedFirst = try await store.resolveContentMedia(first.reference, recordFolder: "")
+        #expect(try Data(contentsOf: storedFirst) == Data("first image bytes".utf8))
+
+        let otherApp = AssetOwner(.app, "another-local-app")
+        var otherSet = set
+        otherSet.id = UUID()
+        otherSet.appID = otherApp.id
+        otherSet.appStoreConnectSetID = "other-remote-set"
+        let scoped = try await store.importAsset(duplicateFile, owner: otherApp, displayName: "Other App",
+            category: .marketing, appStoreConnectScreenshotID: "remote-one",
+            remoteScreenshotOrder: ["remote-one"], remoteScreenshotSet: otherSet)
+        #expect(scoped.id != first.id)
+        #expect(try await store.loadAssetLibrary().library.assets.count == 3)
+    }
+
+    @Test func appStoreScreenshotResponseDecodesNestedSetsAndSafeCDNPreviews() throws {
+        let json = #"""
+        {"localizations":[{"locale":"en-US","sets":[{"set":{"id":"remote-set","attributes":{"displayType":"APP_IPHONE_67"}},"screenshots":[{"id":"remote-shot","attributes":{"fileName":"home.png","imageAsset":{"templateUrl":"https://is1-ssl.mzstatic.com/image/thumb/a/{w}x{h}bb.{f}","width":2880,"height":1800}}}]}]}]}
+        """#
+        let version = ASCVersion(id: "remote-version", attributes: .init(
+            versionString: "3.2", platform: "IOS", appVersionState: nil, appStoreState: nil,
+            createdDate: nil, earliestReleaseDate: nil
+        ))
+        let collections = try RemoteScreenshotCollection.decode(Data(json.utf8), version: version)
+        #expect(collections.count == 1)
+        #expect(collections[0].remoteSetID == "remote-set")
+        #expect(collections[0].locale == "en-US")
+        #expect(collections[0].displayType == "APP_IPHONE_67")
+        #expect(collections[0].categoryID == "iphone-island-large")
+        #expect(collections[0].screenshots.first?.id == "remote-shot")
+        #expect(collections[0].screenshots.first?.filename == "home.png")
+        #expect(collections[0].screenshots.first?.previewURL?.host == "is1-ssl.mzstatic.com")
+        #expect(collections[0].screenshots.first?.previewURL?.absoluteString.contains("420x263bb.jpg") == true)
+    }
+
     @Test func importOrganizationAndReferencesSurviveRestart() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }

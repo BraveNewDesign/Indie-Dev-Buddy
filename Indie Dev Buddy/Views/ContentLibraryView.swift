@@ -134,24 +134,24 @@ struct ContentLibraryView: View {
             Text("\(snapshot.content.first(where: { $0.id == selectedID })?.title ?? "This item") and its workspace files will be permanently deleted. This also discards any unsaved edits.")
         }
         .onAppear {
-            if let initialSelectionID, snapshot.content.contains(where: { $0.id == initialSelectionID }) {
-                if selectedID != initialSelectionID { requestSelection(initialSelectionID) }
-                onInitialSelectionHandled()
-            } else if selectedID == nil || !snapshot.content.contains(where: { $0.id == selectedID }) {
+            if selectedID == nil || !snapshot.content.contains(where: { $0.id == selectedID }) {
                 selectedID = nil
             }
+            applyInitialSelection()
             if let initialCreateKind { requestCreate(initialCreateKind); onCreateRequestHandled() }
         }
-        .onChange(of: initialSelectionID) { _, value in
-            if let value {
-                requestSelection(value)
-                onInitialSelectionHandled()
-            }
-        }
+        .onChange(of: initialSelectionID) { _, _ in applyInitialSelection() }
+        .onChange(of: snapshotGeneration) { _, _ in applyInitialSelection() }
         .onChange(of: listResetGeneration) { _, _ in resetToListAfterSidebarRequest() }
         .onChange(of: initialCreateKind) { _, value in if let value { requestCreate(value); onCreateRequestHandled() } }
         .onChange(of: requestedNavigationID) { _, value in if value == nil { pendingCreateKind = nil } }
     }
+    private func applyInitialSelection() {
+        guard let initialSelectionID, snapshot.content.contains(where: { $0.id == initialSelectionID }) else { return }
+        if selectedID != initialSelectionID { requestSelection(initialSelectionID) }
+        onInitialSelectionHandled()
+    }
+
     private let listRequestMarker = "__all_content__"
 
     private var contentFilter: some View {
