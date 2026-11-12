@@ -1,4 +1,5 @@
 import AppKit
+import Quartz
 import SwiftUI
 import UniformTypeIdentifiers
 
@@ -7,6 +8,13 @@ import UniformTypeIdentifiers
 struct ContentMediaView: View {
     let contentFolderURL: URL
     @Binding var assetPaths: [String]
+    var libraryStore: WorkspaceStore? = nil
+    var librarySnapshot: WorkspaceSnapshot? = nil
+    var defaultOwner: AssetOwner? = nil
+
+    @State private var showingLibrary = false
+    @State private var preview: URL?
+    @State private var assetNames: [String: String] = [:]
 
     @State private var showingFilePicker = false
     @State private var isDropTargeted = false
@@ -21,9 +29,14 @@ struct ContentMediaView: View {
             HStack {
                 Text("Media").font(.headline)
                 Spacer()
-                Button { showingFilePicker = true } label: { Label("Add Files", systemImage: "plus") }
+                Button {
+                    if libraryStore == nil { showingFilePicker = true } else { showingLibrary = true }
+                } label: { Label(libraryStore == nil ? "Add Files" : "Add Media", systemImage: "plus") }
                 Menu("Media Actions", systemImage: "ellipsis.circle") {
                     Button("Paste Image", systemImage: "doc.on.clipboard", action: pasteImage)
+                    if libraryStore != nil {
+                        Button("Attach Other Files…", systemImage: "paperclip") { showingFilePicker = true }
+                    }
                     Button("Reveal Folder", systemImage: "folder", action: revealAssetsFolder)
                 }
                 .labelStyle(.iconOnly)
@@ -33,7 +46,7 @@ struct ContentMediaView: View {
                 VStack(spacing: 8) {
                     Image(systemName: "photo.on.rectangle.angled").font(.largeTitle).foregroundStyle(.secondary)
                     Text("Add or paste images and files").font(.headline)
-                    Text("Drop files here to copy them into this content folder.")
+                    Text(libraryStore == nil ? "Drop files here to copy them into this content folder." : "Drop files here to import and attach them.")
                         .font(.callout).foregroundStyle(.secondary)
                 }
                 .frame(maxWidth: .infinity, minHeight: 84)
@@ -63,8 +76,19 @@ struct ContentMediaView: View {
         } isTargeted: { isDropTargeted = $0 }
         .fileImporter(isPresented: $showingFilePicker, allowedContentTypes: [.item], allowsMultipleSelection: true) { result in
             switch result {
-            case .success(let urls): importFiles(urls)
+            case .success(let urls): importRecordFiles(urls)
             case .failure(let error): errorMessage = error.localizedDescription
+            }
+        }
+        .assetQuickLook($preview)
+        .task(id: assetPaths) { await loadNames() }
+        .sheet(isPresented: $showingLibrary) {
+            if let libraryStore, let librarySnapshot {
+                AssetLibraryView(store: libraryStore, snapshot: librarySnapshot, defaultOwner: defaultOwner,
+                                 allowedTypes: [.image, .movie]) { assets in
+                    assetPaths = deduplicated(assetPaths + assets.map(\.reference))
+                }
+                .frame(minWidth: 650, minHeight: 440)
             }
         }
         .alert("Couldn’t add media", isPresented: Binding(
@@ -99,12 +123,12 @@ struct ContentMediaView: View {
                     .background(Color.secondary.opacity(0.08))
                 }
             }
-            Text(URL(fileURLWithPath: relativePath).lastPathComponent)
+            Text(assetNames[relativePath] ?? URL(fileURLWithPath: relativePath).lastPathComponent)
                 .font(.caption)
                 .lineLimit(1)
                 .help(relativePath)
             if fileURL == nil {
-                Label("Invalid or outside record folder", systemImage: "exclamationmark.triangle")
+                Label("Missing or unavailable file", systemImage: "exclamationmark.triangle")
                     .font(.caption2).foregroundStyle(.red)
             }
             HStack(spacing: 10) {
@@ -122,11 +146,38 @@ struct ContentMediaView: View {
         .padding(8)
         .background(Color(nsColor: .textBackgroundColor), in: RoundedRectangle(cornerRadius: 8))
         .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.secondary.opacity(0.15)))
-        if let fileURL { return AnyView(tile.draggable(fileURL)) }
-        return AnyView(tile)
+        let draggableTile = fileURL.map { AnyView(tile.draggable($0)) } ?? AnyView(tile)
+        return draggableTile.contextMenu {
+            Button("Quick Look") { preview = fileURL }.disabled(fileURL == nil)
+            if let index = assetPaths.firstIndex(of: relativePath) {
+                Button("Move Earlier") { assetPaths.swapAt(index, index - 1) }.disabled(index == 0)
+                Button("Move Later") { assetPaths.swapAt(index, index + 1) }.disabled(index == assetPaths.count - 1)
+            }
+        }
     }
 
     private func importFiles(_ urls: [URL]) {
+        if let libraryStore {
+            Task {
+                var failures: [String] = []
+                for url in urls {
+                    do {
+                        guard let type = UTType(filenameExtension: url.pathExtension),
+                              type.conforms(to: .image) || type.conforms(to: .movie) else {
+                            throw WorkspaceCommandError("Choose an image or video.")
+                        }
+                        let asset = try await libraryStore.importAsset(url, owner: defaultOwner ?? .shared)
+                        assetPaths = deduplicated(assetPaths + [asset.reference])
+                    } catch { failures.append("\(url.lastPathComponent): \(error.localizedDescription)") }
+                }
+                if !failures.isEmpty { errorMessage = failures.joined(separator: "\n") }
+            }
+            return
+        }
+        importRecordFiles(urls)
+    }
+
+    private func importRecordFiles(_ urls: [URL]) {
         do {
             let safeFolder = try safeAssetsFolderURL(createIfNeeded: true)
             var addedPaths: [String] = []
@@ -161,6 +212,16 @@ struct ContentMediaView: View {
               let tiffData = image.tiffRepresentation,
               let bitmap = NSBitmapImageRep(data: tiffData),
               let pngData = bitmap.representation(using: .png, properties: [:]) else { return }
+        if let libraryStore {
+            Task {
+                do {
+                    let asset = try await libraryStore.importAssetData(pngData, filename: preferredName,
+                                                                      owner: defaultOwner ?? .shared)
+                    assetPaths = deduplicated(assetPaths + [asset.reference])
+                } catch { errorMessage = error.localizedDescription }
+            }
+            return
+        }
         do {
             let safeFolder = try safeAssetsFolderURL(createIfNeeded: true)
             let destinationURL = try uniqueDestination(for: preferredName, in: safeFolder)
@@ -191,7 +252,13 @@ struct ContentMediaView: View {
         return path.hasPrefix(root) ? String(path.dropFirst(root.count)) : url.lastPathComponent
     }
 
+    private func loadNames() async {
+        guard let libraryStore, let library = try? await libraryStore.loadAssetLibrary().library else { return }
+        assetNames = Dictionary(library.assets.map { ($0.reference, $0.name) }, uniquingKeysWith: { first, _ in first })
+    }
+
     private func validatedAssetURL(_ relativePath: String) -> URL? {
+        if let libraryStore, relativePath.hasPrefix("asset:") { return managedAssetURL(relativePath, root: libraryStore.rootURL) }
         guard !relativePath.isEmpty, !relativePath.hasPrefix("/"),
               !relativePath.split(separator: "/").contains("..") else { return nil }
         let root = contentFolderURL.standardizedFileURL.resolvingSymlinksInPath()

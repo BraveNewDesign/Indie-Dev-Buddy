@@ -382,8 +382,15 @@ struct ManagementWorkspaceView: View {
     @ViewBuilder private func editor(for record: AppRecord?) -> some View {
         AppRecordEditor(record: record, opensAppStore: opensAppStore, identities: snapshot.identities, websites: snapshot.websites, snapshot: snapshot, workspaceStore: store, onOpenMarketingContent: onOpenMarketingContent, onSnapshotChanged: onSnapshotChanged, onDirtyChange: setDirty, onSave: { await save($0, category: "Apps", name: $0.name, expectedRevision: loadedRevision) }).id("\(record?.id ?? "new-app")-\(editorGeneration)")
     }
+    private func scopedAssetsButton(_ owner: AssetOwner) -> some View {
+        ScopedAssetLibraryButton(store: store, snapshot: snapshot, owner: owner)
+            .frame(maxWidth: .infinity, alignment: .trailing)
+            .padding(.horizontal)
+    }
+
     @ViewBuilder private func editor(for record: IdentityRecord?) -> some View {
         VStack(spacing: 0) {
+            if let record { scopedAssetsButton(AssetOwner(.identity, record.id)) }
             IdentityRecordEditor(record: record, workspaceStore: store, onDirtyChange: setDirty, onSave: { await save($0, category: "Identities", name: $0.name, expectedRevision: loadedRevision) }).id("\(record?.id ?? "new-identity")-\(editorGeneration)")
             if let record {
                 relatedRecords(owner: RecordOwner(type: .identity, id: record.id))
@@ -392,6 +399,7 @@ struct ManagementWorkspaceView: View {
     }
     @ViewBuilder private func editor(for record: WebsiteRecord?) -> some View {
         VStack(spacing: 0) {
+            if let record { scopedAssetsButton(AssetOwner(.website, record.id)) }
             WebsiteRecordEditor(record: record, owners: ownerChoices, onDirtyChange: setDirty, onSave: { await save($0, category: "Websites", name: $0.name, expectedRevision: loadedRevision) }).id("\(record?.id ?? "new-website")-\(editorGeneration)")
             if let record {
                 relatedRecords(owner: record.owner, excludingWebsiteID: record.id)
@@ -839,10 +847,7 @@ private struct AppRecordEditor: View {
                         .allowsHitTesting(detailTab == "App Store")
                         .accessibilityHidden(detailTab != "App Store")
                 }
-                appFilesPanel
-                    .opacity(detailTab == "Files" ? 1 : 0)
-                    .allowsHitTesting(detailTab == "Files")
-                    .accessibilityHidden(detailTab != "Files")
+                if detailTab == "Files" { appFilesPanel }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             .clipped()
@@ -916,6 +921,12 @@ private struct AppRecordEditor: View {
                     }
                 }
             }
+            if appFolderRelativePath != nil {
+                Section("Workspace") {
+                    Button("Reveal Existing App Assets", systemImage: "folder") { revealExistingAppAssets() }
+                    if let fileMessage { Text(fileMessage).foregroundStyle(.secondary) }
+                }
+            }
             Section("Links") {
                 if let url = record?.appStoreURL { Link("App Store Listing", destination: url) }
                 if let url = record?.testFlightURL { Link("TestFlight Beta", destination: url) }
@@ -956,38 +967,18 @@ private struct AppRecordEditor: View {
         onDirtyChange(overviewIsDirty)
     }
 
-    private var appFilesPanel: some View {
-        VStack(alignment: .leading, spacing: 18) {
-            Text("App Files").font(.largeTitle.bold())
-            if let appFolderRelativePath, let appID = record?.id {
-                Text("App assets live in this workspace folder. Your Xcode project remains at its linked location.")
-                    .foregroundStyle(.secondary)
-                LabeledContent("Workspace app folder", value: appFolderRelativePath)
-                HStack {
-                    Button("Open Assets Folder", systemImage: "folder") { openAppAssetsFolder(reveal: false) }
-                    Button("Reveal Assets in Finder", systemImage: "finder") { openAppAssetsFolder(reveal: true) }
-                }
-                if !projectPath.isEmpty {
-                    Divider()
-                    LabeledContent("Linked Xcode project", value: projectPath)
-                    HStack {
-                        Button("Open Project", systemImage: "arrow.up.right.square") { openProjectLocation() }.disabled(!projectAvailable)
-                        Button("Reveal Project in Finder", systemImage: "finder") { revealProjectLocation() }.disabled(!projectAvailable)
-                    }
-                }
-                Text("App ID: \(appID)").font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
-            } else {
-                ContentUnavailableView("Save App First", systemImage: "folder", description: Text("Save this app before creating its asset folder."))
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-            }
-            if let fileMessage { Label(fileMessage, systemImage: "exclamationmark.triangle").foregroundStyle(.orange) }
-            Spacer()
+    @ViewBuilder private var appFilesPanel: some View {
+        if let record {
+            AssetLibraryView(store: workspaceStore, snapshot: snapshot,
+                             scope: AssetOwner(.app, record.id), embedded: true)
+                .id(record.id)
+        } else {
+            ContentUnavailableView("Save App First", systemImage: "folder",
+                                   description: Text("Save this app before adding its assets."))
         }
-        .padding(24)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 
-    private func openAppAssetsFolder(reveal: Bool) {
+    private func revealExistingAppAssets() {
         do {
             guard let appFolderRelativePath else { throw CocoaError(.fileNoSuchFile) }
             let root = workspaceStore.rootURL.standardizedFileURL.resolvingSymlinksInPath()
@@ -1003,8 +994,7 @@ private struct AppRecordEditor: View {
             } else {
                 try FileManager.default.createDirectory(at: assets, withIntermediateDirectories: false)
             }
-            if reveal { NSWorkspace.shared.activateFileViewerSelecting([assets]) }
-            else { NSWorkspace.shared.open(assets) }
+            NSWorkspace.shared.activateFileViewerSelecting([assets])
             fileMessage = nil
         } catch { fileMessage = error.localizedDescription }
     }

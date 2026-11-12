@@ -539,9 +539,15 @@ private struct DashboardArtworkView: View {
             guard folder.path == root.path || folder.path.hasPrefix(root.path + "/") else { return nil }
             for path in request.paths.prefix(8) {
                 guard !path.isEmpty, !path.hasPrefix("/"), !path.split(separator: "/").contains("..") else { continue }
-                let url = folder.appendingPathComponent(path).standardizedFileURL.resolvingSymlinksInPath()
-                guard url.path.hasPrefix(folder.path + "/"),
-                      let values = try? url.resourceValues(forKeys: [.isRegularFileKey, .contentModificationDateKey, .fileSizeKey]),
+                let url: URL
+                if path.hasPrefix("asset:") {
+                    guard let managed = managedAssetURL(path, root: root) else { continue }
+                    url = managed
+                } else {
+                    url = folder.appendingPathComponent(path).standardizedFileURL.resolvingSymlinksInPath()
+                    guard url.path.hasPrefix(folder.path + "/") else { continue }
+                }
+                guard let values = try? url.resourceValues(forKeys: [.isRegularFileKey, .contentModificationDateKey, .fileSizeKey]),
                       values.isRegularFile == true else { continue }
                 let key = "\(url.path)|\(values.contentModificationDate?.timeIntervalSinceReferenceDate ?? 0)|\(values.fileSize ?? 0)" as NSString
                 if let image = cache.object(forKey: key) { return image }

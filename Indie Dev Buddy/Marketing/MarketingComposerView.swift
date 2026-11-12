@@ -78,6 +78,9 @@ struct MarketingComposerView: View {
     let contentID: String
     let workspaceID: String
     let contentFolderURL: URL
+    let assetStore: WorkspaceStore
+    let assetSnapshot: WorkspaceSnapshot
+    let websiteID: String?
     let apps: [AppRecord]
     let accounts: [ComposerSocialAccount]
     let article: ComposerArticleReference?
@@ -525,7 +528,8 @@ struct MarketingComposerView: View {
             sectionTitle("Shared media")
             Text("Accounts inherit these files unless you set an account-specific media override.")
                 .font(.caption).foregroundStyle(.secondary)
-            ContentMediaView(contentFolderURL: contentFolderURL, assetPaths: $sharedMediaPaths)
+            ContentMediaView(contentFolderURL: contentFolderURL, assetPaths: $sharedMediaPaths,
+                             libraryStore: assetStore, librarySnapshot: assetSnapshot, defaultOwner: mediaOwner)
         }
     }
 
@@ -983,7 +987,8 @@ struct MarketingComposerView: View {
         VStack(alignment: .leading, spacing: 8) {
             sectionTitle("Media for This Account")
             if customMediaAccountIDs.contains(account.id) {
-                ContentMediaView(contentFolderURL: contentFolderURL, assetPaths: mediaOverrideBinding(account.id))
+                ContentMediaView(contentFolderURL: contentFolderURL, assetPaths: mediaOverrideBinding(account.id),
+                                 libraryStore: assetStore, librarySnapshot: assetSnapshot, defaultOwner: mediaOwner)
                 Button("Use Shared Media") {
                     customMediaAccountIDs.remove(account.id)
                     destinationMediaOverrides.removeValue(forKey: account.id)
@@ -1233,7 +1238,16 @@ struct MarketingComposerView: View {
         }
     }
 
+    private var mediaOwner: AssetOwner? {
+        if let app = apps.first(where: { selectedAppIDs.contains($0.id) }) { return AssetOwner(.app, app.id) }
+        if let websiteID { return AssetOwner(.website, websiteID) }
+        if let account = assetSnapshot.socialAccounts.first(where: { selectedAccountIDs.contains($0.id) }),
+           let owner = account.owner, owner.type == .identity { return AssetOwner(.identity, owner.id) }
+        return nil
+    }
+
     private func safeContentAssetURL(_ relativePath: String) -> URL? {
+        if relativePath.hasPrefix("asset:") { return managedAssetURL(relativePath, root: assetStore.rootURL) }
         guard !relativePath.isEmpty, !relativePath.hasPrefix("/"),
               !relativePath.split(separator: "/").contains("..") else { return nil }
         let root = contentFolderURL.standardizedFileURL.resolvingSymlinksInPath()
@@ -1437,6 +1451,7 @@ extension MarketingComposerView {
         snapshot: WorkspaceSnapshot,
         content: ContentRecord,
         contentFolderURL: URL,
+        assetStore: WorkspaceStore,
         originalText: String,
         customizedText: [String: String] = [:],
         article: ComposerArticleReference? = nil,
@@ -1456,6 +1471,9 @@ extension MarketingComposerView {
             contentID: content.id,
             workspaceID: snapshot.manifest.id,
             contentFolderURL: contentFolderURL,
+            assetStore: assetStore,
+            assetSnapshot: snapshot,
+            websiteID: content.websiteId,
             apps: snapshot.apps,
             accounts: snapshot.socialAccounts.map { ComposerSocialAccount(record: $0, snapshot: snapshot) },
             article: article ?? Self.sourceArticle(for: content, snapshot: snapshot),

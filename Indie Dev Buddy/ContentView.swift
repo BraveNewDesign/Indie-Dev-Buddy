@@ -454,7 +454,9 @@ struct ContentView: View {
                     onCreateRequestHandled: { contentCreateRequest = nil }
                 )
             case "Files":
-                WorkspaceFilesBrowser(root: store.rootURL)
+                AssetLibraryView(store: store, snapshot: snapshot)
+                    .id(store.rootURL)
+                    .navigationTitle("Files")
             default:
                 ManagementWorkspaceView(
                     section: ManagementSection(rawValue: section) ?? .apps,

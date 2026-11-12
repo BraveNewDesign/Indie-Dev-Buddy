@@ -612,7 +612,7 @@ struct ContentRecordEditor: View {
                 if let edited {
                     MarketingComposerView(
                         snapshot: snapshot, content: edited,
-                        contentFolderURL: store.rootURL.appendingPathComponent(path),
+                        contentFolderURL: store.rootURL.appendingPathComponent(path), assetStore: store,
                         originalText: bodyText, customizedText: variantText,
                         characterGuidelines: ["threads": 500, "instagram": 2200, "x": 280, "facebook": 63206, "linkedin": 3000],
                         requestedNavigationID: $requestedNavigationID,
@@ -961,7 +961,7 @@ struct ContentRecordEditor: View {
             else if item.status == .published || item.status == .scheduled || item.status == .manuallyScheduled { item.status = .draft }
             pendingWrites.append(WorkspaceWriteOperation(data: Data(draft.originalText.utf8), relativePath: "\(path)/\(item.originalBodyPath ?? "original.txt")", expectedRevision: bodyRevision))
             pendingWrites.append(WorkspaceWriteOperation(data: try encodedContentRecord(item), relativePath: "\(path)/record.json", expectedRevision: recordRevision))
-            let revisions = try await store.writeBatch(pendingWrites)
+            let revisions = try await store.writeContentWithAttachments(item, operations: pendingWrites)
             for (index, accountID) in pendingVariantAccounts.enumerated() { variantRevisions[accountID] = revisions[index] }
             bodyRevision = revisions[pendingVariantAccounts.count]
             recordRevision = revisions[pendingVariantAccounts.count + 1]
@@ -1042,11 +1042,7 @@ struct ContentRecordEditor: View {
                         guard let hosting = try ImageHosting.load() else {
                             throw WorkspaceCommandError("Connect your R2 bucket in Settings → Image Hosting, or enter a public media URL.")
                         }
-                        let file = try await store.safeURL("\(path)/\(attachment)")
-                        let folder = try await store.safeURL(path)
-                        guard file.path.hasPrefix(folder.path + "/") else {
-                            throw WorkspaceCommandError("Select an image inside this post’s folder.")
-                        }
+                        let file = try await store.resolveContentMedia(attachment, recordFolder: path)
                         media = [ContentScheduledMedia(kind: .image, publicURL: try await hosting.uploadImage(at: file))]
                     }
                     if platform == .instagram && media.isEmpty {

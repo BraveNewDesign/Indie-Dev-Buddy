@@ -69,7 +69,9 @@ extension WorkspaceStore {
             if kind == .content {
                 let content = try decoder.decode(ContentRecord.self, from: normalized)
                 let folder = (path as NSString).deletingLastPathComponent
-                for reference in content.destinations.compactMap(\.bodyPath) + content.mediaPaths + content.destinations.flatMap({ $0.mediaPaths ?? [] }) {
+                let localMedia = (content.mediaPaths + content.destinations.flatMap { $0.mediaPaths ?? [] })
+                    .filter { !$0.hasPrefix("asset:") }
+                for reference in content.destinations.compactMap(\.bodyPath) + localMedia {
                     allowedFilePaths.insert(try contentFile(reference, recordPath: path))
                 }
                 let originalBody = try contentFile(content.originalBodyPath ?? "original.txt", recordPath: path)
@@ -246,7 +248,7 @@ extension WorkspaceStore {
                     throw WorkspaceCommandError("Body updates require an existing original body and its --body-revision from read.")
                 }
                 let path = try contentFile(record.originalBodyPath ?? "original.txt", recordPath: current.path)
-                let otherFiles = record.mediaPaths + record.destinations.flatMap { ($0.mediaPaths ?? []) + [$0.bodyPath].compactMap { $0 } }
+                let otherFiles = record.destinations.compactMap(\.bodyPath) + (record.mediaPaths + record.destinations.flatMap { $0.mediaPaths ?? [] }).filter { !$0.hasPrefix("asset:") }
                 let originalURL = try safeURL(path)
                 for reference in otherFiles {
                     let file = try contentFile(reference, recordPath: current.path)
@@ -382,7 +384,8 @@ extension WorkspaceStore {
                 } else { _ = try readText(file) }
             }
         }
-        for media in record.mediaPaths + record.destinations.flatMap({ $0.mediaPaths ?? [] }) {
+        try validateManagedAttachments(record)
+        for media in record.mediaPaths + record.destinations.flatMap({ $0.mediaPaths ?? [] }) where !media.hasPrefix("asset:") {
             let file = try contentFile(media, recordPath: path)
             if pendingFiles[file] == nil {
                 guard try safeURL(file).resourceValues(forKeys: [.isRegularFileKey]).isRegularFile == true else {
@@ -412,8 +415,9 @@ extension WorkspaceStore {
         let references = Set(record.destinations.compactMap(\.bodyPath) + record.mediaPaths + record.destinations.flatMap { $0.mediaPaths ?? [] })
         let variantReferences = Set(record.destinations.compactMap(\.bodyPath))
         return references.sorted().compactMap { reference in
-            guard let path = try? contentFile(reference, recordPath: recordPath),
-                  let file = try? read(relativePath: path) else { return nil }
+            let path = variantReferences.contains(reference) ? try? contentFile(reference, recordPath: recordPath)
+                : AssetLibrary.managedPath(reference) ?? (try? contentFile(reference, recordPath: recordPath))
+            guard let path, let file = try? read(relativePath: path) else { return nil }
             let text = variantReferences.contains(reference) ? String(data: file.data, encoding: .utf8) : nil
             return WorkspaceFileRead(path: path, revision: file.revision, text: text)
         }
