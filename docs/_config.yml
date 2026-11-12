@@ -2,6 +2,13 @@ title: Indie Dev Buddy Documentation
 description: Guides for using, developing, and contributing to Indie Dev Buddy.
 theme: just-the-docs
 
+defaults:
+  - scope:
+      path: ""
+      type: pages
+    values:
+      layout: default
+
 url: https://bravenewdesign.github.io
 baseurl: /Indie-Dev-Buddy
 

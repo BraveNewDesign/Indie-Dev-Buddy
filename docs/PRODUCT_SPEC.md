@@ -6,6 +6,8 @@ permalink: /product-specification/
 
 # Indie Dev Buddy — Product & Implementation Specification
 
+This is a developer reference for intended product scope and implementation. It includes plans and acceptance criteria; consult the [user guides]({{ '/documentation/' | relative_url }}) for current workflows and the [dated implementation notes]({{ '/implementation-status/' | relative_url }}) for historical verification.
+
 **Status:** MVP specification • **Target:** macOS, SwiftUI • **App name:** Indie Dev Buddy  
 **Audience:** Solo/independent Apple-platform app developers who build, release, and market their own apps.  
 **Primary goal:** Make it easy to find, connect, edit, and reuse everything *outside the code editor* involved in running and promoting an indie app, without a backend, account setup, or custom agent integration.

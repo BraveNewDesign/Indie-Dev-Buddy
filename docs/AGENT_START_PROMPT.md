@@ -1,10 +1,12 @@
 ---
-title: AI Agent Start Prompt
-nav_order: 8
+title: Historical AI Agent Start Prompt
+nav_order: 20
 permalink: /agent-start-prompt/
 ---
 
-# Build instruction for AI coding agent
+# Historical initial MVP coding prompt
+
+This prompt was written for the project's initial MVP and contains assumptions that have since been superseded, including a restriction against social publishing integrations. Keep it for historical context; do not use it as the sole instruction for current work. Follow the current request, repository guidance, `PRODUCT_SPEC.md`, and checked-in behavior. See the [AI agent development pack]({{ '/agent-pack/' | relative_url }}) for current project references.
 
 Implement the **Indie Dev Buddy** macOS SwiftUI MVP described in the attached `PRODUCT_SPEC.md`. Treat it as the source of truth for product behavior, information architecture, file storage, and release gates. The accompanying visual mockup is conceptual UI direction only; prioritize native Mac usability, discoverability, and working end-to-end workflows over pixel matching.
 

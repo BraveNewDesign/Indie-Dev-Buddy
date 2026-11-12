@@ -6,11 +6,33 @@ permalink: /social-connections/
 
 # Social connections and local delivery
 
+Use this page to connect an account, compare provider support, and understand scheduling and delivery. For optional browser sign-in infrastructure, see [Advanced OAuth broker setup]({{ '/oauth-broker/' | relative_url }}).
+
+## On this page
+
+1. Contents
+{:toc}
+
+## Connect an account
+
 In **Websites & Social Accounts → Social Accounts**, choose a provider, connect the intended remote account, then save the workspace account. The editor can prefill the account's display name, handle, and profile URL from SocialKit; these remain editable profile metadata. The verified provider identity (platform, server, and remote ID) is stored separately and is the recipient key for API delivery. It contains no credentials. A saved workspace avatar is used in account and composer previews. **View Account Activity** lists the posts, comments, and actions that connection can access; author and reply context is shown only when the provider returns it, and actions depend on the account's granted capabilities. **Unlink from This Workspace Account** removes the mapping when saved. Provider tokens are managed in the Mac’s Keychain. Unlinking a workspace record leaves the stored credential available to other workspace records using that account.
 
-In the composer, choose **Scheduled on This Mac** for local API delivery or **Manually Scheduled** for a date you plan to handle yourself. Indie Dev Buddy must be running and the Mac awake when a post is due. Before delivery, the app checks stored credentials and stops if it knows the connection needs authorization. It also checks Meta connections on launch, on wake, and periodically while the Mac is awake. Account settings and the schedule editor show known expiry and reconnect status. Review missed or uncertain attempts in the composer’s API Delivery History. A saved API schedule keeps an immutable snapshot of its approved text, resolved mentions, recipient, media, and time. Draft edits do not alter it. Choose **Reschedule with Current Draft** to replace the scheduled intent with the current version and a new future time or media link. Delivery errors that could follow a provider write are marked uncertain and require checking the account before another attempt. The workspace’s saved delivery state and receipt appear in the content library once the app records the result. The workspace JSON and CLI alone cannot authorize delivery; the app's device-local journal is required.
+## Schedule and delivery
 
-For Instagram and Threads, the local journal stores the staged container ID with the approved delivery. If the app closes before the publish request starts, the app can resume polling the same container after relaunch, while the Mac is awake, for up to 24 hours. Once a publish request may have reached Meta, the app only checks container status. A confirmed publication can appear in delivery history without a post ID or link.
+In the composer, choose **Scheduled on This Mac** for local API delivery or **Manually Scheduled** for a date you plan to handle yourself. A manual schedule never sends. For API delivery, Indie Dev Buddy must be running and the Mac awake when a post is due. Before delivery, the app checks stored credentials and stops if it knows the connection needs authorization. It also checks Meta connections on launch, on wake, and periodically while the Mac is awake. Account settings and the schedule editor show known expiry and reconnect status.
+
+Review missed or uncertain attempts in the composer’s API Delivery History. An API schedule keeps an immutable snapshot of its approved text, resolved mentions, recipient, media, and time. Draft edits do not alter it. Choose **Reschedule with Current Draft** to replace the scheduled intent with the current version and a new future time or media link. Delivery errors that could follow a provider write are marked uncertain; check the account before another attempt. The workspace's saved delivery state and receipt appear in the content library when the app records the result. Workspace JSON and the CLI alone cannot authorize delivery; the app's device-local journal is required.
+
+For Instagram and Threads, the journal stores the staged container ID with the approved delivery. If the app closes before the publish request starts, it can resume polling that container after relaunch, while the Mac is awake, for up to 24 hours. Once a publish request may have reached Meta, the app only checks container status. A confirmed publication can appear in delivery history without a post ID or link.
+
+## Troubleshooting delivery
+
+- **Connection needs authorization or has expired:** Reconnect the account and check that the provider has granted the permissions needed for the action. See [token storage and renewal](#token-storage-and-renewal) for Meta connections.
+- **A scheduled post was missed:** Check API Delivery History and confirm the app was running and the Mac was awake at the scheduled time. Review the recorded result before deciding what to do next.
+- **A delivery is uncertain:** Check the destination account for the post before trying again. An uncertain attempt may have reached the provider, so another attempt could create a duplicate.
+- **Your edits are missing from a scheduled post:** An existing API schedule retains its approved snapshot. Choose **Reschedule with Current Draft** to approve the revised content and a new future time.
+
+## Provider support
 
 | Provider | Connect using | Local API schedule |
 | --- | --- | --- |
@@ -21,7 +43,7 @@ For Instagram and Threads, the local journal stores the staged container ID with
 | X | Public client ID and registered callback with OAuth 2.0 authorization code flow | Text |
 | LinkedIn | Public client ID, registered HTTPS callback, trusted exchange service, and optional organization URN | Text |
 | Mastodon | Trusted HTTPS server and callback. The connection dialog suggests the app’s custom callback. | Text |
-| GitHub | Manual account metadata and scheduling only; no provider API connection. | Text |
+| GitHub | Manual account metadata only; no provider API connection. | No API delivery; any date is a manual reminder only |
 | Other accounts | Workspace account metadata | Manual |
 
 Provider account permissions determine what works in the signed app. The Facebook Pages, Threads, and Instagram composer accepts a public HTTPS media link without embedded credentials, query parameters, or fragments. Enter a single image for Facebook Pages. The provider fetches the file from its URL. Provider-held Facebook Page scheduling requires live validation of creation, status, and cancellation with the configured Meta app.
@@ -70,22 +92,6 @@ The app stores the verified provider credential in the Mac’s Keychain. For Fac
 
 Unlinking a workspace record leaves its Keychain credential available to other workspace records that may share that connection. To revoke provider access, revoke the app grant in Meta separately.
 
-## Browser and broker setup
+## Optional browser sign-in
 
-Meta access token import works with the default build and connects directly to Meta. Browser sign-in is an optional deployment for owners who control the callback domain and operate a trusted exchange service.
-
-1. Enable Associated Domains for the signing identifier and provision the target with the capability. Build the app with `INDIE_DEV_BUDDY_ENTITLEMENTS=Indie Dev Buddy OAuth.entitlements` and set `INDIE_DEV_BUDDY_OAUTH_CALLBACK_HOST` to the owner-controlled fully qualified hostname. Pass these as Xcode build setting overrides. The opt-in entitlement file preserves Keychain access and adds `webcredentials:<callback-host>`. Verify the final app's signed entitlements with `codesign -d --entitlements :-`.
-2. Serve `https://<callback-host>/.well-known/apple-app-site-association` as JSON over HTTPS without redirects. Use the signed app's application identifier (including its app ID prefix) as the value in `{"webcredentials":{"apps":["<signed-application-identifier>"]}}`. Verify Apple's association has propagated and test on the signed app. [Apple's Associated Domains setup](https://developer.apple.com/documentation/xcode/supporting-associated-domains), [AuthenticationServices HTTPS callback](https://developer.apple.com/documentation/authenticationservices/aswebauthenticationsession/callback/https(host:path:)).
-3. Register the exact HTTPS callback, including path and any trailing slash, with each Meta login product. Enter that URL and the public app ID in Indie Dev Buddy. Set up separate allowlisted registrations for Facebook Login for Pages, Instagram API with Instagram Login, Instagram API with Facebook Login, and the Threads API. The current Instagram Facebook Login token-import flow is configured separately in the app and does not use this broker. The app's custom scheme remains available to providers that accept it. Meta uses the confidential authorization-code flow and does not receive PKCE parameters in this app. The provider references did not establish S256 PKCE support for these exact login products and configured registrations. [Facebook manual login](https://developers.facebook.com/docs/facebook-login/guides/advanced/manual-flow/), [Instagram business login](https://developers.facebook.com/docs/instagram-platform/instagram-api-with-instagram-login/business-login/), [Instagram Facebook Login setup](https://developers.facebook.com/docs/instagram-platform/instagram-api-with-facebook-login/get-started/), [Meta's Threads API collection](https://www.postman.com/meta/threads/documentation/dht3nzz/threads-api).
-4. Enter the trusted exchange service's HTTPS base URL and a temporary service bearer credential. Only public registration values are saved by the connection dialog. Keep Meta app secrets on the broker, and keep authorization payloads, tokens and service credentials out of access and error logs, including at the callback host.
-
-### Meta broker contract
-
-Both routes take JSON via HTTPS without redirects, require `Authorization: Bearer <service credential>`, and return JSON. Authenticate and authorize the operator on each request. Use `Cache-Control: no-store` on the responses.
-
-- `POST <base URL>/oauth/session` receives `platform` (`facebookPages`, `instagram`, or `threads`), `client_id`, `redirect_uri`, and `state`. Validate the provider, app ID and exact redirect against server-side configuration. Bind the values to the authenticated operator and a short-lived server session. Return `{"session_id":"<random opaque base64url identifier>"}` before the app opens the browser. Expire abandoned sessions.
-- `POST <base URL>/oauth/exchange` receives `platform`, `redirect_uri`, `state`, `session_id`, and the callback `code`. Indie Dev Buddy checks the callback's exact URL and state before sending the request. Verify the operator, provider, exact redirect, state, session expiry, and server-side app ID binding. Atomically consume the session and reject reuse of the same provider authorization code before making a single provider exchange attempt. Use the bound server-side app registration for the exchange. Return `access_token` and any provider-confirmed ISO 8601 `expires_at` and `granted_scopes` array. For a verified Instagram or Threads long-lived token, include ISO 8601 `meta_long_lived_refresh_eligible_at` if known. Supply eligibility using that product's documented rules. If an exchange or delivery of the response is uncertain, require a fresh browser attempt.
-
-LinkedIn retains its existing single `POST <base URL>/oauth/exchange` contract with `platform`, `code`, and `redirect_uri`. It requires provider-verified `granted_scopes`, and may return `refresh_token` and ISO 8601 `expires_at`. Reconnect when the LinkedIn token expires. SocialKit's standalone Meta validation app also keeps its separate development exchange and refresh bridge.
-
-Validate browser sign-in end to end with the signed app, the real AASA and broker, and the configured Meta products, permissions, and designated test accounts. Browser sign-in remains unavailable in the default build.
+The default build uses direct token import. Browser sign-in is an optional deployment for developers who control the callback domain and operate a trusted exchange service. It requires signed app entitlements, an Apple App Site Association file, Meta app registrations, and a live broker. See the [advanced OAuth broker setup]({{ '/oauth-broker/' | relative_url }}) for deployment and API requirements.

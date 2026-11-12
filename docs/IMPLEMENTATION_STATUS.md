@@ -1,10 +1,12 @@
 ---
-title: Implementation Status
-nav_order: 5
+title: Historical Implementation Status
+nav_order: 15
 permalink: /implementation-status/
 ---
 
-# MVP implementation plan and status
+# Historical implementation plan and status
+
+This page preserves dated engineering notes and verification evidence from prior work. It is not a live status dashboard, current build report, or release-readiness claim. Confirm current behavior from the checked-in source and the latest release information.
 
 1. **File-backed foundation:** Select and reopen a workspace, index ordinary records, edit apps and owners, connect websites, and expose files. Validate persistence and conflicts.
 2. **Marketing editor:** Configure social accounts, write articles and social originals, customize account versions, attach media, copy content, and record manual publication.
