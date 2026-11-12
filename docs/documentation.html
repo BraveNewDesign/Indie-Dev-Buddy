@@ -1,0 +1,169 @@
+---
+layout: null
+title: Documentation
+permalink: /documentation/
+---
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Guides for setting up Indie Dev Buddy, understanding its behavior, using its command-line tool, and contributing changes.">
+  <meta name="theme-color" content="#f7f6f1">
+  <title>Documentation · Indie Dev Buddy</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --paper: #f7f6f1;
+      --surface: #fffefa;
+      --ink: #222820;
+      --muted: #586157;
+      --line: #d9ded5;
+      --green: #244a37;
+      --green-soft: #e8eee8;
+      --content-width: 960px;
+    }
+    * { box-sizing: border-box; }
+    html { min-width: 320px; background: var(--paper); }
+    body {
+      margin: 0;
+      color: var(--ink);
+      background: var(--paper);
+      font: 16px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      -webkit-font-smoothing: antialiased;
+    }
+    a { color: var(--green); text-underline-offset: .2em; }
+    a:focus-visible { outline: 3px solid #668f70; outline-offset: 4px; border-radius: 4px; }
+    .wrap { width: min(var(--content-width), calc(100% - 48px)); margin-inline: auto; }
+    .topbar { border-bottom: 1px solid var(--line); }
+    .topbar-inner {
+      min-height: 76px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 20px;
+    }
+    .brand {
+      display: inline-flex;
+      align-items: center;
+      gap: 11px;
+      color: var(--ink);
+      font-size: 16px;
+      font-weight: 680;
+      text-decoration: none;
+    }
+    .brand img { display: block; width: 38px; height: 38px; border-radius: 9px; }
+    .top-link { font-size: 14px; font-weight: 600; text-decoration: none; }
+    main { padding-block: clamp(40px, 8vw, 84px) 72px; }
+    .intro { max-width: 690px; margin-bottom: 42px; }
+    .eyebrow {
+      margin: 0 0 12px;
+      color: var(--green);
+      font-size: 12px;
+      font-weight: 750;
+      letter-spacing: .12em;
+      text-transform: uppercase;
+    }
+    h1, h2, p { margin-top: 0; }
+    h1 { margin-bottom: 16px; font-size: clamp(38px, 7vw, 64px); line-height: 1.04; letter-spacing: -.045em; }
+    .lede { max-width: 620px; margin-bottom: 0; color: var(--muted); font-size: clamp(17px, 2.5vw, 20px); line-height: 1.55; }
+    .section-heading { margin: 0 0 18px; font-size: 18px; letter-spacing: -.015em; }
+    .guides {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 12px;
+    }
+    .guide {
+      min-width: 0;
+      min-height: 94px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      padding: 20px 22px;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      background: var(--surface);
+      color: var(--ink);
+      font-size: 16px;
+      font-weight: 650;
+      line-height: 1.35;
+      text-decoration: none;
+      transition: border-color 140ms ease, transform 140ms ease, box-shadow 140ms ease;
+    }
+    .guide::after { content: "↗"; flex: 0 0 auto; color: var(--green); font-size: 18px; font-weight: 500; }
+    .guide:hover { transform: translateY(-2px); border-color: #9daf9f; box-shadow: 0 6px 18px #253c2b0d; }
+    .note {
+      margin-top: 32px;
+      padding: 18px 20px;
+      border-left: 3px solid #77947c;
+      border-radius: 0 8px 8px 0;
+      background: var(--green-soft);
+      color: #39443a;
+      font-size: 14px;
+    }
+    .note p { margin: 0; }
+    footer { border-top: 1px solid var(--line); color: var(--muted); font-size: 13px; }
+    .footer-inner { min-height: 70px; display: flex; align-items: center; justify-content: space-between; gap: 12px 24px; }
+    .footer-inner p { margin: 0; }
+    @media (max-width: 600px) {
+      .wrap { width: calc(100% - 36px); }
+      .topbar-inner { min-height: 66px; }
+      .brand { gap: 9px; font-size: 14px; }
+      .brand img { width: 34px; height: 34px; }
+      .top-link { font-size: 13px; }
+      main { padding-block: 44px 48px; }
+      .intro { margin-bottom: 30px; }
+      h1 { font-size: clamp(38px, 11vw, 52px); }
+      .guides { grid-template-columns: 1fr; gap: 9px; }
+      .guide { min-height: 68px; padding: 16px 17px; font-size: 15px; }
+      .note { margin-top: 24px; padding: 15px 16px; }
+      .footer-inner { min-height: 64px; flex-wrap: wrap; justify-content: flex-start; padding-block: 16px; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after { scroll-behavior: auto !important; transition-duration: .01ms !important; }
+    }
+  </style>
+</head>
+<body>
+  <header class="topbar">
+    <div class="wrap topbar-inner">
+      <a class="brand" href="{{ '/' | relative_url }}">
+        <img src="{{ '/assets/app-icon.png' | relative_url }}" width="38" height="38" alt="">
+        <span>Indie Dev Buddy</span>
+      </a>
+      <a class="top-link" href="https://github.com/BraveNewDesign/Indie-Dev-Buddy">View on GitHub</a>
+    </div>
+  </header>
+  <main class="wrap">
+    <section class="intro" aria-labelledby="page-title">
+      <p class="eyebrow">Guides and references</p>
+      <h1 id="page-title">Documentation</h1>
+      <p class="lede">Set up the app, understand how it works, use its command-line tools, and find your way around the project.</p>
+    </section>
+    <section aria-labelledby="guides-title">
+      <h2 class="section-heading" id="guides-title">Browse the guides</h2>
+      <nav class="guides" aria-label="Documentation guides">
+        <a class="guide" href="{{ '/social-connections/' | relative_url }}">Social connections and local delivery</a>
+        <a class="guide" href="{{ '/product-specification/' | relative_url }}">Product specification</a>
+        <a class="guide" href="{{ '/implementation-status/' | relative_url }}">Implementation status</a>
+        <a class="guide" href="{{ '/cli-capability-matrix/' | relative_url }}">GUI and CLI capability matrix</a>
+        <a class="guide" href="{{ '/direct-distribution/' | relative_url }}">Direct distribution</a>
+        <a class="guide" href="{{ '/contributing/' | relative_url }}">Contributing</a>
+        <a class="guide" href="{{ '/agent-pack/' | relative_url }}">Agent pack and CLI</a>
+        <a class="guide" href="{{ '/agent-start-prompt/' | relative_url }}">AI agent start prompt</a>
+        <a class="guide" href="{{ '/social-icon-sources/' | relative_url }}">Social icon sources</a>
+      </nav>
+    </section>
+    <aside class="note">
+      <p>The Markdown files in the repository’s <code>docs/</code> directory are the authoritative sources. On a guide, use <strong>Suggest an edit on GitHub</strong> to propose an update.</p>
+    </aside>
+  </main>
+  <footer>
+    <div class="wrap footer-inner">
+      <p>Brave New Design</p>
+      <a href="https://github.com/BraveNewDesign/Indie-Dev-Buddy">Source and issues on GitHub</a>
+    </div>
+  </footer>
+</body>
+</html>
