@@ -16,6 +16,16 @@ Download the signed, notarized Apple silicon build from [GitHub Releases](https:
 - Optionally use the `asc` command-line tool to find App Store Connect apps, read release and review status, and pull release text into an editable draft.
 - Use the bundled `indiedevbuddy` command-line tool for workspace operations from Terminal and coding agents.
 
+## Screenshots
+
+![Indie Dev Buddy dashboard and app workspace](docs/screenshots/01-workspace.png)
+
+| App Store release status | Social post composer |
+| --- | --- |
+| ![App Store Connect release status for Dictate Bar](docs/screenshots/02-releases.png) | ![Social post composer with an account preview](docs/screenshots/03-social.png) |
+
+![Indie Dev Buddy local workspace file browser](docs/screenshots/04-local.png)
+
 ## What to expect
 
 - You configure provider access and account permissions. Meta setup is documented in [Social connections](docs/SOCIAL_CONNECTIONS.md).

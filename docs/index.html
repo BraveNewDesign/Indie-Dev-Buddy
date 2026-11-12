@@ -3,53 +3,89 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="description" content="A local-first macOS workspace for indie app developers to organize releases, marketing content, and social publishing.">
-  <title>Indie Dev Buddy — a workspace for indie app developers</title>
+  <meta name="description" content="Indie Dev Buddy is an open-source Mac app for tracking your apps, checking App Store releases, and drafting social posts.">
+  <link rel="icon" type="image/png" sizes="32x32" href="assets/favicon.png">
+  <title>Indie Dev Buddy for Mac</title>
   <style>
-    :root { color-scheme: dark; --bg: #101a1b; --panel: #192728; --text: #edf5f2; --muted: #b4c7c1; --mint: #9de3c3; --line: #34504a; }
+    :root { color-scheme: light; --paper: #f7f6f1; --ink: #222820; --muted: #515a50; --line: #d3d8cf; --green: #244a37; }
     * { box-sizing: border-box; }
-    body { margin: 0; background: radial-gradient(ellipse at 50% -20%, #294940 0, var(--bg) 52%); color: var(--text); font: 16px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
-    main { width: min(920px, calc(100% - 40px)); margin: 0 auto; padding: 76px 0 56px; }
-    .eyebrow { color: var(--mint); font-size: 13px; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; }
-    h1 { max-width: 760px; margin: 16px 0; font-size: clamp(42px, 8vw, 72px); line-height: 1.02; letter-spacing: -.045em; }
-    .intro { max-width: 690px; color: var(--muted); font-size: 20px; }
-    .actions { display: flex; flex-wrap: wrap; gap: 12px; margin: 30px 0 18px; }
-    .button { display: inline-flex; align-items: center; min-height: 48px; padding: 0 18px; border: 1px solid var(--line); border-radius: 10px; color: var(--text); font-weight: 650; text-decoration: none; }
-    .button.primary { border-color: var(--mint); background: var(--mint); color: #10201b; }
-    .requirements { color: var(--muted); font-size: 14px; }
-    h2 { margin: 54px 0 16px; font-size: 24px; }
-    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 14px; }
-    article { padding: 20px; border: 1px solid var(--line); border-radius: 14px; background: color-mix(in srgb, var(--panel) 88%, transparent); }
-    article h3 { margin: 0 0 8px; font-size: 17px; }
-    article p, .notes { margin: 0; color: var(--muted); }
-    .notes { max-width: 760px; }
-    footer { margin-top: 42px; padding-top: 20px; border-top: 1px solid var(--line); color: var(--muted); font-size: 14px; }
-    footer a { color: var(--mint); }
-    @media (prefers-reduced-motion: no-preference) { .button { transition: transform .15s ease, background-color .15s ease; } .button:hover { transform: translateY(-2px); } }
+    body { margin: 0; background: var(--paper); color: var(--ink); font: 16px/1.55 -apple-system, BlinkMacSystemFont, sans-serif; }
+    header, main, footer { width: min(1080px, calc(100% - 40px)); margin-inline: auto; }
+    header, footer { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 24px; padding-block: 20px; }
+    header { justify-content: space-between; border-bottom: 1px solid var(--line); }
+    .brand { display: inline-flex; align-items: center; gap: 8px; font-weight: 650; text-decoration: none; }
+    .brand img { width: 44px; height: 44px; border: 0; }
+    footer { border-top: 1px solid var(--line); margin-top: 64px; }
+    a { color: var(--green); text-underline-offset: .2em; }
+    a:focus-visible { outline: 2px solid var(--green); outline-offset: 4px; }
+    .hero { display: grid; align-items: center; gap: 32px; padding-block: clamp(40px, 7vw, 92px); }
+    h1, h2 { line-height: 1.08; letter-spacing: -.035em; }
+    h1 { margin: 0; font-size: clamp(42px, 6vw, 72px); }
+    h2 { margin: 0 0 20px; font-size: 32px; }
+    p { margin: 0 0 16px; }
+    .intro { font-size: 19px; margin-top: 18px; }
+    .download { display: inline-block; background: var(--green); color: #fff; padding: 10px 16px; border-radius: 7px; font-weight: 650; text-decoration: none; }
+    .requirements { color: var(--muted); font-size: 14px; margin: 12px 0 0; }
+    .screens { display: grid; gap: 28px 20px; }
+    figure { margin: 0; min-width: 0; }
+    figure a { display: block; }
+    img { display: block; width: 100%; height: auto; border: 1px solid var(--line); border-radius: 8px; }
+    figcaption { margin-top: 10px; color: var(--muted); }
+    figcaption strong { display: block; color: var(--ink); }
+    .setup { margin-top: 56px; max-width: 680px; }
+    @media (min-width: 740px) {
+      .hero { grid-template-columns: minmax(0, 2fr) minmax(0, 3fr); }
+      .screens { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+    }
   </style>
 </head>
 <body>
+  <header>
+    <a class="brand" href="./"><img src="assets/app-icon.png" width="44" height="44" alt="">Indie Dev Buddy</a>
+    <a href="https://github.com/BraveNewDesign/Indie-Dev-Buddy">Source on GitHub</a>
+  </header>
   <main>
-    <p class="eyebrow">Brave New Design · Early access</p>
-    <h1>A calmer workspace for building and sharing indie apps.</h1>
-    <p class="intro">Indie Dev Buddy brings app and release notes, marketing drafts, social accounts, and publishing plans into one local-first macOS workspace.</p>
-    <div class="actions">
-      <a class="button primary" href="https://github.com/BraveNewDesign/Indie-Dev-Buddy/releases/latest">Download for Mac</a>
-      <a class="button" href="https://github.com/BraveNewDesign/Indie-Dev-Buddy">View source on GitHub</a>
-    </div>
-    <p class="requirements">Apple silicon · macOS 27.2 or later · signed and notarized · MIT licensed</p>
+    <section class="hero">
+      <div>
+        <h1>Indie Dev Buddy</h1>
+        <p class="intro">A Mac app for keeping track of your apps, checking App Store releases, and writing social posts.</p>
+        <a class="download" href="https://github.com/BraveNewDesign/Indie-Dev-Buddy/releases/latest">Download for Mac</a>
+        <p class="requirements">Requires Apple silicon and macOS 27.2 or later.</p>
+      </div>
+      <figure>
+        <a href="screenshots/windows/01-workspace.png"><img src="screenshots/windows/01-workspace.png" width="868" height="580" alt="Dashboard showing upcoming posts and the app list"></a>
+      </figure>
+    </section>
 
-    <h2>Keep the work together</h2>
-    <div class="grid">
-      <article><h3>App and release workspace</h3><p>Keep app details, release drafts, ideas, links, and marketing material organized in a folder of ordinary files.</p></article>
-      <article><h3>Social publishing</h3><p>Draft a shared post, tailor versions for connected accounts, attach media, and track where each post stands.</p></article>
-      <article><h3>Mac-native tools</h3><p>Use the app or its bundled command-line tool. Optional App Store Connect reading uses the separately installed <code>asc</code> CLI.</p></article>
-    </div>
+    <section aria-labelledby="screenshots">
+      <h2 id="screenshots">Inside the app</h2>
+      <div class="screens">
+        <figure>
+          <a href="screenshots/windows/02-releases.png"><img src="screenshots/windows/02-releases.png" width="868" height="580" loading="lazy" alt="Dictate Bar’s App Store Connect release status"></a>
+          <figcaption><strong>App Store releases</strong>Check review status and pull release notes into a draft.</figcaption>
+        </figure>
+        <figure>
+          <a href="screenshots/windows/03-social.png"><img src="screenshots/windows/03-social.png" width="868" height="580" loading="lazy" alt="Post editor beside a Facebook preview"></a>
+          <figcaption><strong>Social posts</strong>Write a shared draft, then customize the text and media for each account.</figcaption>
+        </figure>
+        <figure>
+          <a href="screenshots/windows/04-local.png"><img src="screenshots/windows/04-local.png" width="868" height="580" loading="lazy" alt="File browser listing the folders in a workspace"></a>
+          <figcaption><strong>Workspace files</strong>App records, drafts, and attachments live in a folder you choose.</figcaption>
+        </figure>
+      </div>
+    </section>
 
-    <h2>Local by design</h2>
-    <p class="notes">Workspace records stay in your chosen folder and provider credentials are stored in the macOS Keychain. API access requires your own provider setup. Scheduled delivery runs locally; there is no hosted account service or cloud scheduler. App Store Connect actions are read-only, and the app does not submit builds or upload listing changes.</p>
-
-    <footer>Need help? Read <a href="https://github.com/BraveNewDesign/Indie-Dev-Buddy/blob/main/docs/SOCIAL_CONNECTIONS.md">social account setup</a> and the <a href="https://github.com/BraveNewDesign/Indie-Dev-Buddy/blob/main/docs/DIRECT_DISTRIBUTION.md">direct distribution guide</a>. <a href="https://github.com/BraveNewDesign/Indie-Dev-Buddy/issues">Report a problem</a>.</footer>
+    <section class="setup" aria-labelledby="setup">
+      <h2 id="setup">Setup</h2>
+      <p>To publish from the app, <a href="https://github.com/BraveNewDesign/Indie-Dev-Buddy/blob/main/docs/SOCIAL_CONNECTIONS.md">connect a supported social account</a>. Credentials are stored in the macOS Keychain. Scheduled posts require Indie Dev Buddy to be running and your Mac to be awake.</p>
+      <p>App Store Connect access is optional and read-only. It uses your existing <code>asc</code> CLI sign-in.</p>
+    </section>
   </main>
+  <footer>
+    <span>Brave New Design</span>
+    <a href="https://github.com/BraveNewDesign/Indie-Dev-Buddy/releases">Release notes</a>
+    <a href="https://github.com/BraveNewDesign/Indie-Dev-Buddy/issues">Report an issue</a>
+    <a href="https://github.com/BraveNewDesign/Indie-Dev-Buddy/blob/main/LICENSE">MIT license</a>
+  </footer>
 </body>
 </html>
