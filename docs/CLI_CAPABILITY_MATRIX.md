@@ -1,3 +1,9 @@
+---
+title: GUI and CLI Capability Matrix
+nav_order: 6
+permalink: /cli-capability-matrix/
+---
+
 # Workspace GUI and CLI capability matrix
 
 This matrix compares workspace operations exposed by the macOS UI with the CLI in this checkout. Record IDs are stable model IDs; folder names remain implementation paths only.

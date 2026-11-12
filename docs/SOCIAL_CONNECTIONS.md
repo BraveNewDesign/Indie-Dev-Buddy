@@ -1,3 +1,9 @@
+---
+title: Social Connections
+nav_order: 3
+permalink: /social-connections/
+---
+
 # Social connections and local delivery
 
 In **Websites & Social Accounts → Social Accounts**, choose a provider, connect the intended remote account, then save the workspace account. The editor can prefill the account's display name, handle, and profile URL from SocialKit; these remain editable profile metadata. The verified provider identity (platform, server, and remote ID) is stored separately and is the recipient key for API delivery. It contains no credentials. A saved workspace avatar is used in account and composer previews. **View Account Activity** lists the posts, comments, and actions that connection can access; author and reply context is shown only when the provider returns it, and actions depend on the account's granted capabilities. **Unlink from This Workspace Account** removes the mapping when saved. Provider tokens are managed in the Mac’s Keychain. Unlinking a workspace record leaves the stored credential available to other workspace records using that account.

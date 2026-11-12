@@ -1,3 +1,9 @@
+---
+title: Direct Distribution
+nav_order: 7
+permalink: /direct-distribution/
+---
+
 # Direct macOS distribution
 
 The open-source build is distributed outside the Mac App Store. Sparkle checks
@@ -10,7 +16,8 @@ DMG and source release can be attached to GitHub Releases.
 1. Publish and tag SocialKit, then use the same version in this app's Swift
    package dependency. The project is configured for SocialKit `0.1.0`.
 2. Enable Pages for `BraveNewDesign/Indie-Dev-Buddy` with **GitHub Actions** as
-   the build and deployment source. The included workflow publishes `docs/`.
+   the build and deployment source. The included workflow builds the Jekyll
+   site from `docs/` and publishes the generated site.
 3. The appcast and app feed URL are configured for the repository's Pages site.
 4. Install a Developer ID Application certificate and configure a `notarytool`
    Keychain profile. The release script never stores signing credentials in Git.

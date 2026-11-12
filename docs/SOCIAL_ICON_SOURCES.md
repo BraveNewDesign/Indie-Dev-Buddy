@@ -1,3 +1,9 @@
+---
+title: Social Icon Sources
+nav_order: 10
+permalink: /social-icon-sources/
+---
+
 # Social platform icon sources
 
 These icons are bundled in the asset catalog and used for account identity throughout the app.

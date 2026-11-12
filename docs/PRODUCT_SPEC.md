@@ -1,3 +1,9 @@
+---
+title: Product Specification
+nav_order: 4
+permalink: /product-specification/
+---
+
 # Indie Dev Buddy — Product & Implementation Specification
 
 **Status:** MVP specification • **Target:** macOS, SwiftUI • **App name:** Indie Dev Buddy  
@@ -137,7 +143,7 @@ Provide recognizable **SwiftUI-rendered platform-inspired preview cards**, not b
 
 Statuses: **Idea / Draft / Ready / Scheduled / Manually Scheduled / Published**. API-scheduled delivery stores an immutable per-destination snapshot of the approved text, resolved mentions, recipient identity, media, and due time, then sends that payload through SocialKit. Editing the ordinary draft does not change an already approved send; the user must choose **Reschedule with Current Draft** to replace its payload. Manual scheduling stores a date only; the user still copies, opens the destination, posts, and marks it Published. Marking a destination as Published optionally captures its final public URL and publication date. The global content list derives status from destination states, including mixed manual/API schedules.
 
-The social account scope is Bluesky, Facebook Pages, Threads, Instagram, X, LinkedIn, and Mastodon. Custom platforms and personal Facebook profiles use manual posting. The app offers local scheduling when the connected account, provider capabilities, and media format permit it. See [Social connections and local delivery](SOCIAL_CONNECTIONS.md) for provider setup and media formats. Confidential connections require registered callbacks, a trusted HTTPS exchange service, provider permissions, and signed app configuration. Store provider credentials in the device Keychain and keep provider app secrets on the exchange service. Workspace files carry only the verified remote identity and scheduled payload.
+The social account scope is Bluesky, Facebook Pages, Threads, Instagram, X, LinkedIn, and Mastodon. Custom platforms and personal Facebook profiles use manual posting. The app offers local scheduling when the connected account, provider capabilities, and media format permit it. See [Social connections and local delivery]({{ '/social-connections/' | relative_url }}) for provider setup and media formats. Confidential connections require registered callbacks, a trusted HTTPS exchange service, provider permissions, and signed app configuration. Store provider credentials in the device Keychain and keep provider app secrets on the exchange service. Workspace files carry only the verified remote identity and scheduled payload.
 
 Initial scheduled delivery runs locally: Indie Dev Buddy must remain open and the Mac awake at the due time. If either condition is not met, surface the item as overdue for review on the next launch; never silently publish it late. Persist a per-destination schedule snapshot and delivery history with timestamps, outcome, provider post ID/URL when available, safe error details, and retry/reconciliation state. Do not automatically retry an uncertain publish; require checking the provider first to prevent duplicates. Manual scheduling creates no delivery attempt. Offline delivery is a later milestone using an external scheduling service, linked to Indie Dev Buddy. That service will need an explicit design for schedule synchronization, credential custody, media hosting, and delivery reconciliation; it is not part of the local scheduler.
 

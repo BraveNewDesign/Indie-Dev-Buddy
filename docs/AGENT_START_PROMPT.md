@@ -1,3 +1,9 @@
+---
+title: AI Agent Start Prompt
+nav_order: 8
+permalink: /agent-start-prompt/
+---
+
 # Build instruction for AI coding agent
 
 Implement the **Indie Dev Buddy** macOS SwiftUI MVP described in the attached `PRODUCT_SPEC.md`. Treat it as the source of truth for product behavior, information architecture, file storage, and release gates. The accompanying visual mockup is conceptual UI direction only; prioritize native Mac usability, discoverability, and working end-to-end workflows over pixel matching.
@@ -9,3 +15,7 @@ Critical workflows to get right: a shared website can supply product/support/pri
 Design for a first-time user: explicit sidebar labels, stable app and content views, prominent creation actions, sensible empty states, obvious account ownership, and no hidden essential commands. Avoid fake actions: the app prepares content but does not actually publish it to social networks or websites.
 
 Deliver one functional milestone at a time, build and test each stage, and run through every applicable acceptance criterion in `PRODUCT_SPEC.md` before declaring completion. If a requirement is impractical in the current pass, describe the limitation clearly rather than leaving inert controls or silently dropping data. Keep a concise progress/decision log, and maintain the workspace's `AGENTS.md` schema instructions and sample records for external agents.
+
+## Documentation maintenance
+
+When a code change alters user-visible behavior, setup, or a CLI capability, update the relevant Markdown source in `docs/` in the same change. Keep `PRODUCT_SPEC.md` authoritative for intended behavior and update `IMPLEMENTATION_STATUS.md` only when the checked-in implementation status materially changes. Documentation pages are built from Markdown with Jekyll and Just the Docs; use each page's front matter for its title, navigation order, and stable URL. Do not edit generated `_site/` files or add custom theme styling for routine documentation changes. Follow `CONTRIBUTING.md` for previewing the site and submitting documentation updates for review.

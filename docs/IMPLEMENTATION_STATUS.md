@@ -1,3 +1,9 @@
+---
+title: Implementation Status
+nav_order: 5
+permalink: /implementation-status/
+---
+
 # MVP implementation plan and status
 
 1. **File-backed foundation:** Select and reopen a workspace, index ordinary records, edit apps and owners, connect websites, and expose files. Validate persistence and conflicts.
@@ -8,7 +14,7 @@ The product specification remains the acceptance authority. This file describes 
 
 ## Implementation update — 2026-11-10
 
-The current source now includes the SocialKit connection, account activity, Bluesky mention, and local scheduled-delivery workflows. API delivery uses a device-local journal to authorize intents, refreshes credentials near expiry when supported, preserves immutable scheduled payloads until the user explicitly reschedules with the current draft, and leaves ambiguous outcomes for manual reconciliation. Workspace account records distinguish editable display name/handle/profile URL and avatar from the verified provider recipient identity. Saved workspace avatars are used by account and composer previews. See [Social connections and local delivery](SOCIAL_CONNECTIONS.md) and the [GUI and CLI capability matrix](CLI_CAPABILITY_MATRIX.md).
+The current source now includes the SocialKit connection, account activity, Bluesky mention, and local scheduled-delivery workflows. API delivery uses a device-local journal to authorize intents, refreshes credentials near expiry when supported, preserves immutable scheduled payloads until the user explicitly reschedules with the current draft, and leaves ambiguous outcomes for manual reconciliation. Workspace account records distinguish editable display name/handle/profile URL and avatar from the verified provider recipient identity. Saved workspace avatars are used by account and composer previews. See [Social connections and local delivery]({{ '/social-connections/' | relative_url }}) and the [GUI and CLI capability matrix]({{ '/cli-capability-matrix/' | relative_url }}).
 
 This update reflects the checked-in source and documentation as of this date; no build, automated test, or live provider check was run for this documentation pass. The acceptance evidence below is dated 2026-11-06 and remains historical rather than a verification of these later social workflows.
 

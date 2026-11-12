@@ -44,10 +44,13 @@ The direct-download release path and Sparkle update setup are documented in [Dir
 
 ## Documentation
 
+- [Browse the documentation website](https://bravenewdesign.github.io/Indie-Dev-Buddy/documentation/)
 - [Social account setup and publishing behavior](docs/SOCIAL_CONNECTIONS.md)
 - [Agent pack and command-line tool](docs/README.md)
 - [Social icon sources and attribution](docs/SOCIAL_ICON_SOURCES.md)
 - [Workspace product specification](docs/PRODUCT_SPEC.md)
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for pull request and documentation editing guidance.
 
 ## License
 

@@ -1,6 +1,14 @@
+---
+title: Agent Pack and CLI
+nav_order: 9
+permalink: /agent-pack/
+---
+
 # Indie Dev Buddy — Agent Pack
 
 Use `PRODUCT_SPEC.md` as the **source of truth** and `AGENT_START_PROMPT.md` as the initial instruction to your Xcode AI coding agent. This pack is in the repository's `docs/` directory. Paths to the existing Xcode project and source below are relative to the repository root: project `Indie Dev Buddy.xcodeproj`, app sources `Indie Dev Buddy/`, unit tests `Indie Dev BuddyTests/`, and UI tests `Indie Dev BuddyUITests/`. `DESIGN_REFERENCE.png` shows the latest visual concept; it is **not** a pixel-accurate contract, and any decorative, simulated publishing/scheduling actions must be interpreted according to the spec.
+
+When code changes affect user-visible behavior, update the matching Markdown guide in `docs/` in the same pull request. See the [contributor guide]({{ '/contributing/' | relative_url }}) for local preview and review instructions. Do not commit generated `_site/` output.
 
 Attach the files in this folder in the coding agent's context and send the start prompt. Implement milestone by milestone; verify the end-to-end acceptance checks before calling the app finished.
 
@@ -35,4 +43,4 @@ Use the path from `workspaces` and the ID and revisions from `read`. The app can
 
 `files` lists one workspace folder at a time and returns regular-file revisions. All file paths are relative to the workspace. `import-file` refuses to overwrite and accepts regular files only. `rename` stays in the same folder. `trash` follows the GUI's reversible Trash action and requires `--confirm yes`; `remove` is permanent and also requires explicit confirmation. Both protect workspace marker files, reject symbolic links, and enforce workspace containment. `create-workspace PATH` creates the standard layout and registers it; `register-workspace PATH` validates and registers an existing workspace; `forget-workspace PATH` removes only the app's registration, leaving workspace files intact.
 
-All commands return JSON on stdout; errors return JSON on stderr and exit nonzero. Validation issues return JSON and exit 2. Backups mirror the replaced paths under the returned backup directory. `CLI_CAPABILITY_MATRIX.md` lists GUI and CLI coverage, including current limitations. The CLI does not schedule or publish to external services. The app stores per-destination schedule metadata separately from the content status enum, and the app's device-local delivery journal is required to authorize local API delivery.
+All commands return JSON on stdout; errors return JSON on stderr and exit nonzero. Validation issues return JSON and exit 2. Backups mirror the replaced paths under the returned backup directory. The [GUI and CLI capability matrix]({{ '/cli-capability-matrix/' | relative_url }}) lists GUI and CLI coverage, including current limitations. The CLI does not schedule or publish to external services. The app stores per-destination schedule metadata separately from the content status enum, and the app's device-local delivery journal is required to authorize local API delivery.

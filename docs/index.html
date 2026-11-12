@@ -1,3 +1,6 @@
+---
+layout: null
+---
 <!doctype html>
 <html lang="en">
 <head>
@@ -42,6 +45,7 @@
 <body>
   <header>
     <a class="brand" href="./"><img src="assets/app-icon.png" width="44" height="44" alt="">Indie Dev Buddy</a>
+    <a href="{{ '/documentation/' | relative_url }}">Documentation</a>
     <a href="https://github.com/BraveNewDesign/Indie-Dev-Buddy">Source on GitHub</a>
   </header>
   <main>
@@ -77,7 +81,7 @@
 
     <section class="setup" aria-labelledby="setup">
       <h2 id="setup">Setup</h2>
-      <p>To publish from the app, <a href="https://github.com/BraveNewDesign/Indie-Dev-Buddy/blob/main/docs/SOCIAL_CONNECTIONS.md">connect a supported social account</a>. Credentials are stored in the macOS Keychain. Scheduled posts require Indie Dev Buddy to be running and your Mac to be awake.</p>
+      <p>To publish from the app, <a href="{{ '/social-connections/' | relative_url }}">connect a supported social account</a>. Credentials are stored in the macOS Keychain. Scheduled posts require Indie Dev Buddy to be running and your Mac to be awake.</p>
       <p>App Store Connect access is optional and read-only. It uses your existing <code>asc</code> CLI sign-in.</p>
     </section>
   </main>
