@@ -24,3 +24,6 @@ xcuserdata/
 # Xcode-generated archives and debug symbols
 *.xcarchive/
 *.dSYM/
+
+# Local marketing concepts
+/marketing-mockups/

@@ -22,6 +22,10 @@
     article { padding: 20px; border: 1px solid var(--line); border-radius: 14px; background: color-mix(in srgb, var(--panel) 88%, transparent); }
     article h3 { margin: 0 0 8px; font-size: 17px; }
     article p, .notes { margin: 0; color: var(--muted); }
+    .screenshots { display: grid; gap: 14px; }
+    .screenshots a { display: block; }
+    .screenshots img { display: block; width: 100%; height: auto; border-radius: 14px; }
+    @media (min-width: 680px) { .screenshots { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
     .notes { max-width: 760px; }
     footer { margin-top: 42px; padding-top: 20px; border-top: 1px solid var(--line); color: var(--muted); font-size: 14px; }
     footer a { color: var(--mint); }
@@ -44,6 +48,14 @@
       <article><h3>App and release workspace</h3><p>Keep app details, release drafts, ideas, links, and marketing material organized in a folder of ordinary files.</p></article>
       <article><h3>Social publishing</h3><p>Draft a shared post, tailor versions for connected accounts, attach media, and track where each post stands.</p></article>
       <article><h3>Mac-native tools</h3><p>Use the app or its bundled command-line tool. Optional App Store Connect reading uses the separately installed <code>asc</code> CLI.</p></article>
+    </div>
+
+    <h2 id="screenshots">Screenshots</h2>
+    <div class="screenshots">
+      <a href="screenshots/01-workspace.png"><img src="screenshots/01-workspace.png" width="1600" height="900" loading="lazy" alt="Indie Dev Buddy dashboard and app workspace"></a>
+      <a href="screenshots/02-releases.png"><img src="screenshots/02-releases.png" width="1600" height="900" loading="lazy" alt="App Store Connect release status for Dictate Bar"></a>
+      <a href="screenshots/03-social.png"><img src="screenshots/03-social.png" width="1600" height="900" loading="lazy" alt="Social post composer with an account preview"></a>
+      <a href="screenshots/04-local.png"><img src="screenshots/04-local.png" width="1600" height="900" loading="lazy" alt="Indie Dev Buddy local workspace file browser"></a>
     </div>
 
     <h2>Local by design</h2>
