@@ -74,6 +74,7 @@ struct ManagementWorkspaceView: View {
     @State private var revisionMismatch = false
     @State private var editorGeneration = 0
     @State private var confirmingDelete = false
+    @State private var showingShowcase = false
 
     init(section: ManagementSection, snapshot: WorkspaceSnapshot, store: WorkspaceStore, onSnapshotChanged: @escaping () -> Void, onReloadSnapshot: @escaping () async -> Void = {}, onUnsavedEditsChanged: @escaping (Bool) -> Void = { _ in }, onOpenMarketingContent: @escaping (String) -> Void, onOpenRecord: @escaping (ManagementRecordSelection) -> Void = { _ in }, selectionRequest: ManagementRecordSelection? = nil, createRequest: ManagementCreateRequest? = nil, onExternalRequestHandled: @escaping () -> Void = {}, restoredAppID: String? = nil, onAppSelectionChange: @escaping (String?) -> Void = { _ in }) {
         _pinnedSocialAccountData = AppStorage(wrappedValue: Data(), "pinnedSocialAccounts.\(snapshot.manifest.id)")
@@ -105,7 +106,7 @@ struct ManagementWorkspaceView: View {
                             }
                         }
                 } else {
-                    recordList.navigationTitle("Apps")
+                    appList.navigationTitle("Apps")
                 }
             } else {
                 HSplitView {
@@ -118,6 +119,16 @@ struct ManagementWorkspaceView: View {
             }
         }
         .toolbar {
+            if section == .apps && selectedID == nil && !creating {
+                ToolbarItem {
+                    Button("Share Showcase", systemImage: "square.and.arrow.up") {
+                        showingShowcase = true
+                    }
+                    .labelStyle(.titleAndIcon)
+                    .help("Create a shareable image of your apps")
+                    .disabled(snapshot.apps.isEmpty)
+                }
+            }
             ToolbarItem(placement: .primaryAction) {
                 Button("Add \(singularName)", systemImage: "plus", action: beginCreate)
                     .labelStyle(.iconOnly)
@@ -131,6 +142,13 @@ struct ManagementWorkspaceView: View {
                     .labelStyle(.iconOnly)
                 }
             }
+        }
+        .sheet(isPresented: $showingShowcase) {
+            let apps = sortedApps
+            let icons = apps.reduce(into: [String: NSImage]()) { result, app in
+                result[app.id] = appIcon(for: app)
+            }
+            AppShowcaseSheet(apps: apps, icons: icons, identities: snapshot.identities)
         }
         .confirmationDialog("Delete this \(singularName.lowercased())?", isPresented: $confirmingDelete, titleVisibility: .visible) {
             Button("Delete", role: .destructive) { deleteSelectedRecord() }
@@ -183,6 +201,54 @@ struct ManagementWorkspaceView: View {
         .task(id: selectedID) { await loadSelectedRevision() }
     }
 
+    private var sortedApps: [AppRecord] {
+        snapshot.apps.sorted {
+            let order = $0.name.localizedStandardCompare($1.name)
+            return order == .orderedSame ? $0.id < $1.id : order == .orderedAscending
+        }
+    }
+
+    private func appIcon(for app: AppRecord) -> NSImage? {
+        guard let recordPath = snapshot.recordPaths["Apps"]?[app.id],
+              let url = Self.safeAppIconURL(root: store.rootURL,
+                                            appFolderRelativePath: (recordPath as NSString).deletingLastPathComponent,
+                                            iconPath: app.iconPath) else { return nil }
+        return NSImage(contentsOf: url)
+    }
+
+    @ViewBuilder private var appList: some View {
+        if snapshot.apps.isEmpty {
+            ContentUnavailableView {
+                Label("No Apps", systemImage: "square.grid.2x2")
+            } description: {
+                Text("Add an app to manage it in this workspace.")
+            } actions: {
+                Button("Add App", action: beginCreate)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else {
+            List(selection: Binding(get: { selectedID }, set: requestSelection)) {
+                Section {
+                    ForEach(sortedApps) { app in
+                        AppLibraryRow(app: app, icon: appIcon(for: app))
+                            .tag(Optional(app.id))
+                            .contextMenu {
+                                Button("Open App Details", systemImage: "arrow.right") {
+                                    requestSelection(app.id)
+                                }
+                            }
+                    }
+                } header: {
+                    Text(snapshot.apps.count == 1 ? "1 app" : "\(snapshot.apps.count) apps")
+                        .font(.subheadline.weight(.medium))
+                        .foregroundStyle(.secondary)
+                        .padding(.vertical, 4)
+                }
+            }
+            .listStyle(.inset)
+        }
+    }
+
     private var recordList: some View {
         let pinnedIDs = section == .socialAccounts ? pinnedSocialAccountIDs : []
         let visibleRows = rows
@@ -190,13 +256,6 @@ struct ManagementWorkspaceView: View {
             + visibleRows.filter { !pinnedIDs.contains($0.id) }
 
         return VStack(spacing: 0) {
-            if section == .apps {
-                Text(snapshot.apps.count == 1 ? "1 app" : "\(snapshot.apps.count) apps")
-                    .foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(16)
-            }
-
             if section == .websites || section == .socialAccounts {
                 Picker("Filter by owner", selection: Binding(get: { ownerFilterID }, set: requestOwnerFilter)) {
                     Text("All owners").tag("all")
@@ -230,7 +289,7 @@ struct ManagementWorkspaceView: View {
                                 Image(systemName: row.symbol).font(.title3).foregroundStyle(.secondary)
                             }
                         }
-                        .frame(width: section == .apps ? 36 : (section == .identities ? 30 : 24), height: 30)
+                        .frame(width: section == .identities ? 30 : 24, height: 30)
                         .accessibilityHidden(true)
                         VStack(alignment: .leading, spacing: 3) {
                             Text(row.title).font(.headline)
@@ -242,9 +301,6 @@ struct ManagementWorkspaceView: View {
                         if isPinned {
                             Image(systemName: "pin.fill").font(.caption).foregroundStyle(.secondary)
                                 .accessibilityLabel("Pinned")
-                        } else if section == .apps {
-                            Image(systemName: "chevron.right").font(.caption).foregroundStyle(.secondary)
-                                .accessibilityHidden(true)
                         }
                     }
                     .padding(.vertical, 6)
@@ -278,7 +334,7 @@ struct ManagementWorkspaceView: View {
 
     @ViewBuilder
     private func managementRowActions(_ row: ManagementRow, isPinned: Bool) -> some View {
-        Button(section == .apps ? "Open App Details" : "Edit \(singularName)", systemImage: "arrow.right") {
+        Button("Edit \(singularName)", systemImage: "arrow.right") {
             requestSelection(row.id)
         }
         if section == .socialAccounts, let account = snapshot.socialAccountsByID[row.id] {
@@ -351,17 +407,7 @@ struct ManagementWorkspaceView: View {
 
     private var rows: [ManagementRow] {
         switch section {
-        case .apps:
-            snapshot.apps.map { app in
-                let details = [
-                    app.platforms.joined(separator: ", "),
-                    (app.developmentStatus ?? .development).label
-                ].filter { !$0.isEmpty }
-                let recordPath = Self.findRecordPath(root: store.rootURL, category: "Apps", id: app.id)
-                let folderPath = recordPath.map { String($0.dropLast("/record.json".count)) }
-                let iconURL = folderPath.flatMap { Self.safeAppIconURL(root: store.rootURL, appFolderRelativePath: $0, iconPath: app.iconPath) }
-                return ManagementRow(id: app.id, title: app.name, subtitle: details.joined(separator: " · "), symbol: "app.dashed", iconURL: iconURL)
-            }
+        case .apps: []
         case .identities:
             snapshot.identities.map { identity in
                 ManagementRow(id: identity.id, title: identity.name, subtitle: identity.kind ?? "", symbol: "person.crop.circle", iconURL: Self.safeWorkspacePhotoURL(root: store.rootURL, photoPath: identity.photoPath))
