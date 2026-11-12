@@ -4,6 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="description" content="Indie Dev Buddy is an open-source Mac app for tracking your apps, checking App Store releases, and drafting social posts.">
+  <link rel="icon" type="image/png" sizes="32x32" href="assets/favicon.png">
   <title>Indie Dev Buddy for Mac</title>
   <style>
     :root { color-scheme: light; --paper: #f7f6f1; --ink: #222820; --muted: #515a50; --line: #d3d8cf; --green: #244a37; }
@@ -12,6 +13,8 @@
     header, main, footer { width: min(1080px, calc(100% - 40px)); margin-inline: auto; }
     header, footer { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 24px; padding-block: 20px; }
     header { justify-content: space-between; border-bottom: 1px solid var(--line); }
+    .brand { display: inline-flex; align-items: center; gap: 8px; font-weight: 650; text-decoration: none; }
+    .brand img { width: 44px; height: 44px; border: 0; }
     footer { border-top: 1px solid var(--line); margin-top: 64px; }
     a { color: var(--green); text-underline-offset: .2em; }
     a:focus-visible { outline: 2px solid var(--green); outline-offset: 4px; }
@@ -38,7 +41,7 @@
 </head>
 <body>
   <header>
-    <span>Brave New Design</span>
+    <a class="brand" href="./"><img src="assets/app-icon.png" width="44" height="44" alt="">Indie Dev Buddy</a>
     <a href="https://github.com/BraveNewDesign/Indie-Dev-Buddy">Source on GitHub</a>
   </header>
   <main>
@@ -79,6 +82,7 @@
     </section>
   </main>
   <footer>
+    <span>Brave New Design</span>
     <a href="https://github.com/BraveNewDesign/Indie-Dev-Buddy/releases">Release notes</a>
     <a href="https://github.com/BraveNewDesign/Indie-Dev-Buddy/issues">Report an issue</a>
     <a href="https://github.com/BraveNewDesign/Indie-Dev-Buddy/blob/main/LICENSE">MIT license</a>
