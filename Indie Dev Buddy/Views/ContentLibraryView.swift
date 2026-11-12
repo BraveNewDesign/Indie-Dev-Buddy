@@ -1023,14 +1023,31 @@ struct ContentRecordEditor: View {
             }
             Task {
                 do {
-                    let media = try scheduledMedia(draft.destinationMediaLinks[accountID] ?? ComposerMediaLink())
+                    var media = try scheduledMedia(draft.destinationMediaLinks[accountID] ?? ComposerMediaLink())
                     try Self.validateMedia(media, for: platform)
-                    if !media.isEmpty {
+                    let attachments = draft.destinationMediaOverrides[accountID] ?? draft.sharedMediaPaths
+                    let canHost = platform == .instagram || platform == .threads
+                    if !media.isEmpty || (canHost && !attachments.isEmpty) {
                         let capabilities = try await socialPublishingRuntime.connections.capabilities(for: identity)
                         guard capabilities.contains(.publishMedia) else { throw SocialError.permissionDenied }
                     }
-                    if media.isEmpty && !(draft.destinationMediaOverrides[accountID] ?? draft.sharedMediaPaths).isEmpty {
-                        throw WorkspaceCommandError("Local attachments cannot be sent through this API yet. Use a public media URL where supported, or publish manually.")
+                    if media.isEmpty && !attachments.isEmpty {
+                        guard canHost else {
+                            throw WorkspaceCommandError("Use a public media URL where supported, or publish manually.")
+                        }
+                        guard attachments.count == 1, let attachment = attachments.first,
+                              !attachment.hasPrefix("/") else {
+                            throw WorkspaceCommandError("Publish Now supports one local image. Select one attachment or enter a public media URL.")
+                        }
+                        guard let hosting = try ImageHosting.load() else {
+                            throw WorkspaceCommandError("Connect your R2 bucket in Settings → Image Hosting, or enter a public media URL.")
+                        }
+                        let file = try await store.safeURL("\(path)/\(attachment)")
+                        let folder = try await store.safeURL(path)
+                        guard file.path.hasPrefix(folder.path + "/") else {
+                            throw WorkspaceCommandError("Select an image inside this post’s folder.")
+                        }
+                        media = [ContentScheduledMedia(kind: .image, publicURL: try await hosting.uploadImage(at: file))]
                     }
                     if platform == .instagram && media.isEmpty {
                         throw WorkspaceCommandError("Instagram requires a public image or video URL.")

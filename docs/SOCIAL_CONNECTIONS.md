@@ -18,9 +18,16 @@ For Instagram and Threads, the local journal stores the staged container ID with
 | GitHub | Manual account metadata and scheduling only; no provider API connection. | Text |
 | Other accounts | Workspace account metadata | Manual |
 
-Provider account permissions determine what works in the signed app. Local workspace attachments are never uploaded automatically. The Facebook Pages, Threads, and Instagram composer accepts a public HTTPS media link without embedded credentials, query parameters, or fragments. Enter a single image for Facebook Pages. The provider fetches the file from its URL. Provider-held Facebook Page scheduling requires live validation of creation, status, and cancellation with the configured Meta app.
+Provider account permissions determine what works in the signed app. The Facebook Pages, Threads, and Instagram composer accepts a public HTTPS media link without embedded credentials, query parameters, or fragments. Enter a single image for Facebook Pages. The provider fetches the file from its URL. Provider-held Facebook Page scheduling requires live validation of creation, status, and cancellation with the configured Meta app.
 
 Bluesky @mentions can be resolved from the composer against the connected account’s PDS. The scheduled payload keeps each resolved DID and UTF-8 byte range, so a later handle change cannot redirect the mention. Other providers currently receive @names as plain text. An inbound mentions inbox is a separate feature and is not part of this Activity view. LinkedIn can optionally request Community Management feed scopes during connection; LinkedIn must approve the app and grant those scopes before comments and posts become available.
+
+
+### Bring your own image storage
+
+Open **Settings → Image Hosting** and enter the Cloudflare account ID, R2 bucket name, and S3 access keys. Create an Object Read & Write token scoped to that bucket. Keep the bucket private and configure an R2 lifecycle rule to expire objects under `indie-dev-buddy/` after one day. Storage usage is billed to the bucket owner. [R2 lifecycle rules](https://developers.cloudflare.com/r2/buckets/object-lifecycles/)
+
+Attach one image and choose **Publish Now** on Instagram or Threads. Indie Dev Buddy uploads a JPEG copy to your bucket and gives Meta a download URL that expires after one hour. Settings are stored in the Mac’s Keychain. **Disconnect** removes the saved credentials from the Mac. The bucket’s lifecycle rule removes uploaded objects. For API schedules, enter an existing HTTPS media URL in the composer.
 
 ## Meta token lifetime
 

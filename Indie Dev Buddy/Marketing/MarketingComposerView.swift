@@ -913,7 +913,7 @@ struct MarketingComposerView: View {
                     Text("Video").tag(ContentScheduledMediaKind.video)
                 }
                 .disabled(savedScheduleIsLocked)
-                Text("Use a public HTTPS link to an image or video. Local files stay in the workspace.")
+                Text("Use a public HTTPS image or video URL, or use Publish Now with one local image and an R2 bucket connected in Settings → Image Hosting.")
                     .font(.caption).foregroundStyle(.secondary)
             }
             if account.apiPlatform == .facebookPages,
@@ -1027,10 +1027,10 @@ struct MarketingComposerView: View {
         case .mastodon:
             ["API publishing sends text only. This app does not upload local files or send public media URLs to Mastodon."]
         case .threads:
-            ["Media must be a public HTTPS image or video URL; local attachments are not uploaded.",
+            ["Use a public HTTPS media URL, or connect an R2 bucket to upload one local image with Publish Now.",
              "Only one media item can be included in an API post."]
         case .instagram:
-            ["Enter one public HTTPS image or video URL. Local attachments are not uploaded."]
+            ["Use a public HTTPS media URL, or connect an R2 bucket to upload one local image with Publish Now."]
         case .facebookPages:
             ["API publishing supports one public HTTPS photo URL. Local attachments and videos are not sent."]
         case .x:

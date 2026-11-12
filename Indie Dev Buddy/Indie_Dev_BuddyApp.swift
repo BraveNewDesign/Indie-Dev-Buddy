@@ -153,6 +153,8 @@ private struct WorkspaceSettingsView: View {
                 }
             }
 
+            ImageHostingSettings()
+
             Section("Workspaces") {
                 let workspaces = (try? WorkspaceRegistry.workspaces()) ?? []
                 if workspaces.isEmpty {
