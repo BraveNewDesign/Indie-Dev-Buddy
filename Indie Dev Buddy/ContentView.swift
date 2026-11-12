@@ -194,6 +194,7 @@ struct ContentView: View {
     @State private var contentListResetGeneration = 0
     @State private var appsOverviewGeneration = 0
     @FocusState private var searchFocused: Bool
+    @State private var showingWorkspaceOptions = false
 
     private enum RootAction {
         case section(String)
@@ -223,13 +224,16 @@ struct ContentView: View {
             if let snapshot = session.snapshot, let store = session.store {
                 NavigationSplitView(columnVisibility: $sidebarVisibility) {
                     VStack(alignment: .leading, spacing: 0) {
-                        workspaceSwitcher(snapshot.manifest.name)
-                        Divider()
                         sidebarNavigation(snapshot)
                             .disabled(commandActions.isBusy)
+                            .frame(maxHeight: .infinity)
+                        Divider()
+                            .padding(.horizontal, 12)
+                        workspaceSwitcher(snapshot.manifest.name)
                     }
                     .searchable(text: $searchText, placement: .sidebar, prompt: "Search workspace")
                     .searchFocused($searchFocused)
+                    .controlSize(.small)
                     .onExitCommand { clearSearch() }
                     .navigationSplitViewColumnWidth(min: 200, ideal: 240, max: 320)
                 } detail: {
@@ -320,43 +324,86 @@ struct ContentView: View {
     }
 
     private func workspaceSwitcher(_ name: String) -> some View {
-        Menu {
-            ForEach(commandActions.recent, id: \.path) { workspace in
-                Button {
-                    requestWorkspaceChange(.existing(workspace))
-                } label: {
-                    if workspace.path == session.workspaceURL?.path {
-                        Label(workspace.lastPathComponent, systemImage: "checkmark")
-                    } else {
-                        Text(workspace.lastPathComponent)
-                    }
-                }
-                .help(workspace.path)
-            }
-            Divider()
-            Button("Open Workspace…", systemImage: "folder", action: commandActions.open)
-            Button("New Workspace…", systemImage: "plus", action: commandActions.create)
-            Button("Refresh Workspace", systemImage: "arrow.clockwise", action: session.refresh)
-            if let url = session.workspaceURL {
-                Button("Show in Finder", systemImage: "arrow.up.forward.app") {
-                    NSWorkspace.shared.activateFileViewerSelecting([url])
-                }
-                Divider()
-                Button("Remove Workspace from App…", systemImage: "minus.circle") {
-                    requestForgetWorkspace(url)
-                }
-            }
+        Button {
+            showingWorkspaceOptions.toggle()
         } label: {
-            Label(name, systemImage: "folder")
-                .lineLimit(1)
+            HStack(spacing: 6) {
+                Image(systemName: "folder")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .frame(width: 18)
+                    .accessibilityHidden(true)
+                Text(name)
+                    .font(.subheadline.weight(.semibold))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.9)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                Image(systemName: "chevron.up")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                    .accessibilityHidden(true)
+            }
+            .padding(.horizontal, 2)
+            .frame(minHeight: 30)
+            .contentShape(Rectangle())
         }
-        .menuStyle(.borderlessButton)
-        .font(.headline)
+        .buttonStyle(.bordered)
         .help("Switch or manage workspaces")
         .accessibilityLabel("Workspace: \(name)")
         .disabled(commandActions.isBusy)
+        .popover(isPresented: $showingWorkspaceOptions, arrowEdge: .top) {
+            workspaceOptions
+        }
         .padding(.horizontal, 12)
-        .padding(.vertical, 8)
+        .padding(.vertical, 10)
+    }
+
+    private var workspaceOptions: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            if !commandActions.recent.isEmpty {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 4) {
+                        ForEach(commandActions.recent, id: \.path) { workspace in
+                            let isCurrent = workspace.path == session.workspaceURL?.path
+                            workspaceOption(workspace.lastPathComponent, symbol: isCurrent ? "checkmark" : "folder") {
+                                requestWorkspaceChange(.existing(workspace))
+                            }
+                            .help(workspace.path)
+                            .accessibilityAddTraits(isCurrent ? .isSelected : [])
+                        }
+                    }
+                }
+                .frame(maxHeight: 180)
+                .fixedSize(horizontal: false, vertical: true)
+                Divider()
+            }
+            workspaceOption("Open Workspace…", symbol: "folder", action: commandActions.open)
+            workspaceOption("New Workspace…", symbol: "plus", action: commandActions.create)
+            workspaceOption("Refresh Workspace", symbol: "arrow.clockwise", action: session.refresh)
+            if let url = session.workspaceURL {
+                workspaceOption("Show in Finder", symbol: "arrow.up.forward.app") {
+                    NSWorkspace.shared.activateFileViewerSelecting([url])
+                }
+                Divider()
+                workspaceOption("Remove Workspace from App…", symbol: "minus.circle") {
+                    requestForgetWorkspace(url)
+                }
+            }
+        }
+        .padding(8)
+        .frame(width: 250)
+    }
+
+    private func workspaceOption(_ title: String, symbol: String, action: @escaping () -> Void) -> some View {
+        Button {
+            showingWorkspaceOptions = false
+            action()
+        } label: {
+            Label(title, systemImage: symbol)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .buttonStyle(.borderless)
+        .controlSize(.regular)
     }
 
     @ViewBuilder
@@ -365,29 +412,33 @@ struct ContentView: View {
             List(selection: Binding(get: { Optional(section) }, set: { (selection: String?) in
                 if let value = selection, value != section { requestRootAction(.section(value)) }
             })) {
-                Label("Dashboard", systemImage: "rectangle.grid.2x2").tag("Dashboard")
-                Section("Products") {
-                    Label("Apps", systemImage: "square.stack.3d.up")
-                        .badge(snapshot.apps.count).tag("Apps")
-                    Label("Websites", systemImage: "globe")
-                        .tag(ManagementSection.websites.rawValue)
+                sidebarRow("Dashboard", symbol: "rectangle.grid.2x2", destination: "Dashboard")
+                Section {
+                    sidebarRow("Apps", symbol: "square.stack.3d.up", destination: "Apps")
+                        .badge(snapshot.apps.count)
+                    sidebarRow("Websites", symbol: "globe", destination: ManagementSection.websites.rawValue)
+                } header: {
+                    sidebarHeader("Products")
                 }
-                Section("Workspace") {
-                    Label("Content", systemImage: "megaphone")
-                        .badge(snapshot.content.count).tag("Marketing Content")
-                        .contentShape(Rectangle())
+                Section {
+                    sidebarRow("Content", symbol: "megaphone", destination: "Marketing Content")
+                        .badge(snapshot.content.count)
                         .onTapGesture {
                             if section == "Marketing Content" { requestRootAction(.showContentList) }
                         }
-                    Label("Files", systemImage: "folder").tag("Files")
+                    sidebarRow("Files", symbol: "folder", destination: "Files")
+                } header: {
+                    sidebarHeader("Workspace")
                 }
-                Section("Accounts") {
-                    Label("Identities", systemImage: "person.crop.circle")
-                        .tag(ManagementSection.identities.rawValue)
-                    Label("Social Accounts", systemImage: "at")
-                        .tag(ManagementSection.socialAccounts.rawValue)
+                Section {
+                    sidebarRow("Identities", symbol: "person.crop.circle", destination: ManagementSection.identities.rawValue)
+                    sidebarRow("Social Accounts", symbol: "at", destination: ManagementSection.socialAccounts.rawValue)
+                } header: {
+                    sidebarHeader("Accounts")
                 }
             }
+            .listStyle(.sidebar)
+            .environment(\.defaultMinListRowHeight, 36)
         } else {
             let results = searchResults(snapshot)
             if results.isEmpty {
@@ -395,7 +446,7 @@ struct ContentView: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 List {
-                    Section("Workspace Results") {
+                    Section {
                         ForEach(results) { result in
                             Button {
                                 selectSearchResult(result)
@@ -407,18 +458,67 @@ struct ContentView: View {
                                     }
                                 } icon: {
                                     if let socialPlatform = result.socialPlatform {
-                                        SocialPlatformIcon(platform: socialPlatform, size: 20)
+                                        SocialPlatformIcon(platform: socialPlatform, size: 16)
+                                            .frame(width: 22)
                                     } else {
-                                        Image(systemName: result.symbol).foregroundStyle(.secondary)
+                                        SidebarIcon(symbol: result.symbol)
                                     }
                                 }
                             }
                             .buttonStyle(.plain)
                         }
+                    } header: {
+                        sidebarHeader("Workspace Results")
                     }
                 }
+                .listStyle(.sidebar)
             }
         }
+    }
+
+    private func sidebarRow(_ title: String, symbol: String, destination: String) -> some View {
+        Label {
+            Text(title)
+                .lineLimit(1)
+        } icon: {
+            SidebarIcon(symbol: symbol, isSelected: section == destination)
+        }
+        .frame(maxWidth: .infinity, minHeight: 28, alignment: .leading)
+        .contentShape(Rectangle())
+        .listRowBackground(
+            RoundedRectangle(cornerRadius: 8)
+                .fill(.quaternary)
+                .padding(.horizontal, 10)
+                .opacity(section == destination ? 1 : 0)
+        )
+        .tag(destination)
+    }
+
+    private struct SidebarIcon: View {
+        @Environment(\.backgroundProminence) private var backgroundProminence
+        let symbol: String
+        var isSelected = false
+
+        var body: some View {
+            Image(systemName: symbol)
+                .font(.system(size: 16, weight: .medium))
+                .symbolRenderingMode(.monochrome)
+                .foregroundStyle(color)
+                .frame(width: 22)
+                .accessibilityHidden(true)
+        }
+
+        private var color: Color {
+            if backgroundProminence == .increased { return .primary }
+            return isSelected ? .accentColor : .secondary
+        }
+    }
+
+    private func sidebarHeader(_ title: String) -> some View {
+        Text(title)
+            .font(.caption.weight(.semibold))
+            .foregroundStyle(.secondary)
+            .textCase(nil)
     }
 
     private func workspaceDetail(_ snapshot: WorkspaceSnapshot, store: WorkspaceStore) -> some View {
