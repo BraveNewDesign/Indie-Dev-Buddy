@@ -21,6 +21,7 @@ This matrix compares workspace operations exposed by the macOS UI with the CLI i
 | Create a related social post from a blog article | `create social` with `--source ID`, `--app ID ...`, and chosen title/body | Supported; the agent supplies the desired draft text |
 | Browse workspace folders; create folders; import files; rename and move items to Trash | `files`, `mkdir`, `import-file`, `rename`, and `trash` (explicit `--confirm yes`) | Supported with workspace-relative path and symlink checks |
 | Permanently delete a workspace file or folder | `remove` with `--confirm yes` | Supported; permanent removal is extra CLI capability beyond GUI Trash |
+| Manage library assets and screenshot sets | `validate` checks index and reference integrity. Use the app to make changes and check screenshot readiness. | CLI validation only |
 | Create/register, register existing, list, or forget a workspace | `create-workspace`, `register-workspace`, `workspaces`, and `forget-workspace` | Supported; forgetting only removes the app registry entry and keeps files |
 | Switch the open workspace and resolve unsaved editor navigation | CLI commands take an explicit `--workspace PATH`; stale revisions return JSON conflicts for the agent to reread and retry | CLI has no open-editor selection or unsaved GUI draft state |
 | Open/reveal project, repository, app store, and website URLs; copy text/images; show previews and eligibility guidance | GUI-only navigation, clipboard, and presentation actions | **GUI-only by design**; they do not mutate workspace records |

@@ -122,6 +122,7 @@ public actor WorkspaceStore {
             guard url.path != rootURL.path, fileManager.fileExists(atPath: url.path) else {
                 throw WorkspaceStoreError.invalidRelativePath(relativePath)
             }
+            try rejectAssetLibraryPath(String(url.path.dropFirst(rootURL.path.count + 1)))
             try fileManager.removeItem(at: url)
         }
     }
@@ -148,6 +149,7 @@ public actor WorkspaceStore {
 
     public func createFolder(relativePath: String) throws {
         try withWorkspaceLock {
+            try rejectAssetLibraryPath(relativePath)
             try rejectSymbolicLinks(relativePath)
             let url = try safeURL(relativePath)
             let parent = url.deletingLastPathComponent()
@@ -162,6 +164,7 @@ public actor WorkspaceStore {
     public func importFile(from sourceURL: URL, to relativePath: String) throws -> String {
         let values = try sourceURL.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey])
         guard values.isRegularFile == true, values.isSymbolicLink != true else { throw WorkspaceCommandError("Only regular, non-symbolic-link files can be imported.") }
+        try rejectAssetLibraryPath(relativePath)
         try rejectSymbolicLinks(relativePath)
         let target = try safeURL(relativePath)
         let parent = target.deletingLastPathComponent()
@@ -174,6 +177,7 @@ public actor WorkspaceStore {
 
     public func renameItem(relativePath: String, newName: String) throws -> String {
         try withWorkspaceLock {
+            try rejectAssetLibraryPath(relativePath)
             try rejectSymbolicLinks(relativePath)
             let name = newName.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !name.isEmpty, name != ".", name != "..", !name.contains("/"), !name.contains("\\"), !name.contains(":") else {
@@ -186,6 +190,7 @@ public actor WorkspaceStore {
                 throw WorkspaceStoreError.invalidRelativePath(relativePath)
             }
             let targetPath = "\((relativePath as NSString).deletingLastPathComponent)/\(name)"
+            try rejectAssetLibraryPath(targetPath)
             let target = try safeURL(targetPath)
             guard !fileManager.fileExists(atPath: target.path) else { throw WorkspaceCommandError("A workspace item already exists at \(targetPath).") }
             try fileManager.moveItem(at: source, to: target)
@@ -195,6 +200,7 @@ public actor WorkspaceStore {
 
     public func removeManagedItem(relativePath: String) throws {
         try withWorkspaceLock {
+            try rejectAssetLibraryPath(relativePath)
             let url = try manageableURL(relativePath)
             try rejectSymbolicLinks(relativePath)
             guard url.path != rootURL.path, fileManager.fileExists(atPath: url.path) else {
@@ -206,6 +212,7 @@ public actor WorkspaceStore {
 
     public func trashManagedItem(relativePath: String) throws {
         try withWorkspaceLock {
+            try rejectAssetLibraryPath(relativePath)
             let url = try manageableURL(relativePath)
             try rejectSymbolicLinks(relativePath)
             guard fileManager.fileExists(atPath: url.path) else { throw WorkspaceStoreError.invalidRelativePath(relativePath) }
@@ -221,6 +228,20 @@ public actor WorkspaceStore {
                 throw WorkspaceStoreError.invalidRelativePath(relativePath)
             }
         }
+    }
+
+    /// The asset library has its own index and reference maintenance. Generic file commands
+    /// must not mutate it or remove/rename an ancestor that contains it. Compare components
+    /// case-insensitively because workspace paths may be addressed with the volume's alternate
+    /// casing on case-insensitive filesystems.
+    private func rejectAssetLibraryPath(_ relativePath: String) throws {
+        let components = relativePath.split(separator: "/").filter { $0 != "." }
+        let managed = AssetLibrary.directory.split(separator: "/")
+        let overlap = zip(components, managed).allSatisfy { component, managedComponent in
+            String(component).caseInsensitiveCompare(String(managedComponent)) == .orderedSame
+        }
+        guard !components.isEmpty, overlap else { return }
+        throw WorkspaceCommandError("Use the app's Asset Library to change managed assets and screenshot sets.")
     }
 
     private func manageableURL(_ relativePath: String) throws -> URL {

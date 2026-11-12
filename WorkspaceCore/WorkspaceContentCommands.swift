@@ -308,6 +308,39 @@ extension WorkspaceStore {
                 throw WorkspaceCommandError("Expected an asset file at \(relativePath).")
             }
         }
+        // The library index is managed workspace data, so corruption and broken
+        // references must be visible even when no content record currently uses them.
+        let assetLibrary: AssetLibrary?
+        do {
+            assetLibrary = try loadAssetLibrary().library
+        } catch {
+            issues.append(.init(path: AssetLibrary.indexPath, message: error.localizedDescription))
+            assetLibrary = nil
+        }
+        if let assetLibrary {
+            let assetsByID = Dictionary(grouping: assetLibrary.assets, by: \.id)
+            for asset in assetLibrary.assets {
+                guard let relativePath = AssetLibrary.managedPath(asset.reference) else {
+                    issues.append(.init(path: AssetLibrary.indexPath, message: "Invalid managed asset reference \(asset.reference)."))
+                    continue
+                }
+                if assetsByID[asset.id]?.count != 1 {
+                    issues.append(.init(path: AssetLibrary.indexPath, message: "Duplicate managed asset ID \(asset.id)."))
+                }
+                check(relativePath) {
+                    let url = try resolveContentMedia(asset.reference, recordFolder: "")
+                    guard try url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile == true else {
+                        throw WorkspaceCommandError("Expected a managed asset file at \(relativePath).")
+                    }
+                }
+            }
+            let knownIDs = Set(assetsByID.keys)
+            for set in assetLibrary.screenshotSets {
+                for assetID in set.assetIDs where !knownIDs.contains(assetID) {
+                    issues.append(.init(path: AssetLibrary.indexPath, message: "Screenshot set \(set.id) references missing asset \(assetID)."))
+                }
+            }
+        }
         for app in snapshot.apps {
             let recordPath = path(.apps, app.id)
             check(recordPath) {

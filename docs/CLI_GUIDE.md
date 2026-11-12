@@ -56,6 +56,8 @@ For a new model record, omit `--revision`. The JSON must contain the same stable
 
 All file paths are relative to the workspace. `import-file` copies a regular file and refuses to overwrite. `rename` stays within one folder. `trash` is reversible; `remove` permanently deletes and requires confirmation.
 
+Use the app's Asset Library to change files under `Shared Files/Asset Library`. The library tracks assets by ID so they can be reused in content and screenshot sets. `validate` checks that the library index is readable, indexed files exist, and screenshot sets refer to indexed assets. Use the app to check screenshot readiness, including image dimensions and counts.
+
 ```sh
 indiedevbuddy files --workspace "$workspace" --path Content
 indiedevbuddy mkdir --workspace "$workspace" --path Inbox/Research

@@ -37,6 +37,8 @@ struct IndieDevBuddyCLI {
     delete permanently removes the record folder and requires its current revision.
     File commands use workspace-relative paths. remove recursively and permanently
     deletes a managed item and requires --confirm yes; marker files are protected.
+    Use the app's Asset Library to change managed assets and screenshot sets.
+    validate checks workspace records and Asset Library references.
     create-workspace creates the standard workspace structure and registers it.
     update edits the title and/or original body; related destination state can be
     changed with save-record using the full record JSON from read.
