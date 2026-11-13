@@ -64,6 +64,7 @@ struct ManagementWorkspaceView: View {
     @State private var opensAppStore = false
     @State private var reconnectAccountID: String?
     @State private var ownerFilterID = "all"
+    @State private var accountConnectionFilter = "all"
     @State private var creating = false
     @State private var editorIsDirty = false
     @State private var pendingNavigation: PendingManagementNavigation?
@@ -257,16 +258,28 @@ struct ManagementWorkspaceView: View {
 
         return VStack(spacing: 0) {
             if section == .websites || section == .socialAccounts {
-                Picker("Filter by owner", selection: Binding(get: { ownerFilterID }, set: requestOwnerFilter)) {
-                    Text("All owners").tag("all")
-                    ForEach(ownerChoices) { owner in
-                        Text("\(owner.title) · \(owner.detail)").tag(owner.id)
+                HStack(spacing: 8) {
+                    Picker("Filter by owner", selection: Binding(get: { ownerFilterID }, set: requestOwnerFilter)) {
+                        Text("All owners").tag("all")
+                        ForEach(ownerChoices) { owner in
+                            Text("\(owner.title) · \(owner.detail)").tag(owner.id)
+                        }
+                        Text("Unassigned / missing").tag("unassigned")
                     }
-                    Text("Unassigned / missing").tag("unassigned")
+                    .pickerStyle(.menu)
+                    .labelsHidden()
+                    .accessibilityLabel("Filter by owner")
+                    if section == .socialAccounts {
+                        Picker("Filter by API connection", selection: $accountConnectionFilter) {
+                            Text("All connections").tag("all")
+                            Text("API linked").tag("linked")
+                            Text("Manual only").tag("manual")
+                        }
+                        .pickerStyle(.menu)
+                        .labelsHidden()
+                        .accessibilityLabel("Filter by API connection")
+                    }
                 }
-                .pickerStyle(.menu)
-                .labelsHidden()
-                .accessibilityLabel("Filter by owner")
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.horizontal)
                 .padding(.vertical, 8)
@@ -298,6 +311,11 @@ struct ManagementWorkspaceView: View {
                             }
                         }
                         Spacer(minLength: 8)
+                        if section == .socialAccounts, let account = snapshot.socialAccountsByID[row.id], account.providerIdentity != nil {
+                            Image(systemName: "link.circle.fill")
+                                .font(.caption).foregroundStyle(.secondary)
+                                .accessibilityLabel("API identity linked")
+                        }
                         if isPinned {
                             Image(systemName: "pin.fill").font(.caption).foregroundStyle(.secondary)
                                 .accessibilityLabel("Pinned")
@@ -417,13 +435,19 @@ struct ManagementWorkspaceView: View {
                 ManagementRow(id: record.id, title: record.name, subtitle: "\(ownerName(record.owner)) · \(record.baseURL.host ?? record.baseURL.absoluteString)", symbol: "globe")
             }
         case .socialAccounts:
-            snapshot.socialAccounts.filter { matchesOwnerFilter($0.owner) }.map { record in
+            snapshot.socialAccounts.filter {
+                matchesOwnerFilter($0.owner) && (accountConnectionFilter == "all" ||
+                    (accountConnectionFilter == "linked") == ($0.providerIdentity != nil))
+            }.map { record in
                 let handle = record.handle?.trimmingCharacters(in: .whitespacesAndNewlines)
-                let accountName = (handle?.isEmpty == false ? handle : nil) ?? record.profileURL?.host
+                let accountName = (record.displayName?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false ? record.displayName : nil)
+                    ?? ((handle?.isEmpty == false ? handle : nil) ?? record.profileURL?.host)
                 let account = SocialPlatformIcon.assetName(for: record.platform) != nil
                     ? (accountName ?? "Unconfigured account")
                     : [record.platform, accountName].compactMap { $0 }.joined(separator: " · ")
-                return ManagementRow(id: record.id, title: account.isEmpty ? "Unconfigured account" : account, subtitle: record.owner.map(ownerName) ?? "Owner not set", symbol: "at", socialPlatform: record.platform)
+                let handleLabel = handle.flatMap { $0.isEmpty ? nil : ($0.hasPrefix("@") ? $0 : "@\($0)") }
+                let detail = [handleLabel, record.owner.map(ownerName)].compactMap { $0 }.joined(separator: " · ")
+                return ManagementRow(id: record.id, title: account.isEmpty ? "Unconfigured account" : account, subtitle: detail.isEmpty ? "Owner not set" : detail, symbol: "at", socialPlatform: record.platform)
             }
         }
     }
@@ -1661,6 +1685,7 @@ private struct SocialAccountRecordEditor: View {
     @State private var profileURL = ""
     @State private var enabled = true
     @State private var draftID = UUID().uuidString.lowercased()
+    @State private var baselineRecord: SocialAccountRecord?
     @State private var avatarPath: String?
     @State private var avatarPreview: NSImage?
     @State private var identityAvatarPreview: NSImage?
@@ -1668,10 +1693,12 @@ private struct SocialAccountRecordEditor: View {
     @State private var showingAvatarPicker = false
     @State private var showingBlueskyConnect = false
     @State private var showingOAuthConnect = false
-    @State private var showingMetaAccessHelp = false
     @State private var showingAccountActivity = false
     @State private var providerIdentity: ContentRecipientIdentity?
     @State private var connectedAccount: SocialAccount?
+    @State private var connectionCapabilities: Set<SocialCapability> = []
+    @State private var connectionMessage: String?
+    @State private var showingConnectionManager = false
     @State private var saving = false
     private let platforms = ["Bluesky", "Threads", "Instagram", "X", "Facebook", "LinkedIn", "Mastodon", "GitHub", "Other"]
     private var platformValue: String { platform == "Other" ? customPlatform : platform }
@@ -1685,6 +1712,7 @@ private struct SocialAccountRecordEditor: View {
         self.workspaceStore = workspaceStore
         self.onDirtyChange = onDirtyChange
         self.onSave = onSave
+        _baselineRecord = State(initialValue: record)
 
         let ownerID = record?.owner.map { "\($0.type.rawValue):\($0.id)" } ?? ""
         let ownerIdentity = ownerID.hasPrefix("identity:")
@@ -1698,7 +1726,9 @@ private struct SocialAccountRecordEditor: View {
 
     var body: some View {
         Form {
-            Section("Social account") {
+            accountHeader
+            connectionSection
+            Section("Profile") {
                 Picker("Platform", selection: $platform) { ForEach(platforms, id: \.self) { Text($0).tag($0) } }
                 if platform == "Other" { TextField("Platform name", text: $customPlatform) }
                 Picker("Owner", selection: $ownerID) {
@@ -1709,45 +1739,36 @@ private struct SocialAccountRecordEditor: View {
                 TextField("Display name", text: $displayName)
                 TextField("Profile URL", text: $profileURL)
                 Toggle("Enabled for new posts", isOn: $enabled)
-                Text("A new post can use this account when it is enabled, has an owner, and has a platform plus a handle or profile URL.")
-                    .font(.caption).foregroundStyle(.secondary)
-            }
-            connectionSection
-            Section("Avatar") {
-                HStack(spacing: 14) {
+                HStack(spacing: 12) {
                     Group {
                         if let displayedAvatarPreview {
                             Image(nsImage: displayedAvatarPreview).resizable().scaledToFill()
                         } else {
-                            Image(systemName: "person.crop.circle.fill").resizable().scaledToFit()
-                                .foregroundStyle(.secondary)
+                            Image(systemName: "person.crop.circle.fill").resizable().scaledToFit().foregroundStyle(.secondary)
                         }
                     }
-                    .frame(width: 64, height: 64)
-                    .clipShape(Circle())
-                    .accessibilityLabel(displayedAvatarPreview == nil ? "No account avatar selected" : (avatarPath == nil ? "Identity photo avatar preview" : "Custom account avatar preview"))
-                    VStack(alignment: .leading, spacing: 8) {
-                        Button(avatarPath == nil ? "Choose Custom Avatar…" : "Replace Custom Avatar…") { showingAvatarPicker = true }
+                    .frame(width: 42, height: 42).clipShape(Circle())
+                    .accessibilityLabel(displayedAvatarPreview == nil ? "No account avatar selected" : "Account avatar preview")
+                    VStack(alignment: .leading, spacing: 4) {
+                        Button(avatarPath == nil ? "Choose Avatar…" : "Replace Avatar…") { showingAvatarPicker = true }
                         if avatarPath != nil {
-                            Button("Use Identity Photo") {
-                                avatarPath = nil
-                                avatarPreview = nil
-                                avatarError = nil
-                            }
-                        }
-                        if let avatarError {
-                            Text(avatarError).font(.caption).foregroundStyle(.red)
-                        } else if avatarPath == nil, selectedIdentity?.photoPath != nil {
-                            Text("Using the owner’s identity photo. Add a custom avatar to override it.")
-                                .font(.caption).foregroundStyle(.secondary)
-                        } else if avatarPath == nil {
-                            Text("Using a custom avatar overrides the owner’s identity photo when one is set.")
+                            Button("Use Identity Photo") { avatarPath = nil; avatarPreview = nil; avatarError = nil }.font(.caption)
+                        } else {
+                            Text(selectedIdentity?.photoPath == nil ? "Uses the platform icon when no owner photo is available." : "Uses the owner’s identity photo.")
                                 .font(.caption).foregroundStyle(.secondary)
                         }
+                        if let avatarError { Text(avatarError).font(.caption).foregroundStyle(.red) }
                     }
                 }
             }
-            Section { HStack { Spacer(); Button("Save Social Account") { Task { await save() } }.buttonStyle(.borderedProminent).disabled(!canSave) } }
+            Section {
+                HStack {
+                    if isDirty { Text("Unsaved changes").font(.caption).foregroundStyle(.secondary) }
+                    Spacer()
+                    Button(saving ? "Saving…" : "Save Changes") { Task { await save() } }
+                        .buttonStyle(.borderedProminent).disabled(!canSave || !isDirty)
+                }
+            }
         }
         .formStyle(.grouped)
         .navigationTitle(record == nil ? "New Social Account" : platformValue)
@@ -1762,14 +1783,26 @@ private struct SocialAccountRecordEditor: View {
                 SocialOAuthConnectionSheet(platform: apiPlatform, onConnected: applyConnection)
             }
         }
-        .sheet(isPresented: $showingMetaAccessHelp) {
-            if let apiPlatform, [.facebookPages, .instagram, .threads].contains(apiPlatform) {
-                MetaAccessHelpView(platform: apiPlatform)
-            }
-        }
         .sheet(isPresented: $showingAccountActivity) {
             if let providerIdentity, let connectedAccount {
                 SocialAccountActivityView(identity: providerIdentity, account: connectedAccount)
+            }
+        }
+        .sheet(isPresented: $showingConnectionManager) {
+            if let apiPlatform {
+                SocialConnectionManagementSheet(
+                    platform: apiPlatform, identity: providerIdentity, account: connectedAccount,
+                    capabilities: connectionCapabilities, statusMessage: connectionMessage,
+                    onReconnect: {
+                        showingConnectionManager = false
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { presentConnection(for: apiPlatform) }
+                    },
+                    onActivity: {
+                        showingConnectionManager = false
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { showingAccountActivity = true }
+                    },
+                    onUnlink: unlinkConnection
+                )
             }
         }
         .onAppear {
@@ -1781,11 +1814,21 @@ private struct SocialAccountRecordEditor: View {
         }
         .task(id: providerIdentity) {
             connectedAccount = nil
+            connectionCapabilities = []
+            connectionMessage = nil
             guard let identity = providerIdentity else { return }
             let accounts = try? await socialPublishingRuntime.connections.accounts()
             guard !Task.isCancelled, providerIdentity == identity else { return }
             connectedAccount = accounts?.first {
                 $0.platform.rawValue == identity.platform && $0.server == identity.server && $0.remoteID == identity.remoteID
+            }
+            guard connectedAccount != nil else { connectionCapabilities = []; return }
+            do {
+                connectionCapabilities = try await socialPublishingRuntime.connections.capabilities(for: identity)
+                connectionMessage = nil
+            } catch {
+                connectionCapabilities = []
+                connectionMessage = "Connection check failed. Reconnect if publishing is unavailable."
             }
         }
         .onChange(of: platformValue) { _, newValue in
@@ -1806,46 +1849,110 @@ private struct SocialAccountRecordEditor: View {
 
     @ViewBuilder
     private var connectionSection: some View {
-        Section("API connection") {
+        Section(providerIdentity == nil ? "Optional API connection" : "API connection") {
             if let apiPlatform {
-                if [.facebookPages, .instagram, .threads].contains(apiPlatform) {
-                    Button("Set Up Meta API Access…") { showingMetaAccessHelp = true }
-                }
-                if let connectedAccount {
-                    Label("Connected as \(connectedAccount.displayName ?? connectedAccount.username)", systemImage: "checkmark.circle.fill")
-                        .foregroundStyle(.green)
-                    if let authenticatedUserName = connectedAccount.authenticatedUserName,
-                       authenticatedUserName != connectedAccount.displayName {
-                        Text("Authorized by \(authenticatedUserName)")
-                            .font(.caption).foregroundStyle(.secondary)
+                HStack(alignment: .top, spacing: 12) {
+                    if providerIdentity != nil || connectionNeedsAttention {
+                        Image(systemName: connectionSymbol).font(.title3).foregroundStyle(connectionTint).frame(width: 28)
                     }
-                    if let status = socialPublishingRuntime.metaCredentialStatus[connectedAccount.id] {
-                        Text(status).font(.caption).foregroundStyle(.secondary)
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(connectionTitle).font(.headline)
+                        Text(connectionSummary).font(.subheadline).foregroundStyle(.secondary)
+                        if let connectedAccount, let name = connectedAccount.authenticatedUserName,
+                           name != connectedAccount.displayName {
+                            Text("Authorized by \(name)").font(.caption).foregroundStyle(.secondary)
+                        }
+                        if let profile = connectedAccount?.profileURL, profile.scheme == "https" { Link("Open profile", destination: profile).font(.caption) }
                     }
-                    Button("View Account Activity…") { showingAccountActivity = true }
-                } else if providerIdentity != nil {
-                    Label("Connection unavailable on this Mac", systemImage: "exclamationmark.circle")
-                } else {
-                    Label("API connection not configured", systemImage: "lock.shield")
+                    Spacer(minLength: 8)
+                    if providerIdentity == nil {
+                        Button("Connect API…") { presentConnection(for: apiPlatform) }
+                            .buttonStyle(.bordered)
+                            .accessibilityHint("Optionally connect this account to its provider; manual posting remains available")
+                    } else {
+                        Button("Manage Connection…") { showingConnectionManager = true }
+                            .buttonStyle(.bordered)
+                            .accessibilityHint("View capabilities and manage authorization")
+                    }
                 }
-                if [.facebookPages, .instagram, .threads].contains(apiPlatform) {
-                    Text("Import a Meta access token to connect locally. Browser sign-in is also available when you have an OAuth exchange service.")
-                        .font(.caption).foregroundStyle(.secondary)
-                } else if apiPlatform.requiresBroker {
-                    Text("\(apiPlatform.workspaceTitle) requires provider registration and a trusted HTTPS exchange service.")
-                        .font(.caption).foregroundStyle(.secondary)
+                if let status = connectedAccount.flatMap({ socialPublishingRuntime.metaCredentialStatus[$0.id] }) {
+                    Text(status).font(.caption).foregroundStyle(status.localizedCaseInsensitiveContains("reconnect") ? .orange : .secondary)
                 }
-                Button(providerIdentity == nil ? "Connect \(apiPlatform.workspaceTitle)…" : "Reconnect \(apiPlatform.workspaceTitle)…") {
-                    presentConnection(for: apiPlatform)
-                }
-                if providerIdentity != nil {
-                    Button("Unlink from This Workspace Account", role: .destructive) { providerIdentity = nil }
-                    Text("Save the workspace account to apply the change.")
-                        .font(.caption).foregroundStyle(.secondary)
+                if let connectionMessage { Label(connectionMessage, systemImage: "exclamationmark.triangle").font(.caption).foregroundStyle(.orange) }
+                if providerIdentity == nil, [.facebookPages, .instagram, .threads].contains(apiPlatform) {
+                    Text("Connect with a Meta access token or browser sign-in where configured.").font(.caption).foregroundStyle(.secondary)
+                } else if providerIdentity == nil, apiPlatform.requiresBroker {
+                    Text("Browser authorization uses a provider registration and trusted HTTPS exchange service.").font(.caption).foregroundStyle(.secondary)
                 }
             } else {
                 Label("Manual posting", systemImage: "hand.tap")
+                Text("This platform does not have a publishing API connection in Indie Dev Buddy.").font(.caption).foregroundStyle(.secondary)
             }
+        }
+    }
+
+    private var accountHeader: some View {
+        Section {
+            HStack(spacing: 14) {
+                Group {
+                    if let displayedAvatarPreview { Image(nsImage: displayedAvatarPreview).resizable().scaledToFill() }
+                    else { SocialPlatformIcon(platform: platformValue, size: 40) }
+                }
+                .frame(width: 48, height: 48).clipShape(Circle())
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(displayName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? (handle.isEmpty ? "New Social Account" : handle) : displayName)
+                        .font(.title3.weight(.semibold))
+                    Text([handle.isEmpty ? nil : (handle.hasPrefix("@") ? handle : "@\(handle)"), platformValue, selectedOwnerName].compactMap { $0 }.joined(separator: " · "))
+                        .font(.subheadline).foregroundStyle(.secondary)
+                }
+                Spacer()
+                if providerIdentity != nil {
+                    Label(connectedAccount == nil ? "Unavailable" : "Connected", systemImage: connectedAccount == nil ? "exclamationmark.circle" : "checkmark.circle.fill")
+                        .font(.caption.weight(.medium)).foregroundStyle(connectedAccount == nil ? .orange : .green)
+                }
+            }
+            .padding(.vertical, 2)
+        }
+    }
+
+    private var selectedOwnerName: String? { owners.first(where: { $0.id == ownerID })?.title }
+    private var connectionTitle: String {
+        if connectedAccount != nil && connectionMessage != nil { return "Connection needs attention" }
+        if providerIdentity != nil && connectedAccount == nil { return "Connection unavailable on this Mac" }
+        if connectedAccount != nil { return "Connected as @\(connectedAccount?.username ?? "account")" }
+        return "API connection is optional"
+    }
+    private var connectionSummary: String {
+        if let connectionMessage { return connectionMessage }
+        if providerIdentity != nil && connectedAccount == nil { return "Credentials may be missing or need renewal." }
+        if connectedAccount != nil {
+            let names = Set(connectionCapabilities.compactMap(capabilityLabel)).sorted()
+            return names.isEmpty ? "Connection verified." : "Can \(names.joined(separator: ", "))."
+        }
+        return "Manual posting remains available without an API connection."
+    }
+    private var connectionSymbol: String { connectionNeedsAttention ? "exclamationmark.triangle.fill" : (connectedAccount == nil ? (providerIdentity == nil ? "link" : "exclamationmark.triangle") : "checkmark.circle.fill") }
+    private var connectionTint: Color { connectionNeedsAttention ? .orange : (connectedAccount == nil ? (providerIdentity == nil ? .secondary : .orange) : .green) }
+    private var connectionNeedsAttention: Bool {
+        if connectionMessage != nil { return true }
+        guard let id = connectedAccount?.id else { return false }
+        return socialPublishingRuntime.metaCredentialStatus[id]?.localizedCaseInsensitiveContains("reconnect") == true
+    }
+    private func capabilityLabel(_ capability: SocialCapability) -> String? {
+        switch capability {
+        case .publishText: "publish text"
+        case .publishMedia: "publish media"
+        case .publishMultipleMedia: "publish multiple items"
+        case .listPosts: "view posts"
+        case .reply: "reply"
+        case .readReplies: "view replies"
+        case .deleteReply: "delete replies"
+        case .moderateReplies: "moderate replies"
+        case .like, .unlike: "manage likes"
+        case .repost, .unrepost: "repost"
+        case .analytics: "view analytics"
+        case .resolveMentions: "resolve mentions"
+        case .readPost, .refreshSession: nil
         }
     }
 
@@ -1873,6 +1980,65 @@ private struct SocialAccountRecordEditor: View {
         if let profileURL = account.profileURL, profileURL.scheme?.lowercased() == "https", profileURL.host != nil {
             self.profileURL = profileURL.absoluteString
         }
+        Task { await persistConnectionLink() }
+    }
+
+    private func persistConnectionLink() async {
+        let identity = providerIdentity
+        guard let identity else { return }
+        let linkedRecord: SocialAccountRecord
+        if let record = baselineRecord ?? record {
+            linkedRecord = SocialAccountRecord(id: record.id, platform: platformValue.trimmingCharacters(in: .whitespacesAndNewlines), owner: record.owner,
+                                               handle: record.handle, displayName: record.displayName,
+                                               profileURL: record.profileURL, avatarPath: record.avatarPath,
+                                               providerIdentity: identity, enabled: record.enabled)
+        } else {
+            guard canSave else {
+                connectionMessage = "Connection authorized. Add an owner and profile handle, then save the account to link it in this workspace."
+                return
+            }
+            let choice = owners.first(where: { $0.id == ownerID })
+            linkedRecord = SocialAccountRecord(id: draftID, platform: platformValue, owner: choice?.owner,
+                                               handle: handle, displayName: displayName,
+                                               profileURL: optionalWebURL(profileURL), avatarPath: avatarPath,
+                                               providerIdentity: identity, enabled: enabled)
+        }
+        if await onSave(linkedRecord) {
+            baselineRecord = linkedRecord
+            connectionMessage = nil
+            onDirtyChange(isDirty)
+        } else {
+            connectionMessage = "Authorization succeeded, but the account link could not be saved. Save the account to finish linking it."
+        }
+    }
+
+    private func unlinkConnection() {
+        guard providerIdentity != nil else { return }
+        let unlinkedRecord: SocialAccountRecord
+        if let record = baselineRecord ?? record {
+            unlinkedRecord = SocialAccountRecord(id: record.id, platform: record.platform, owner: record.owner,
+                                                  handle: record.handle, displayName: record.displayName,
+                                                  profileURL: record.profileURL, avatarPath: record.avatarPath,
+                                                  providerIdentity: nil, enabled: record.enabled)
+        } else {
+            guard let owner = owners.first(where: { $0.id == ownerID })?.owner else { return }
+            unlinkedRecord = SocialAccountRecord(id: draftID, platform: platformValue, owner: owner,
+                                                  handle: handle, displayName: displayName,
+                                                  profileURL: optionalWebURL(profileURL), avatarPath: avatarPath,
+                                                  providerIdentity: nil, enabled: enabled)
+        }
+        Task {
+            if await onSave(unlinkedRecord) {
+                providerIdentity = nil
+                connectedAccount = nil
+                connectionCapabilities = []
+                baselineRecord = unlinkedRecord
+                connectionMessage = nil
+                onDirtyChange(isDirty)
+            } else {
+                connectionMessage = "The workspace link could not be removed. Try again after saving the account."
+            }
+        }
     }
     private func load() {
         guard let record else {
@@ -1880,6 +2046,7 @@ private struct SocialAccountRecordEditor: View {
             return
         }
         draftID = record.id
+        baselineRecord = record
         platform = platforms.contains(record.platform) ? record.platform : "Other"
         customPlatform = platforms.contains(record.platform) ? "" : record.platform
         ownerID = record.owner.map { "\($0.type.rawValue):\($0.id)" } ?? ""
@@ -1957,7 +2124,9 @@ private struct SocialAccountRecordEditor: View {
         guard canSave else { return false }
         guard let choice = owners.first(where: { $0.id == ownerID }) else { return false }
         saving = true; defer { saving = false }
-        if await onSave(SocialAccountRecord(id: record?.id ?? draftID, platform: platformValue.trimmingCharacters(in: .whitespacesAndNewlines), owner: choice.owner, handle: handle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : handle.trimmingCharacters(in: .whitespacesAndNewlines), displayName: displayName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : displayName.trimmingCharacters(in: .whitespacesAndNewlines), profileURL: optionalWebURL(profileURL), avatarPath: avatarPath, providerIdentity: providerIdentity, enabled: enabled)) {
+        let updatedRecord = SocialAccountRecord(id: baselineRecord?.id ?? draftID, platform: platformValue.trimmingCharacters(in: .whitespacesAndNewlines), owner: choice.owner, handle: handle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : handle.trimmingCharacters(in: .whitespacesAndNewlines), displayName: displayName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : displayName.trimmingCharacters(in: .whitespacesAndNewlines), profileURL: optionalWebURL(profileURL), avatarPath: avatarPath, providerIdentity: providerIdentity, enabled: enabled)
+        if await onSave(updatedRecord) {
+            baselineRecord = updatedRecord
             onDirtyChange(false)
             return true
         }
@@ -1965,12 +2134,98 @@ private struct SocialAccountRecordEditor: View {
     }
     private var dirtySignature: String { "\(platform)|\(customPlatform)|\(ownerID)|\(handle)|\(displayName)|\(profileURL)|\(enabled)|\(avatarPath ?? "")|\(providerIdentity?.platform ?? "")|\(providerIdentity?.server.absoluteString ?? "")|\(providerIdentity?.remoteID ?? "")" }
     private var isDirty: Bool {
-        if let record {
-            let savedPlatform = platforms.contains(record.platform) ? record.platform : "Other"
-            let savedCustomPlatform = platforms.contains(record.platform) ? "" : record.platform
-            return platform != savedPlatform || customPlatform != savedCustomPlatform || ownerID != (record.owner.map { "\($0.type.rawValue):\($0.id)" } ?? "") || handle != (record.handle ?? "") || displayName != (record.displayName ?? "") || profileURL != (record.profileURL?.absoluteString ?? "") || enabled != record.enabled || avatarPath != record.avatarPath || providerIdentity != record.providerIdentity
+        if let baselineRecord {
+            let savedPlatform = platforms.contains(baselineRecord.platform) ? baselineRecord.platform : "Other"
+            let savedCustomPlatform = platforms.contains(baselineRecord.platform) ? "" : baselineRecord.platform
+            return platform != savedPlatform || customPlatform != savedCustomPlatform || ownerID != (baselineRecord.owner.map { "\($0.type.rawValue):\($0.id)" } ?? "") || handle != (baselineRecord.handle ?? "") || displayName != (baselineRecord.displayName ?? "") || profileURL != (baselineRecord.profileURL?.absoluteString ?? "") || enabled != baselineRecord.enabled || avatarPath != baselineRecord.avatarPath || providerIdentity != baselineRecord.providerIdentity
         }
         return platform != "Threads" || !customPlatform.isEmpty || ownerID != (owners.first?.id ?? "") || !handle.isEmpty || !displayName.isEmpty || !profileURL.isEmpty || !enabled || avatarPath != nil
+    }
+}
+
+private struct SocialConnectionManagementSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    let platform: SocialPlatform
+    let identity: ContentRecipientIdentity?
+    let account: SocialAccount?
+    let capabilities: Set<SocialCapability>
+    let statusMessage: String?
+    let onReconnect: () -> Void
+    let onActivity: () -> Void
+    let onUnlink: () -> Void
+    @State private var confirmingUnlink = false
+
+    private var capabilityItems: [(SocialCapability, String)] {
+        [(.publishText, "Publish text"), (.publishMedia, "Publish media"),
+         (.publishMultipleMedia, "Publish multiple media items"), (.listPosts, "View posts"),
+         (.reply, "Reply"), (.readReplies, "View replies"), (.deleteReply, "Delete replies"),
+         (.moderateReplies, "Moderate replies"), (.like, "Like posts"), (.repost, "Repost"),
+         (.analytics, "View analytics"), (.resolveMentions, "Resolve mentions")]
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            HStack(spacing: 12) {
+                SocialPlatformIcon(platform: platform.workspaceTitle, size: 32)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Manage Connection").font(.title2.weight(.semibold))
+                    Text(platform.workspaceTitle).foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button("Done") { dismiss() }.keyboardShortcut(.cancelAction)
+            }
+            Divider()
+            if let account {
+                Label("Connected as @\(account.username)", systemImage: "checkmark.circle.fill").foregroundStyle(.green)
+                if let name = account.authenticatedUserName, name != account.displayName {
+                    LabeledContent("Authorized by", value: name)
+                }
+                if let profileURL = account.profileURL, profileURL.scheme == "https" {
+                    Link(destination: profileURL) { Label("Open profile", systemImage: "arrow.up.right.square") }
+                }
+            } else if identity != nil {
+                Label("Connection unavailable on this Mac", systemImage: "exclamationmark.triangle.fill").foregroundStyle(.orange)
+                Text("Credentials may be missing or expired. Reconnect to restore access.").foregroundStyle(.secondary)
+            }
+            if let statusMessage {
+                Label(statusMessage, systemImage: "exclamationmark.circle").font(.callout).foregroundStyle(.orange)
+            }
+            GroupBox("Available capabilities") {
+                if account == nil {
+                    Text("Reconnect to verify this provider’s current capabilities.").foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                } else if capabilities.isEmpty {
+                    Text("No publishing or activity capabilities were confirmed.").foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                } else {
+                    LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 8) {
+                        ForEach(capabilityItems.filter { capabilities.contains($0.0) }, id: \.0) { _, title in
+                            Label(title, systemImage: "checkmark.circle.fill")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
+            Spacer(minLength: 0)
+            HStack {
+                if account != nil {
+                    Button("View Account Activity…", systemImage: "text.bubble") { onActivity() }
+                }
+                Spacer()
+                Button("Unlink", role: .destructive) { confirmingUnlink = true }.disabled(identity == nil)
+                Button("Reconnect…", systemImage: "arrow.clockwise") { onReconnect() }
+                    .buttonStyle(.borderedProminent)
+            }
+        }
+        .padding(22)
+        .frame(minWidth: 520, idealWidth: 580, minHeight: 340, idealHeight: 410)
+        .confirmationDialog("Unlink this provider identity from the workspace account?", isPresented: $confirmingUnlink, titleVisibility: .visible) {
+            Button("Unlink Account", role: .destructive) { onUnlink(); dismiss() }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("This removes the workspace link only. It does not delete the account record, related content, or credentials stored by the provider connection.")
+        }
     }
 }
 

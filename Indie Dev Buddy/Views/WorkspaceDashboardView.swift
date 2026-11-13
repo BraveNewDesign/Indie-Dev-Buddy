@@ -49,15 +49,6 @@ struct WorkspaceDashboardView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 22) {
-                VStack(alignment: .leading, spacing: 5) {
-                    Text(snapshot.manifest.name)
-                        .font(.largeTitle.bold())
-                        .accessibilityAddTraits(.isHeader)
-                    Text("Dashboard")
-                        .font(.title3)
-                        .foregroundStyle(.secondary)
-                }
-                quickActions
                 let issues = deliveryIssues
                 let plans = plannedContent
                 let drafts = openDrafts
@@ -85,7 +76,7 @@ struct WorkspaceDashboardView: View {
                 let articles = drafts.filter { $0.artwork?.symbol == "doc.richtext" }
                 let otherDrafts = drafts.filter { $0.artwork?.symbol != "doc.richtext" }
                 if !snapshot.apps.isEmpty {
-                    collection("Your Apps", rows: appRows, wide: false) { openSection("Apps") }
+                    collection("My Apps", rows: appRows, wide: false, appsOnly: true) { openSection("Apps") }
                 }
                 if !otherDrafts.isEmpty {
                     collection("Ready and Drafts", rows: otherDrafts, wide: true) { openSection("Marketing Content") }
@@ -107,6 +98,22 @@ struct WorkspaceDashboardView: View {
             .frame(maxWidth: .infinity)
         }
         .navigationTitle("Dashboard")
+        .toolbar {
+            ToolbarItem(placement: .primaryAction) {
+                Menu("Create", systemImage: "plus") {
+                    Button("App") { createRecord(.app) }
+                    Button("Identity") { createRecord(.identity) }
+                    Button("Website") { createRecord(.website) }
+                    Button("Social Account") { createRecord(.socialAccount) }
+                    Divider()
+                    if blogEnabled { Button("Blog Article") { createContent(.blog) } }
+                    Button("Social Post") { createContent(.social) }
+                    Button("Idea") { createContent(.idea) }
+                }
+                .labelStyle(.iconOnly)
+                .help("Create")
+            }
+        }
     }
 
     private var emptyState: some View {
@@ -166,7 +173,7 @@ struct WorkspaceDashboardView: View {
         }
     }
 
-    private func collection(_ title: String, rows: [Row], wide: Bool, openAll: @escaping () -> Void) -> some View {
+    private func collection(_ title: String, rows: [Row], wide: Bool, appsOnly: Bool = false, openAll: @escaping () -> Void) -> some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
                 Text(title).font(.title2.bold()).accessibilityAddTraits(.isHeader)
@@ -176,30 +183,52 @@ struct WorkspaceDashboardView: View {
             }
             LazyVGrid(columns: [GridItem(.adaptive(minimum: wide ? 210 : 155), spacing: 12)], spacing: 12) {
                 ForEach(rows.prefix(6)) { row in
-                    VStack(alignment: .leading, spacing: 6) {
+                    if appsOnly {
                         Button(action: row.action) {
-                            VStack(alignment: .leading, spacing: 7) {
-                                artwork(row.artwork)
-                                    .frame(height: wide ? 100 : 80)
-                                    .clipShape(.rect(cornerRadius: 10))
-                                Text(row.title).font(.headline).lineLimit(1)
-                                Text(row.excerpt?.isEmpty == false ? row.excerpt ?? row.detail : row.detail)
-                                    .font(.caption).foregroundStyle(.secondary).lineLimit(2)
-                                Spacer(minLength: 0)
+                            VStack(spacing: 9) {
+                                artwork(row.artwork).frame(width: 88, height: 88)
+                                Text(row.title)
+                                    .font(.headline)
+                                    .multilineTextAlignment(.center)
+                                    .lineLimit(2)
+                                    .frame(maxWidth: .infinity)
                             }
-                            .frame(height: wide ? 150 : 126, alignment: .topLeading)
-                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 8)
                             .contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)
-                        if let openAppStore = row.openAppStore {
-                            Button("App Store Connect", action: openAppStore)
-                                .buttonStyle(.link)
-                                .accessibilityLabel("Open App Store Connect for \(row.title)")
+                        .contextMenu {
+                            if let openAppStore = row.openAppStore {
+                                Button("Open App Store Connect", action: openAppStore)
+                            }
                         }
+                    } else {
+                        VStack(alignment: .leading, spacing: 6) {
+                            Button(action: row.action) {
+                                VStack(alignment: .leading, spacing: 7) {
+                                    artwork(row.artwork)
+                                        .frame(height: wide ? 100 : 80)
+                                        .clipShape(.rect(cornerRadius: 10))
+                                    Text(row.title).font(.headline).lineLimit(1)
+                                    Text(row.excerpt?.isEmpty == false ? row.excerpt ?? row.detail : row.detail)
+                                        .font(.caption).foregroundStyle(.secondary).lineLimit(2)
+                                    Spacer(minLength: 0)
+                                }
+                                .frame(height: wide ? 150 : 126, alignment: .topLeading)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                            if let openAppStore = row.openAppStore {
+                                Button("App Store Connect", action: openAppStore)
+                                    .buttonStyle(.link)
+                                    .accessibilityLabel("Open App Store Connect for \(row.title)")
+                            }
+                        }
+                        .padding(10)
+                        .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 14))
                     }
-                    .padding(10)
-                    .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 14))
                 }
             }
         }
@@ -292,7 +321,8 @@ struct WorkspaceDashboardView: View {
             paths: artwork?.paths ?? [],
             folder: artwork?.folder,
             symbol: artwork?.symbol ?? "square.stack",
-            tint: artwork?.tint ?? .accentColor
+            tint: artwork?.tint ?? .accentColor,
+            clearBackground: artwork?.symbol == "app.dashed"
         )
         .accessibilityHidden(true)
     }
@@ -310,27 +340,6 @@ struct WorkspaceDashboardView: View {
 
     private func recordFolder(category: String, id: String) -> String? {
         snapshot.recordPaths[category]?[id].map { ($0 as NSString).deletingLastPathComponent }
-    }
-
-    private var quickActions: some View {
-        HStack(spacing: 10) {
-            if snapshot.apps.isEmpty {
-                Button("Add App", systemImage: "plus") { createRecord(.app) }
-                    .buttonStyle(.borderedProminent)
-            }
-            Button("New Idea", systemImage: "lightbulb") { createContent(.idea) }
-            Menu {
-                if !snapshot.apps.isEmpty { Button("App") { createRecord(.app) } }
-                Button("Website") { createRecord(.website) }
-                Button("Social Account") { createRecord(.socialAccount) }
-                Divider()
-                if blogEnabled { Button("Article") { createContent(.blog) } }
-                Button("Social Post") { createContent(.social) }
-            } label: {
-                Label("Create", systemImage: "plus")
-            }
-            .fixedSize()
-        }
     }
 
     private func card(_ title: String, icon: String, rows: [Row], openAll: @escaping () -> Void) -> some View {
@@ -487,6 +496,7 @@ private struct DashboardArtworkView: View {
     let folder: String?
     let symbol: String
     let tint: Color
+    var clearBackground = false
     @State private var image: CGImage?
 
     private struct Request: Hashable, Sendable {
@@ -500,8 +510,10 @@ private struct DashboardArtworkView: View {
         let request = Request(root: workspaceRoot, folder: folder, paths: paths, generation: generation)
         GeometryReader { proxy in
             ZStack {
-                LinearGradient(colors: [tint.opacity(0.22), tint.opacity(0.07)],
-                               startPoint: .topLeading, endPoint: .bottomTrailing)
+                if !clearBackground {
+                    LinearGradient(colors: [tint.opacity(0.22), tint.opacity(0.07)],
+                                   startPoint: .topLeading, endPoint: .bottomTrailing)
+                }
                 if let image {
                     Image(decorative: image, scale: 1)
                         .resizable()
