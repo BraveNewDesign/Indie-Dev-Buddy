@@ -1,8 +1,6 @@
-<p align="center">
-  <img src="docs/assets/app-icon.png" alt="" width="120">
-</p>
-
-<h1 align="center">Indie Dev Buddy</h1>
+<h1 align="center">
+  <img src="docs/assets/indie-dev-buddy-logo.png" alt="Indie Dev Buddy" width="640">
+</h1>
 
 <p align="center">
   A little more organization for everything that comes after making an app.

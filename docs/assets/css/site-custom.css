@@ -20,7 +20,15 @@ body {
 
 .site-title {
   color: var(--idd-ink);
-  font-weight: 700;
+  font-size: 0;
+}
+
+.site-title::before {
+  content: "";
+  display: block;
+  width: min(220px, 100%);
+  aspect-ratio: 4364 / 710;
+  background: url("../indie-dev-buddy-logo.png") left center / contain no-repeat;
 }
 
 .main-content-wrap {
