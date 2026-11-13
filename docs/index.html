@@ -36,6 +36,7 @@ layout: null
     figcaption { margin-top: 10px; color: var(--muted); }
     figcaption strong { display: block; color: var(--ink); }
     .setup { margin-top: 56px; max-width: 680px; }
+    .tagline { max-width: 480px; margin: 48px auto 0; }
     @media (min-width: 740px) {
       .hero { grid-template-columns: minmax(0, 2fr) minmax(0, 3fr); }
       .screens { grid-template-columns: repeat(3, minmax(0, 1fr)); }
@@ -57,7 +58,7 @@ layout: null
         <p class="requirements">Requires Apple silicon and macOS 27.2 or later.</p>
       </div>
       <figure>
-        <a href="screenshots/windows/01-workspace.png"><img src="screenshots/windows/01-workspace.png" width="868" height="580" alt="Dashboard showing upcoming posts and the app list"></a>
+        <a href="screenshots/marketing/workspace.webp"><img src="screenshots/marketing/workspace.webp" width="1920" height="1200" alt="Indie Dev Buddy dashboard with upcoming posts and an app library"></a>
       </figure>
     </section>
 
@@ -65,16 +66,16 @@ layout: null
       <h2 id="screenshots">Inside the app</h2>
       <div class="screens">
         <figure>
-          <a href="screenshots/windows/02-releases.png"><img src="screenshots/windows/02-releases.png" width="868" height="580" loading="lazy" alt="Dictate Bar’s App Store Connect release status"></a>
-          <figcaption><strong>App Store releases</strong>Check review status and pull release notes into a draft.</figcaption>
+          <a href="screenshots/marketing/content-board.webp"><img src="screenshots/marketing/content-board.webp" width="1920" height="1200" loading="lazy" alt="Content board with columns for Ideas, Drafts, To Post, and Posted"></a>
+          <figcaption><strong>Content board</strong>Move ideas through each stage and see which accounts have published a post.</figcaption>
         </figure>
         <figure>
-          <a href="screenshots/windows/03-social.png"><img src="screenshots/windows/03-social.png" width="868" height="580" loading="lazy" alt="Post editor beside a Facebook preview"></a>
-          <figcaption><strong>Social posts</strong>Write a shared draft, then customize the text and media for each account.</figcaption>
+          <a href="screenshots/marketing/app-store-connect.webp"><img src="screenshots/marketing/app-store-connect.webp" width="1920" height="1200" loading="lazy" alt="App library alongside App Store Connect customer reviews and TestFlight feedback"></a>
+          <figcaption><strong>App Store Connect</strong>Browse releases, customer reviews, and TestFlight feedback from an app’s workspace record.</figcaption>
         </figure>
         <figure>
-          <a href="screenshots/windows/04-local.png"><img src="screenshots/windows/04-local.png" width="868" height="580" loading="lazy" alt="File browser listing the folders in a workspace"></a>
-          <figcaption><strong>Workspace files</strong>App records, drafts, and attachments live in a folder you choose.</figcaption>
+          <a href="screenshots/marketing/app-showcase.webp"><img src="screenshots/marketing/app-showcase.webp" width="1920" height="1200" loading="lazy" alt="App showcase editor and an exported image of the app lineup"></a>
+          <figcaption><strong>App showcases</strong>Customize your app lineup and export it as a shareable PNG.</figcaption>
         </figure>
       </div>
     </section>
@@ -84,6 +85,7 @@ layout: null
       <p>To publish from the app, <a href="{{ '/social-connections/' | relative_url }}">connect a supported social account</a>. Credentials are stored in the macOS Keychain. Scheduled posts require Indie Dev Buddy to be running and your Mac to be awake.</p>
       <p>App Store Connect access is optional and read-only. It uses your existing <code>asc</code> CLI sign-in.</p>
     </section>
+    <img class="tagline" src="screenshots/marketing/less-marketing.webp" width="1920" height="1200" loading="lazy" alt="Less marketing. More making.">
   </main>
   <footer>
     <span>Brave New Design</span>
