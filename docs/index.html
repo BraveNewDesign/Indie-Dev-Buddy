@@ -10,57 +10,87 @@ layout: null
   <link rel="icon" type="image/png" sizes="32x32" href="assets/favicon.png">
   <title>Indie Dev Buddy for Mac</title>
   <style>
-    :root { color-scheme: light; --paper: #f7f6f1; --ink: #222820; --muted: #515a50; --line: #d3d8cf; --green: #244a37; }
+    :root { color-scheme: light; --paper: #f8f8fb; --ink: #171d2f; --muted: #596273; --line: #e1e5ec; --accent: #f47b45; --accent-ink: #a6441b; --white: #fff; }
     * { box-sizing: border-box; }
-    body { margin: 0; background: var(--paper); color: var(--ink); font: 16px/1.55 -apple-system, BlinkMacSystemFont, sans-serif; }
-    header, main, footer { width: min(1080px, calc(100% - 40px)); margin-inline: auto; }
-    header, footer { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 24px; padding-block: 20px; }
-    header { justify-content: space-between; border-bottom: 1px solid var(--line); }
+    body { margin: 0; background: var(--paper); color: var(--ink); font: 16px/1.6 -apple-system, BlinkMacSystemFont, sans-serif; }
+    main, footer { width: min(1120px, calc(100% - 40px)); margin-inline: auto; }
+    header { width: 100%; margin: 0; background: #fff; border-bottom: 1px solid var(--line); }
+    .header-inner { width: min(1120px, calc(100% - 40px)); min-height: 76px; margin-inline: auto; display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px 24px; padding-block: 14px; }
+    .nav-links { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 8px 20px; }
     .brand { display: inline-flex; align-items: center; gap: 8px; font-weight: 650; text-decoration: none; }
     .brand img { display: block; width: 220px; max-width: 100%; height: auto; border: 0; }
     footer { border-top: 1px solid var(--line); margin-top: 64px; }
-    a { color: var(--green); text-underline-offset: .2em; }
-    a:focus-visible { outline: 2px solid var(--green); outline-offset: 4px; }
-    .hero { display: grid; align-items: center; gap: 32px; padding-block: clamp(40px, 7vw, 92px); }
+    a { color: var(--accent-ink); text-underline-offset: .2em; }
+    a:focus-visible { outline: 3px solid var(--accent); outline-offset: 4px; border-radius: 3px; }
+    .hero { display: grid; align-items: center; gap: clamp(28px, 4vw, 48px); margin-top: clamp(24px, 4vw, 44px); padding-block: clamp(40px, 6vw, 72px); }
     h1, h2 { line-height: 1.08; letter-spacing: -.035em; }
-    h1 { margin: 0; font-size: clamp(42px, 6vw, 72px); }
-    h2 { margin: 0 0 20px; font-size: 32px; }
+    h1 { margin: 0; font-size: clamp(42px, 6vw, 72px); letter-spacing: -.055em; }
+    h2 { margin: 0 0 20px; font-size: 32px; letter-spacing: -.045em; }
+    h2::after { content: ""; display: block; width: 36px; height: 4px; margin-top: 14px; border-radius: 99px; background: var(--accent); }
     p { margin: 0 0 16px; }
-    .intro { font-size: 19px; margin-top: 18px; }
-    .download { display: inline-block; background: var(--green); color: #fff; padding: 10px 16px; border-radius: 7px; font-weight: 650; text-decoration: none; }
-    .requirements { color: var(--muted); font-size: 14px; margin: 12px 0 0; }
-    .screens { display: grid; gap: 28px 20px; }
+    .intro { max-width: 44ch; font-size: 19px; line-height: 1.55; margin-top: 18px; }
+    .download { display: inline-block; background: var(--accent); color: #24150f; padding: 11px 18px; border: 1px solid rgb(166 68 27 / 12%); border-radius: 10px; box-shadow: 0 5px 14px rgb(166 68 27 / 16%); font-weight: 700; text-decoration: none; transition: transform .18s ease, box-shadow .18s ease; }
+    .download:hover { transform: translateY(-2px); box-shadow: 0 8px 18px rgb(166 68 27 / 22%); }
+    .requirements { color: var(--muted); font-size: 13px; line-height: 1.45; margin: 14px 0 0; }
+    .requirements::before { content: ""; display: block; width: 34px; height: 1px; margin-bottom: 10px; background: var(--line); }
+    .screens { display: grid; gap: 22px; }
     figure { margin: 0; min-width: 0; }
     figure a { display: block; }
-    img { display: block; width: 100%; height: auto; border: 1px solid var(--line); border-radius: 8px; }
-    figcaption { margin-top: 10px; color: var(--muted); }
+    img { display: block; width: 100%; height: auto; border: 0; border-radius: 10px; background: transparent; }
+    .screens figure { padding: 12px; border: 1px solid var(--line); border-radius: 16px; background: var(--white); box-shadow: 0 8px 24px rgb(23 29 47 / 4%); }
+    figcaption { margin: 12px 5px 3px; color: var(--muted); }
     figcaption strong { display: block; color: var(--ink); }
-    .section { margin-top: clamp(56px, 8vw, 96px); }
+    .section { margin-top: clamp(56px, 7vw, 82px); }
     .section-lede { max-width: 720px; color: var(--muted); font-size: 18px; }
     .feature-grid { display: grid; gap: 16px; }
-    .feature { padding: 24px; border: 1px solid var(--line); border-radius: 12px; background: #fffefa; }
+    .feature { padding: 24px; border: 1px solid var(--line); border-radius: 16px; background: var(--white); box-shadow: 0 8px 24px rgb(23 29 47 / 4%); transition: transform .18s ease, box-shadow .18s ease; }
+    .feature:hover { transform: translateY(-2px); box-shadow: 0 12px 28px rgb(23 29 47 / 8%); }
     .feature h3 { margin: 0 0 8px; font-size: 20px; letter-spacing: -.02em; }
+    .feature h3::before { content: ""; display: inline-block; width: 8px; height: 8px; margin: 0 9px 2px 0; border-radius: 50%; background: var(--accent); }
     .feature p:last-child { margin-bottom: 0; }
-    .callout { margin-top: 24px; padding: 20px 24px; border-left: 4px solid #77947c; border-radius: 0 8px 8px 0; background: #e8eee8; }
+    .callout { margin-top: 24px; padding: 20px 24px; border: 1px solid #f2d8c9; border-left: 4px solid var(--accent); border-radius: 0 12px 12px 0; background: #fff4ed; }
     .callout p:last-child { margin-bottom: 0; }
     .steps { padding-left: 24px; max-width: 760px; }
+    .steps li::marker { color: var(--accent-ink); font-weight: 700; }
     .steps li { padding-left: 6px; margin-bottom: 12px; }
     .action-links { display: flex; flex-wrap: wrap; gap: 12px 24px; margin-top: 20px; font-weight: 650; }
     code { overflow-wrap: anywhere; }
     .setup { max-width: 800px; }
-    .tagline { max-width: 480px; margin: 48px auto 0; }
+    .tagline { max-width: 700px; margin: clamp(48px, 7vw, 80px) auto 0; border: 1px solid var(--line); border-radius: 20px; box-shadow: 0 14px 36px rgb(23 29 47 / 6%); }
     @media (min-width: 740px) {
       .hero { grid-template-columns: minmax(0, 2fr) minmax(0, 3fr); }
-      .screens { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+      .screens { grid-template-columns: repeat(2, minmax(0, 1fr)); }
       .feature-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    }
+    @media (max-width: 739px) {
+      .header-inner { flex-direction: column; justify-content: center; }
+      .brand { width: 100%; justify-content: center; margin-bottom: 4px; }
+      .nav-links { justify-content: center; gap: 8px 16px; }
+      .hero { padding-block: 34px; }
+      h1 { font-size: clamp(40px, 12vw, 58px); }
+      h2 { font-size: 28px; }
+      .screens figure { padding: 9px; border-radius: 13px; }
+      .feature { padding: 20px; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after { scroll-behavior: auto !important; transition-duration: .01ms !important; }
     }
   </style>
 </head>
 <body>
   <header>
-    <a class="brand" href="./"><img src="assets/indie-dev-buddy-logo.png" width="220" height="36" alt="Indie Dev Buddy"></a>
-    <a href="{{ '/documentation/' | relative_url }}">Documentation</a>
-    <a href="https://github.com/BraveNewDesign/Indie-Dev-Buddy">Source on GitHub</a>
+    <div class="header-inner">
+      <a class="brand" href="./"><img src="assets/indie-dev-buddy-logo.png" width="220" height="36" alt="Indie Dev Buddy"></a>
+      <nav class="nav-links" aria-label="Main navigation">
+        <a href="#features">Features</a>
+        <a href="#screenshots">Screenshots</a>
+        <a href="#start">Get started</a>
+        <a href="{{ '/documentation/' | relative_url }}">Documentation</a>
+        <a class="github-link" href="https://github.com/BraveNewDesign/Indie-Dev-Buddy" aria-label="Indie Dev Buddy on GitHub" title="Indie Dev Buddy on GitHub">
+          <svg aria-hidden="true" viewBox="0 0 24 24" width="22" height="22"><path fill="currentColor" d="M12 .9a11.1 11.1 0 0 0-3.51 21.63c.55.1.76-.24.76-.54v-2.1c-3.1.67-3.76-1.32-3.76-1.32-.5-1.29-1.24-1.63-1.24-1.63-1.01-.69.08-.68.08-.68 1.12.08 1.7 1.15 1.7 1.15.99 1.69 2.6 1.2 3.23.92.1-.72.39-1.2.7-1.48-2.47-.28-5.07-1.24-5.07-5.5 0-1.22.44-2.22 1.15-3-.12-.28-.5-1.42.11-2.96 0 0 .94-.3 3.06 1.15a10.65 10.65 0 0 1 5.57 0c2.12-1.45 3.05-1.15 3.05-1.15.61 1.54.23 2.68.12 2.96.72.78 1.14 1.78 1.14 3.01 0 4.27-2.6 5.21-5.08 5.49.4.35.76 1.02.76 2.06v3.08c0 .3.2.65.77.54A11.1 11.1 0 0 0 12 .9Z"/></svg>
+        </a>
+      </nav>
+    </div>
   </header>
   <main>
     <section class="hero">
@@ -68,10 +98,10 @@ layout: null
         <h1>Indie Dev Buddy</h1>
         <p class="intro">A little more organization for everything that comes after making an app. Bring your projects, marketing, social accounts, and App Store Connect information together.</p>
         <a class="download" href="https://github.com/BraveNewDesign/Indie-Dev-Buddy/releases/latest">Download for Mac</a>
-        <p class="requirements">Early access · Apple silicon · macOS 27.2 or later · Open source</p>
+        <p class="requirements">Apple silicon · macOS 27.2 or later · Open source</p>
       </div>
       <figure>
-        <a href="screenshots/marketing/workspace.webp"><img src="screenshots/marketing/workspace.webp" width="1920" height="1200" alt="Indie Dev Buddy dashboard with upcoming posts and an app library"></a>
+        <a href="screenshots/marketing/dashboard-hero.webp"><img src="screenshots/marketing/dashboard-hero.webp" width="1600" height="1287" alt="Indie Dev Buddy dashboard with upcoming posts, planned content, and an app library"></a>
       </figure>
     </section>
 
@@ -90,8 +120,12 @@ layout: null
       <h2 id="screenshots">Inside the app</h2>
       <div class="screens">
         <figure>
-          <a href="screenshots/marketing/content-board.webp"><img src="screenshots/marketing/content-board.webp" width="1920" height="1200" loading="lazy" alt="Content board with columns for Ideas, Drafts, To Post, and Posted"></a>
+          <a href="screenshots/marketing/content-board-ui.webp"><img src="screenshots/marketing/content-board-ui.webp" width="1600" height="1256" loading="lazy" alt="Indie Dev Buddy content board with Ideas, Drafts, To Post, and Posted columns"></a>
           <figcaption><strong>Content board</strong>Move ideas through each stage and see which accounts have published a post.</figcaption>
+        </figure>
+        <figure>
+          <a href="screenshots/marketing/calendar-view.webp"><img src="screenshots/marketing/calendar-view.webp" width="1600" height="1277" loading="lazy" alt="Indie Dev Buddy calendar showing scheduled posts across November"></a>
+          <figcaption><strong>Calendar</strong>See scheduled posts by day and get a quick read on the month ahead.</figcaption>
         </figure>
         <figure>
           <a href="screenshots/marketing/app-store-connect.webp"><img src="screenshots/marketing/app-store-connect.webp" width="1920" height="1200" loading="lazy" alt="App library alongside App Store Connect customer reviews and TestFlight feedback"></a>
@@ -139,7 +173,7 @@ layout: null
     <img class="tagline" src="screenshots/marketing/less-marketing.webp" width="1920" height="1200" loading="lazy" alt="Less marketing. More making.">
   </main>
   <footer>
-    <span>Brave New Design</span>
+    <a href="https://bravenewdesign.com">Brave New Design</a>
     <a href="https://github.com/BraveNewDesign/Indie-Dev-Buddy/releases">Release notes</a>
     <a href="https://github.com/BraveNewDesign/Indie-Dev-Buddy/issues">Report an issue</a>
     <a href="https://github.com/BraveNewDesign/Indie-Dev-Buddy/blob/main/LICENSE">MIT license</a>
