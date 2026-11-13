@@ -19,6 +19,7 @@ struct IndieDevBuddyCLI {
       indiedevbuddy create-workspace PATH [--name NAME]
       indiedevbuddy register-workspace PATH
       indiedevbuddy forget-workspace PATH
+      indiedevbuddy rename-workspace --workspace PATH --name NAME
       indiedevbuddy files --workspace PATH [--path RELATIVE_FOLDER]
       indiedevbuddy mkdir --workspace PATH --path RELATIVE_FOLDER
       indiedevbuddy import-file --workspace PATH --source FILE --path RELATIVE_PATH
@@ -101,6 +102,7 @@ struct IndieDevBuddyCLI {
         case "delete": (requiredPositionals, allowed) = (2, ["workspace", "revision"])
         case "create-workspace": (requiredPositionals, allowed) = (1, ["name"])
         case "register-workspace", "forget-workspace": (requiredPositionals, allowed) = (1, [])
+        case "rename-workspace": (requiredPositionals, allowed) = (0, ["workspace", "name"])
         case "files": (requiredPositionals, allowed) = (0, ["workspace", "path"])
         case "mkdir": (requiredPositionals, allowed) = (0, ["workspace", "path"])
         case "import-file": (requiredPositionals, allowed) = (0, ["workspace", "source", "path"])
@@ -139,6 +141,9 @@ struct IndieDevBuddyCLI {
         guard !workspace.isEmpty else { throw WorkspaceCommandError("--workspace requires a folder path.") }
         let store = WorkspaceStore(rootURL: URL(fileURLWithPath: workspace, isDirectory: true))
         switch command {
+        case "rename-workspace":
+            let manifest = try await store.renameWorkspace(to: options.require("name"))
+            try writeJSON(["renamed": true, "id": manifest.id, "name": manifest.name, "path": store.rootURL.path])
         case "list":
             let kind = try recordKind(positionals[0])
             let snapshot = try await store.load(installAgentGuidance: false)

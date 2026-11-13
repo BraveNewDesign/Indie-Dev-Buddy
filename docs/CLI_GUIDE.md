@@ -67,7 +67,13 @@ indiedevbuddy trash --workspace "$workspace" --path Inbox/Research/brief.pdf --c
 indiedevbuddy validate --workspace "$workspace"
 ```
 
-Workspace setup commands include `create-workspace PATH`, `register-workspace PATH`, and `forget-workspace PATH`. Forgetting a workspace removes its app registration, not its files.
+Workspace commands include `rename-workspace --workspace PATH --name NAME` to change the name shown in Indie Dev Buddy without moving the folder:
+
+```sh
+indiedevbuddy rename-workspace --workspace "$workspace" --name "Studio Workspace"
+```
+
+Setup commands include `create-workspace PATH`, `register-workspace PATH`, and `forget-workspace PATH`. Forgetting a workspace removes its app registration, not its files.
 
 ## Output and safety
 

@@ -148,6 +148,22 @@ import AppKit
             onRemoved()
         }
     }
+    func renameWorkspace(to name: String) {
+        guard let store, !isOpening else { return }
+        isOpening = true
+        Task {
+            defer { isOpening = false }
+            do {
+                _ = try await store.renameWorkspace(to: name)
+                let loaded = try await store.load()
+                guard self.store === store else { return }
+                snapshot = loaded
+                snapshotGeneration &+= 1
+            } catch {
+                self.error = "Could not rename the workspace. \(error.localizedDescription)"
+            }
+        }
+    }
     func refresh() {
         guard let store else { return }
         Task {
@@ -195,6 +211,8 @@ struct ContentView: View {
     @State private var appsOverviewGeneration = 0
     @FocusState private var searchFocused: Bool
     @State private var showingWorkspaceOptions = false
+    @State private var showingRenameWorkspace = false
+    @State private var workspaceNameDraft = ""
 
     private enum RootAction {
         case section(String)
@@ -260,6 +278,13 @@ struct ContentView: View {
         .alert("Workspace", isPresented: Binding(get: { session.error != nil }, set: { if !$0 { session.error = nil } })) {
             Button("OK") { session.error = nil }
         } message: { Text(session.error ?? "") }
+        .alert("Rename Workspace", isPresented: $showingRenameWorkspace) {
+            TextField("Workspace name", text: $workspaceNameDraft)
+            Button("Rename") { session.renameWorkspace(to: workspaceNameDraft) }
+            Button("Cancel", role: .cancel) { }
+        } message: {
+            Text("Choose a name shown in Indie Dev Buddy. The workspace folder stays where it is.")
+        }
     }
 
     private var pendingDialogTitle: String {
@@ -381,6 +406,10 @@ struct ContentView: View {
             workspaceOption("New Workspace…", symbol: "plus", action: commandActions.create)
             workspaceOption("Refresh Workspace", symbol: "arrow.clockwise", action: session.refresh)
             if let url = session.workspaceURL {
+                workspaceOption("Rename Workspace…", symbol: "pencil") {
+                    workspaceNameDraft = session.snapshot?.manifest.name ?? url.lastPathComponent
+                    showingRenameWorkspace = true
+                }
                 workspaceOption("Show in Finder", symbol: "arrow.up.forward.app") {
                     NSWorkspace.shared.activateFileViewerSelecting([url])
                 }

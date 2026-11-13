@@ -296,6 +296,7 @@ For these examples, a null `bodyPath` means **use `original.txt` live**, not a c
 1. First launch shows **Choose a Workspace Folder** or **Create New Workspace** (one decision; don't require external accounts).
 2. Explain plainly: “Your information is saved as ordinary files in this folder. You can edit it with other apps and AI tools.”
 3. Offer **Add Your First App** (name required; other fields optional). No forced identities/websites/accounts on first run.
+4. Let the user rename the workspace display name from the workspace switcher; renaming changes the manifest name and leaves the folder in place.
 
 ### Add app and website
 1. Create app (name, optional icon/owner/platform).

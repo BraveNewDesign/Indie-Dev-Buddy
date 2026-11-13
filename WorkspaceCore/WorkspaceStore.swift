@@ -5,6 +5,7 @@ import Darwin
 public enum WorkspaceStoreError: Error, LocalizedError {
     case notWorkspace
     case workspaceAlreadyExists
+    case invalidWorkspaceName
     case invalidRelativePath(String)
     case conflict(path: String, currentRevision: String?)
     case unsupportedSchema(Int)
@@ -16,6 +17,7 @@ public enum WorkspaceStoreError: Error, LocalizedError {
         switch self {
         case .notWorkspace: return "This folder does not contain a valid Indie Dev Buddy workspace."
         case .workspaceAlreadyExists: return "This folder already contains Indie Dev Buddy workspace data. Choose another folder to avoid overwriting it."
+        case .invalidWorkspaceName: return "A workspace name cannot be empty."
         case .invalidRelativePath(let path): return "The workspace path is invalid: \(path)"
         case .conflict(let path, _): return "\(path) changed outside Indie Dev Buddy. Reload or explicitly resolve the conflict before saving."
         case .unsupportedSchema(let version): return "Workspace schema version \(version) is not supported."
@@ -86,6 +88,32 @@ public actor WorkspaceStore {
             throw WorkspaceStoreError.notWorkspace
         }
         return manifest
+    }
+
+    /// Updates only the manifest's name, preserving unknown fields for forward compatibility.
+    @discardableResult
+    public func renameWorkspace(to newName: String) throws -> WorkspaceManifest {
+        let name = newName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty else { throw WorkspaceStoreError.invalidWorkspaceName }
+
+        return try withWorkspaceLock {
+            let manifestFile = try safeURL("workspace.json")
+            let data = try Data(contentsOf: manifestFile)
+            var manifest = try decoder.decode(WorkspaceManifest.self, from: data)
+            guard manifest.schemaVersion == 1 else { throw WorkspaceStoreError.unsupportedSchema(manifest.schemaVersion) }
+            guard !manifest.id.isEmpty,
+                  !manifest.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                throw WorkspaceStoreError.notWorkspace
+            }
+            guard var object = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                throw WorkspaceStoreError.notWorkspace
+            }
+            manifest.name = name
+            object["name"] = name
+            let updatedData = try JSONSerialization.data(withJSONObject: object, options: [.prettyPrinted, .sortedKeys])
+            try writeAtomically(updatedData, to: manifestFile)
+            return manifest
+        }
     }
 
     public func load(installAgentGuidance: Bool = true) throws -> WorkspaceSnapshot {
