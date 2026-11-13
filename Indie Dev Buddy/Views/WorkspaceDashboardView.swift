@@ -499,15 +499,8 @@ private struct DashboardArtworkView: View {
     var clearBackground = false
     @State private var image: CGImage?
 
-    private struct Request: Hashable, Sendable {
-        let root: URL
-        let folder: String?
-        let paths: [String]
-        let generation: Int
-    }
-
     var body: some View {
-        let request = Request(root: workspaceRoot, folder: folder, paths: paths, generation: generation)
+        let request = WorkspaceThumbnailRequest(root: workspaceRoot, folder: folder, paths: paths, generation: generation)
         GeometryReader { proxy in
             ZStack {
                 if !clearBackground {
@@ -529,51 +522,59 @@ private struct DashboardArtworkView: View {
         }
         .task(id: request) {
             guard !paths.isEmpty else { image = nil; return }
-            let result = await Self.thumbnails.load(request)
+            let result = await WorkspaceThumbnailCache.shared.load(request)
             guard !Task.isCancelled else { return }
             image = result
         }
     }
+}
 
-    private static let thumbnails = ThumbnailCache()
+struct WorkspaceThumbnailRequest: Hashable, Sendable {
+    let root: URL
+    let folder: String?
+    let paths: [String]
+    let generation: Int
+    var maxPixelSize = 640
+}
 
-    private actor ThumbnailCache {
-        private let cache = NSCache<NSString, CGImage>()
+actor WorkspaceThumbnailCache {
+    static let shared = WorkspaceThumbnailCache()
+    private let cache = NSCache<NSString, CGImage>()
 
-        init() {
-            cache.countLimit = 120
-            cache.totalCostLimit = 48 * 1024 * 1024
-        }
+    init() {
+        cache.countLimit = 120
+        cache.totalCostLimit = 48 * 1024 * 1024
+    }
 
-        func load(_ request: Request) -> CGImage? {
-            let root = request.root.standardizedFileURL.resolvingSymlinksInPath()
-            let folder = request.folder.map { root.appendingPathComponent($0).resolvingSymlinksInPath() } ?? root
-            guard folder.path == root.path || folder.path.hasPrefix(root.path + "/") else { return nil }
-            for path in request.paths.prefix(8) {
-                guard !path.isEmpty, !path.hasPrefix("/"), !path.split(separator: "/").contains("..") else { continue }
-                let url: URL
-                if path.hasPrefix("asset:") {
-                    guard let managed = managedAssetURL(path, root: root) else { continue }
-                    url = managed
-                } else {
-                    url = folder.appendingPathComponent(path).standardizedFileURL.resolvingSymlinksInPath()
-                    guard url.path.hasPrefix(folder.path + "/") else { continue }
-                }
-                guard let values = try? url.resourceValues(forKeys: [.isRegularFileKey, .contentModificationDateKey, .fileSizeKey]),
-                      values.isRegularFile == true else { continue }
-                let key = "\(url.path)|\(values.contentModificationDate?.timeIntervalSinceReferenceDate ?? 0)|\(values.fileSize ?? 0)" as NSString
-                if let image = cache.object(forKey: key) { return image }
-                guard let source = CGImageSourceCreateWithURL(url as CFURL, [kCGImageSourceShouldCache: false] as CFDictionary),
-                      let image = CGImageSourceCreateThumbnailAtIndex(source, 0, [
-                        kCGImageSourceCreateThumbnailFromImageAlways: true,
-                        kCGImageSourceCreateThumbnailWithTransform: true,
-                        kCGImageSourceThumbnailMaxPixelSize: 640,
-                        kCGImageSourceShouldCacheImmediately: true
-                      ] as CFDictionary) else { continue }
-                cache.setObject(image, forKey: key, cost: image.bytesPerRow * image.height)
-                return image
+    func load(_ request: WorkspaceThumbnailRequest) -> CGImage? {
+        guard !Task.isCancelled else { return nil }
+        let root = request.root.standardizedFileURL.resolvingSymlinksInPath()
+        let folder = request.folder.map { root.appendingPathComponent($0).resolvingSymlinksInPath() } ?? root
+        guard folder.path == root.path || folder.path.hasPrefix(root.path + "/") else { return nil }
+        for path in request.paths.prefix(8) {
+            guard !path.isEmpty, !path.hasPrefix("/"), !path.split(separator: "/").contains("..") else { continue }
+            let url: URL
+            if path.hasPrefix("asset:") {
+                guard let managed = managedAssetURL(path, root: root) else { continue }
+                url = managed
+            } else {
+                url = folder.appendingPathComponent(path).standardizedFileURL.resolvingSymlinksInPath()
+                guard url.path.hasPrefix(folder.path + "/") else { continue }
             }
-            return nil
+            guard let values = try? url.resourceValues(forKeys: [.isRegularFileKey, .contentModificationDateKey, .fileSizeKey]),
+                  values.isRegularFile == true else { continue }
+            let key = "\(url.path)|\(values.contentModificationDate?.timeIntervalSinceReferenceDate ?? 0)|\(values.fileSize ?? 0)|\(request.maxPixelSize)" as NSString
+            if let image = cache.object(forKey: key) { return image }
+            guard let source = CGImageSourceCreateWithURL(url as CFURL, [kCGImageSourceShouldCache: false] as CFDictionary),
+                  let image = CGImageSourceCreateThumbnailAtIndex(source, 0, [
+                    kCGImageSourceCreateThumbnailFromImageAlways: true,
+                    kCGImageSourceCreateThumbnailWithTransform: true,
+                    kCGImageSourceThumbnailMaxPixelSize: request.maxPixelSize,
+                    kCGImageSourceShouldCacheImmediately: true
+                  ] as CFDictionary) else { continue }
+            cache.setObject(image, forKey: key, cost: image.bytesPerRow * image.height)
+            return image
         }
+        return nil
     }
 }

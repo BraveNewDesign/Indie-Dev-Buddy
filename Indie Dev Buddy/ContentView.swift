@@ -463,9 +463,7 @@ struct ContentView: View {
     @ViewBuilder
     private func sidebarNavigation(_ snapshot: WorkspaceSnapshot) -> some View {
         if searchText.isEmpty {
-            List(selection: Binding(get: { Optional(section) }, set: { (selection: String?) in
-                if let value = selection, value != section { requestRootAction(.section(value)) }
-            })) {
+            List {
                 sidebarRow("Dashboard", symbol: "rectangle.grid.2x2", destination: "Dashboard")
                 Section {
                     sidebarRow("Apps", symbol: "square.stack.3d.up", destination: "Apps")
@@ -577,21 +575,32 @@ struct ContentView: View {
     }
 
     private func sidebarRow(_ title: String, symbol: String, destination: String) -> some View {
-        Label {
-            Text(title)
-                .lineLimit(1)
-        } icon: {
-            SidebarIcon(symbol: symbol, isSelected: section == destination)
+        let isSelected = section == destination
+        return Button {
+            if !isSelected {
+                requestRootAction(.section(destination))
+            } else if destination == "Marketing Content" {
+                requestRootAction(.showContentList)
+            }
+        } label: {
+            Label {
+                Text(title)
+                    .lineLimit(1)
+            } icon: {
+                SidebarIcon(symbol: symbol, isSelected: isSelected)
+            }
+            .frame(maxWidth: .infinity, minHeight: 28, alignment: .leading)
+            .contentShape(Rectangle())
         }
-        .frame(maxWidth: .infinity, minHeight: 28, alignment: .leading)
-        .contentShape(Rectangle())
+        .buttonStyle(.plain)
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
+        .accessibilityIdentifier("workspace-sidebar-\(title)")
         .listRowBackground(
             RoundedRectangle(cornerRadius: 8)
                 .fill(.quaternary)
                 .padding(.horizontal, 10)
-                .opacity(section == destination ? 1 : 0)
+                .opacity(isSelected ? 1 : 0)
         )
-        .tag(destination)
     }
 
     private struct SidebarIcon: View {
@@ -662,6 +671,7 @@ struct ContentView: View {
                 ManagementWorkspaceView(
                     section: ManagementSection(rawValue: section) ?? .apps,
                     snapshot: snapshot,
+                    snapshotGeneration: session.snapshotGeneration,
                     store: store,
                     onSnapshotChanged: session.refresh,
                     onReloadSnapshot: session.reload,

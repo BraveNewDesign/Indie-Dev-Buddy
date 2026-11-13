@@ -47,6 +47,7 @@ enum ManagementSection: String {
 struct ManagementWorkspaceView: View {
     let section: ManagementSection
     let snapshot: WorkspaceSnapshot
+    let snapshotGeneration: Int
     let store: WorkspaceStore
     let onSnapshotChanged: () -> Void
     let onReloadSnapshot: () async -> Void
@@ -77,10 +78,11 @@ struct ManagementWorkspaceView: View {
     @State private var confirmingDelete = false
     @State private var showingShowcase = false
 
-    init(section: ManagementSection, snapshot: WorkspaceSnapshot, store: WorkspaceStore, onSnapshotChanged: @escaping () -> Void, onReloadSnapshot: @escaping () async -> Void = {}, onUnsavedEditsChanged: @escaping (Bool) -> Void = { _ in }, onOpenMarketingContent: @escaping (String) -> Void, onOpenRecord: @escaping (ManagementRecordSelection) -> Void = { _ in }, selectionRequest: ManagementRecordSelection? = nil, createRequest: ManagementCreateRequest? = nil, onExternalRequestHandled: @escaping () -> Void = {}, restoredAppID: String? = nil, onAppSelectionChange: @escaping (String?) -> Void = { _ in }) {
+    init(section: ManagementSection, snapshot: WorkspaceSnapshot, snapshotGeneration: Int, store: WorkspaceStore, onSnapshotChanged: @escaping () -> Void, onReloadSnapshot: @escaping () async -> Void = {}, onUnsavedEditsChanged: @escaping (Bool) -> Void = { _ in }, onOpenMarketingContent: @escaping (String) -> Void, onOpenRecord: @escaping (ManagementRecordSelection) -> Void = { _ in }, selectionRequest: ManagementRecordSelection? = nil, createRequest: ManagementCreateRequest? = nil, onExternalRequestHandled: @escaping () -> Void = {}, restoredAppID: String? = nil, onAppSelectionChange: @escaping (String?) -> Void = { _ in }) {
         _pinnedSocialAccountData = AppStorage(wrappedValue: Data(), "pinnedSocialAccounts.\(snapshot.manifest.id)")
         self.section = section
         self.snapshot = snapshot
+        self.snapshotGeneration = snapshotGeneration
         self.store = store
         self.onSnapshotChanged = onSnapshotChanged
         self.onReloadSnapshot = onReloadSnapshot
@@ -217,6 +219,18 @@ struct ManagementWorkspaceView: View {
         return NSImage(contentsOf: url)
     }
 
+    private func appListIconRequest(for app: AppRecord) -> WorkspaceThumbnailRequest? {
+        guard let recordPath = snapshot.recordPaths["Apps"]?[app.id],
+              let iconPath = app.iconPath, !iconPath.hasPrefix("asset:") else { return nil }
+        return WorkspaceThumbnailRequest(
+            root: store.rootURL,
+            folder: (recordPath as NSString).deletingLastPathComponent,
+            paths: [iconPath],
+            generation: snapshotGeneration,
+            maxPixelSize: 128
+        )
+    }
+
     @ViewBuilder private var appList: some View {
         if snapshot.apps.isEmpty {
             ContentUnavailableView {
@@ -231,7 +245,7 @@ struct ManagementWorkspaceView: View {
             List(selection: Binding(get: { selectedID }, set: requestSelection)) {
                 Section {
                     ForEach(sortedApps) { app in
-                        AppLibraryRow(app: app, icon: appIcon(for: app))
+                        AppLibraryRow(app: app, iconRequest: appListIconRequest(for: app))
                             .tag(Optional(app.id))
                             .contextMenu {
                                 Button("Open App Details", systemImage: "arrow.right") {

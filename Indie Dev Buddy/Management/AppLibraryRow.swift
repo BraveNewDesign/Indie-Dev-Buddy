@@ -3,7 +3,8 @@ import SwiftUI
 
 struct AppLibraryRow: View {
     let app: AppRecord
-    let icon: NSImage?
+    let iconRequest: WorkspaceThumbnailRequest?
+    @State private var icon: NSImage?
 
     var body: some View {
         HStack(spacing: 14) {
@@ -41,5 +42,11 @@ struct AppLibraryRow: View {
         .padding(.horizontal, 4)
         .contentShape(Rectangle())
         .accessibilityElement(children: .combine)
+        .task(id: iconRequest) {
+            guard let iconRequest else { icon = nil; return }
+            let image = await WorkspaceThumbnailCache.shared.load(iconRequest)
+            guard !Task.isCancelled else { return }
+            icon = image.map { NSImage(cgImage: $0, size: .zero) }
+        }
     }
 }

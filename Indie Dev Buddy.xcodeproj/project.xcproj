@@ -17,8 +17,7 @@
       "version": {
         "up-to-next-major-version": "0.1.0",
       },
-    },
-    {
+    }, {
       "kind": "remote",
       "repository": "https://github.com/sparkle-project/Sparkle",
       "version": {
@@ -67,8 +66,7 @@
           "package": "SocialKit",
           "product-name": "SocialKit",
           "build-phase": { "build-phase": "frameworks" },
-        },
-        {
+        }, {
           "package": "Sparkle",
           "product-name": "Sparkle",
           "build-phase": { "build-phase": "frameworks" },
