@@ -1,6 +1,28 @@
 import SwiftUI
 import AppKit
 
+enum ContentDestinationView: String, CaseIterable, Identifiable {
+    case calendar = "Calendar"
+    case board = "Board"
+    case allItems = "All Items"
+    case toPost = "To Post"
+    case drafts = "Drafts"
+    case ideas = "Ideas"
+    case posted = "Posted"
+
+    var id: String { rawValue }
+
+    var stage: ContentStage? {
+        switch self {
+        case .toPost: .toPost
+        case .drafts: .drafts
+        case .ideas: .ideas
+        case .posted: .posted
+        case .calendar, .board, .allItems: nil
+        }
+    }
+}
+
 @MainActor @Observable final class WorkspaceSession {
     var store: WorkspaceStore?
     var snapshot: WorkspaceSnapshot?
@@ -201,6 +223,8 @@ struct ContentView: View {
     @State private var sidebarVisibility: NavigationSplitViewVisibility = .automatic
     @State private var pendingWorkspaceToForget: URL?
     @AppStorage("marketingSelectionID") private var marketingSelectionID: String?
+    @AppStorage("contentDestination") private var contentDestinationRawValue = ContentDestinationView.calendar.rawValue
+    @State private var isContentExpanded = true
     @State private var contentCreateRequest: ContentKind?
     @State private var managementSelectionRequest: ManagementRecordSelection?
     @State private var managementCreateRequest: ManagementCreateRequest?
@@ -217,6 +241,7 @@ struct ContentView: View {
     private enum RootAction {
         case section(String)
         case content(String)
+        case contentDestination(ContentDestinationView)
         case showContentList
         case management(ManagementRecordSelection)
         case createContent(ContentKind)
@@ -450,11 +475,57 @@ struct ContentView: View {
                     sidebarHeader("Products")
                 }
                 Section {
-                    sidebarRow("Content", symbol: "megaphone", destination: "Marketing Content")
-                        .badge(snapshot.content.count)
-                        .onTapGesture {
-                            if section == "Marketing Content" { requestRootAction(.showContentList) }
+                    HStack(spacing: 0) {
+                        Button {
+                            requestRootAction(section == "Marketing Content" ? .showContentList : .section("Marketing Content"))
+                        } label: {
+                            Label {
+                                Text("Content")
+                            } icon: {
+                                SidebarIcon(symbol: "megaphone", isSelected: section == "Marketing Content")
+                            }
+                            .frame(maxWidth: .infinity, minHeight: 28, alignment: .leading)
+                            .contentShape(Rectangle())
                         }
+                        .buttonStyle(.plain)
+                        .accessibilityIdentifier("workspace-sidebar-Content")
+                        .accessibilityAddTraits(section == "Marketing Content" && !isContentExpanded ? .isSelected : [])
+                        .badge(snapshot.content.count)
+                        Button {
+                            isContentExpanded.toggle()
+                        } label: {
+                            Image(systemName: "chevron.right")
+                                .font(.system(size: 10, weight: .semibold))
+                                .rotationEffect(.degrees(isContentExpanded ? 90 : 0))
+                                .frame(width: 24, height: 28)
+                                .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel(isContentExpanded ? "Collapse Content destinations" : "Expand Content destinations")
+                    }
+                    if isContentExpanded {
+                        ForEach(ContentDestinationView.allCases) { destination in
+                            Button {
+                                requestRootAction(.contentDestination(destination))
+                            } label: {
+                                HStack {
+                                    Text(destination.rawValue)
+                                    Spacer(minLength: 4)
+                                    if let stage = destination.stage {
+                                        Text(snapshot.content.filter { ContentStage($0) == stage }.count, format: .number)
+                                            .foregroundStyle(.secondary)
+                                    }
+                                }
+                                .padding(.leading, 30)
+                                .frame(maxWidth: .infinity, minHeight: 28, alignment: .leading)
+                                .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                            .accessibilityIdentifier("workspace-content-\(destination.rawValue)")
+                            .accessibilityAddTraits(isContentDestinationSelected(destination) ? .isSelected : [])
+                            .listRowBackground(RoundedRectangle(cornerRadius: 8).fill(.quaternary).padding(.horizontal, 10).opacity(isContentDestinationSelected(destination) ? 1 : 0))
+                        }
+                    }
                     sidebarRow("Files", symbol: "folder", destination: "Files")
                 } header: {
                     sidebarHeader("Workspace")
@@ -578,6 +649,7 @@ struct ContentView: View {
                     initialSelectionID: marketingSelectionID,
                     onInitialSelectionHandled: { marketingSelectionID = nil },
                     listResetGeneration: contentListResetGeneration,
+                    destination: contentDestination,
                     onUnsavedChangesChange: { hasUnsavedEdits = $0 },
                     initialCreateKind: contentCreateRequest,
                     onCreateRequestHandled: { contentCreateRequest = nil }
@@ -721,6 +793,12 @@ struct ContentView: View {
             if value != "Marketing Content" { marketingSelectionID = nil }
             if value == "Apps" { appsOverviewGeneration += 1 }
         case .content(let id): section = "Marketing Content"; selectedAppID = nil; marketingSelectionID = id
+        case .contentDestination(let destination):
+            section = "Marketing Content"
+            selectedAppID = nil
+            marketingSelectionID = nil
+            contentDestinationRawValue = destination.rawValue
+            contentListResetGeneration &+= 1
         case .showContentList:
             contentListResetGeneration &+= 1
         case .management(let selection):
@@ -733,6 +811,14 @@ struct ContentView: View {
             selectedAppID = nil
             managementCreateRequest = kind
         }
+    }
+
+    private var contentDestination: ContentDestinationView {
+        ContentDestinationView(rawValue: contentDestinationRawValue) ?? .calendar
+    }
+
+    private func isContentDestinationSelected(_ destination: ContentDestinationView) -> Bool {
+        section == "Marketing Content" && contentDestination == destination
     }
 
     private func requestCreateContent(_ kind: ContentKind) {

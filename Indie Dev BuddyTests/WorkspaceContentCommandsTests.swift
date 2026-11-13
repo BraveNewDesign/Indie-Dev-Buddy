@@ -3,6 +3,56 @@ import Testing
 @testable import Indie_Dev_Buddy
 
 struct WorkspaceContentCommandsTests {
+    @Test func boardMovesPreservePublishingAndPlannedDates() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = WorkspaceStore(rootURL: root)
+        try await store.createWorkspace(at: root)
+
+        let owner = IdentityRecord(name: "Test Brand")
+        _ = try await store.save(owner, relativePath: "Identities/\(owner.id)/record.json")
+        let accounts = ["one", "two", "three"].map {
+            SocialAccountRecord(platform: "Bluesky", owner: .init(type: .identity, id: owner.id), handle: $0)
+        }
+        for account in accounts {
+            _ = try await store.save(account, relativePath: "SocialAccounts/\(account.id)/record.json")
+        }
+
+        var draft = ContentRecord.draft(kind: .social, title: "Board Test", accountIDs: accounts.map(\.id))
+        draft.plannedDate = Date(timeIntervalSince1970: 1_900_000_000)
+        let created = try await store.createContent(draft, body: "Shared original")
+        #expect(ContentStage(draft) == .drafts)
+        try await store.moveContent(id: draft.id, to: .ideas)
+        #expect(try await store.load().contentByID[draft.id].map(ContentStage.init) == .ideas)
+        try await store.moveContent(id: draft.id, to: .toPost)
+        let savedSnapshot = try await store.load()
+        let saved = try #require(savedSnapshot.contentByID[draft.id])
+        #expect(ContentStage(saved) == .toPost)
+        #expect(saved.destinations == draft.destinations)
+        #expect(saved.plannedDate == draft.plannedDate)
+
+        await #expect(throws: WorkspaceCommandError.self) {
+            try await store.moveContent(id: draft.id, to: .posted)
+        }
+        #expect(try await store.load().contentByID[draft.id] == saved)
+        #expect(try await store.readRecord(.content, id: draft.id).body == "Shared original")
+
+        var partiallyPublished = saved
+        partiallyPublished.destinations[0].status = .published
+        partiallyPublished.destinations[0].publishedDate = draft.plannedDate
+        let current = try await store.read(relativePath: created.path)
+        _ = try await store.save(partiallyPublished, relativePath: created.path, expectedRevision: current.revision)
+        #expect(ContentStage(partiallyPublished) == .toPost)
+        await #expect(throws: WorkspaceCommandError.self) {
+            try await store.moveContent(id: partiallyPublished.id, to: .drafts)
+        }
+        #expect(try await store.load().contentByID[draft.id] == partiallyPublished)
+
+        var completed = partiallyPublished
+        for index in completed.destinations.indices { completed.destinations[index].status = .published }
+        #expect(ContentStage(completed) == .posted)
+    }
+
     @Test func bodyConflictsAndUpdatesKeepRecoverableOriginals() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }

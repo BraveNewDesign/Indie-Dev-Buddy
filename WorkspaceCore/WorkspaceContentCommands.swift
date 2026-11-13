@@ -227,6 +227,31 @@ extension WorkspaceStore {
         }
     }
 
+    func moveContent(id: String, to stage: ContentStage) throws {
+        try withWorkspaceLock {
+            let snapshot = try load(installAgentGuidance: false)
+            guard !snapshot.errors.contains(where: { $0.path == WorkspaceRecordKind.content.errorLabel }),
+                  let path = snapshot.recordPaths[WorkspaceRecordKind.content.directory]?[id] else {
+                throw WorkspaceCommandError("The content record is missing or its ID is ambiguous.")
+            }
+            guard try safeURL(path).path == rootURL.appendingPathComponent(path).path else {
+                throw WorkspaceStoreError.invalidRelativePath(path)
+            }
+            let current = try read(relativePath: path)
+            let item = try decoder.decode(ContentRecord.self, from: current.data)
+            guard item.id == id, let status = stage.editorialStatus, stage.allowsMove(from: item) else {
+                throw WorkspaceCommandError("This item can no longer move to \(stage.rawValue).")
+            }
+            // Patch only the workflow field, including for records with extension metadata.
+            guard var object = try JSONSerialization.jsonObject(with: current.data) as? [String: Any] else {
+                throw WorkspaceCommandError("Expected a JSON object in \(path).")
+            }
+            object["status"] = status.rawValue
+            let data = try JSONSerialization.data(withJSONObject: object, options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes])
+            _ = try applyWrites([.init(data: data, relativePath: path, expectedRevision: current.revision)])
+        }
+    }
+
     func updateContent(id: String, title: String?, body: String?, expectedRevision: String,
                        expectedBodyRevision: String?) throws -> WorkspaceRecordRead {
         try withWorkspaceLock {

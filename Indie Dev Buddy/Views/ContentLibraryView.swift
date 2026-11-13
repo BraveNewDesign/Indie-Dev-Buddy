@@ -10,14 +10,11 @@ struct ContentLibraryView: View {
     var initialSelectionID: String? = nil
     var onInitialSelectionHandled: () -> Void = {}
     var listResetGeneration: Int = 0
+    var destination: ContentDestinationView = .calendar
     var onUnsavedChangesChange: (Bool) -> Void = { _ in }
     var initialCreateKind: ContentKind? = nil
     var onCreateRequestHandled: () -> Void = {}
     @AppStorage("selectedContentID") private var selectedID: String?
-    @State private var filter = "All"
-    @State private var search = ""
-    @State private var selectedAppID = "all"
-    @State private var sortOrder = "Planned Date"
     @State private var error: String?
     @State private var editorHasUnsavedChanges = false
     @State private var requestedNavigationID: String?
@@ -25,42 +22,17 @@ struct ContentLibraryView: View {
     @State private var confirmingDelete = false
     @State private var copyError: String?
     private let createRequestMarker = "__indie_dev_buddy_create__"
-    private let filters = ["All", "To Post", "Posted", "Drafts", "Ideas"]
-    private var records: [ContentRecord] {
-        let filtered = snapshot.content.filter { item in
-            let matchesFilter: Bool
-            switch filter {
-            case "To Post": matchesFilter = isToPost(item)
-            case "Posted": matchesFilter = isPosted(item)
-            case "Drafts": matchesFilter = item.status == .draft
-            case "Ideas": matchesFilter = item.kind == .idea || item.status == .idea
-            default: matchesFilter = true
-            }
-            let matchesSearch = search.isEmpty || item.title.localizedCaseInsensitiveContains(search)
-                || appNames(for: item).joined(separator: " ").localizedCaseInsensitiveContains(search)
-            let matchesApp = selectedAppID == "all" || item.appIds.contains(selectedAppID)
-            return matchesFilter && matchesSearch && matchesApp
-        }
-        return filtered.sorted { lhs, rhs in
-            switch sortOrder {
-            case "Title": return lhs.title.localizedCaseInsensitiveCompare(rhs.title) == .orderedAscending
-            case "Publishing Progress":
-                let left = progress(for: lhs), right = progress(for: rhs)
-                if left != right { return left < right }
-                return lhs.title.localizedCaseInsensitiveCompare(rhs.title) == .orderedAscending
-            default:
-                switch (lhs.plannedDate, rhs.plannedDate) {
-                case let (left?, right?): return left < right
-                case (_?, nil): return true
-                case (nil, _?): return false
-                default: return lhs.title.localizedCaseInsensitiveCompare(rhs.title) == .orderedAscending
-                }
-            }
-        }
+    private var selectedItem: ContentRecord? {
+        snapshot.content.first { $0.id == selectedID }
     }
+
     var body: some View {
-        Group {
-            if let item = snapshot.content.first(where: { $0.id == selectedID }) {
+        ZStack {
+            browser
+                .opacity(selectedItem == nil ? 1 : 0)
+                .disabled(selectedItem != nil)
+                .accessibilityHidden(selectedItem != nil)
+            if let item = selectedItem {
                 ContentRecordEditor(
                     record: item, snapshot: snapshot, snapshotGeneration: snapshotGeneration, store: store, refresh: refresh,
                     open: requestSelection,
@@ -89,15 +61,13 @@ struct ContentLibraryView: View {
                 )
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .id(item.id)
-            } else {
-                contentList
             }
         }
-        .navigationTitle("Marketing Content")
+        .navigationTitle(destination.rawValue)
         .toolbar {
-            if selectedID != nil {
+            if selectedItem != nil {
                 ToolbarItem(placement: .navigation) {
-                    Button("All Content", systemImage: "chevron.left") {
+                    Button(destination.rawValue, systemImage: "chevron.left") {
                         returnToList()
                     }
                 }
@@ -112,7 +82,7 @@ struct ContentLibraryView: View {
                 .labelStyle(.iconOnly)
                 .help("New Content")
             }
-            if selectedID != nil {
+            if selectedItem != nil {
                 ToolbarItem {
                     Menu("Content Actions", systemImage: "ellipsis.circle") {
                         Button("Delete Content…", role: .destructive) { confirmingDelete = true }
@@ -121,7 +91,7 @@ struct ContentLibraryView: View {
                 }
             }
         }
-        .alert("Could not create content", isPresented: Binding(get: { error != nil }, set: { if !$0 { error = nil } })) { Button("OK") { error = nil } } message: { Text(error ?? "") }
+        .alert("Could not update content", isPresented: Binding(get: { error != nil }, set: { if !$0 { error = nil } })) { Button("OK") { error = nil } } message: { Text(error ?? "") }
         .alert("Could not copy text", isPresented: Binding(get: { copyError != nil }, set: { if !$0 { copyError = nil } })) {
             Button("OK") { copyError = nil }
         } message: {
@@ -154,77 +124,29 @@ struct ContentLibraryView: View {
 
     private let listRequestMarker = "__all_content__"
 
-    private var contentFilter: some View {
-        HStack(spacing: 8) {
-            ForEach(filters, id: \.self) { value in
-                Button { filter = value } label: {
-                    Text("\(value) (\(count(for: value)))")
-                        .font(.callout.weight(filter == value ? .semibold : .regular))
-                        .padding(.horizontal, 12).padding(.vertical, 7)
-                        .background(filter == value ? Color.accentColor.opacity(0.14) : Color.clear, in: Capsule())
-                }
-                .buttonStyle(.plain)
-                .foregroundStyle(filter == value ? Color.accentColor : Color.primary)
-                .accessibilityAddTraits(filter == value ? .isSelected : [])
+    @ViewBuilder
+    private var browser: some View {
+        switch destination {
+        case .calendar:
+            ContentCalendarView(records: snapshot.content, snapshot: snapshot, showsControls: selectedItem == nil, open: requestSelection) { kind, date in
+                create(kind, plannedDate: date)
             }
+        case .board:
+            ContentBoardView(records: snapshot.content, snapshot: snapshot, open: requestSelection, move: move)
+        default:
+            ContentListView(snapshot: snapshot, stage: destination.stage, showsControls: selectedItem == nil, open: requestSelection,
+                            create: requestCreate, rowActions: contentRowActions)
         }
     }
 
-    private var contentSearch: some View {
-        TextField("Search content", text: $search).textFieldStyle(.roundedBorder)
-    }
-
-    private var contentList: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            VStack(alignment: .leading, spacing: 12) {
-                ViewThatFits(in: .horizontal) {
-                    contentFilter
-                    ScrollView(.horizontal) { contentFilter }
-                }
-                ViewThatFits(in: .horizontal) {
-                    HStack { contentSearch; appFilter; sortPicker }
-                    VStack(alignment: .leading, spacing: 8) { contentSearch; HStack { appFilter; sortPicker } }
-                }
-                Text(records.count == 1 ? "1 item" : "\(records.count) items").foregroundStyle(.secondary).font(.caption)
-            }
-            .padding(16)
-            if records.isEmpty {
-                VStack(spacing: 10) {
-                    Image(systemName: snapshot.content.isEmpty ? "text.bubble" : "magnifyingglass")
-                        .font(.system(size: 28))
-                        .foregroundStyle(.secondary)
-                    Text(emptyStateTitle)
-                        .font(.headline)
-                    Text(emptyStateMessage)
-                        .font(.callout)
-                        .foregroundStyle(.secondary)
-                        .multilineTextAlignment(.center)
-                    if snapshot.content.isEmpty {
-                        Button("Create Blog Article") { requestCreate(.blog) }
-                            .buttonStyle(.borderedProminent)
-                        Button("Create Social Post") { requestCreate(.social) }
-                            .buttonStyle(.bordered)
-                    } else {
-                        Button("Clear Search and Filters") {
-                            search = ""
-                            filter = "All"
-                            selectedAppID = "all"
-                        }
-                        .buttonStyle(.bordered)
-                    }
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .padding()
-            } else {
-                List(records, selection: Binding(get: { selectedID }, set: { value in
-                    guard let value, value != selectedID else { return }
-                    requestSelection(value)
-                })) { item in
-                    ContentLibraryRow(item: item, apps: appNames(for: item), snapshot: snapshot,
-                                      statusText: displayStatus(item), publishedCount: publishedCount(item))
-                    .tag(item.id)
-                    .contextMenu { contentRowActions(item) }
-                }
+    private func move(_ id: String, to stage: ContentStage) {
+        Task {
+            do {
+                try await store.moveContent(id: id, to: stage)
+                refresh()
+            } catch {
+                self.error = error.localizedDescription
+                refresh()
             }
         }
     }
@@ -287,80 +209,6 @@ struct ContentLibraryView: View {
         }
     }
 
-    private var appFilter: some View {
-        Picker("App", selection: $selectedAppID) {
-            Text("All Apps").tag("all")
-            ForEach(snapshot.apps.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }, id: \.id) { app in
-                Text(app.name).tag(app.id)
-            }
-        }.frame(minWidth: 130)
-    }
-
-    private var sortPicker: some View {
-        Picker("Sort", selection: $sortOrder) {
-            ForEach(["Planned Date", "Publishing Progress", "Title"], id: \.self) { Text($0) }
-        }.frame(minWidth: 145)
-    }
-
-    private func count(for filter: String) -> Int {
-        snapshot.content.filter { item in
-            switch filter {
-            case "To Post": return isToPost(item)
-            case "Posted": return isPosted(item)
-            case "Drafts": return item.status == .draft
-            case "Ideas": return item.kind == .idea || item.status == .idea
-            default: return true
-            }
-        }.count
-    }
-    private func isToPost(_ item: ContentRecord) -> Bool {
-        guard item.kind == .social else { return false }
-        if !item.destinations.isEmpty { return item.destinations.contains { $0.status != .published } }
-        return item.status == .ready
-    }
-    private func isPosted(_ item: ContentRecord) -> Bool {
-        guard item.kind == .social else { return item.status == .published }
-        if item.destinations.isEmpty { return item.status == .published }
-        return item.destinations.allSatisfy { $0.status == .published }
-    }
-    private func publishedCount(_ item: ContentRecord) -> Int {
-        item.destinations.filter { $0.status == .published }.count
-    }
-    private func progress(for item: ContentRecord) -> Double {
-        guard !item.destinations.isEmpty else { return item.status == .published ? 1 : 0 }
-        return Double(publishedCount(item)) / Double(item.destinations.count)
-    }
-    private func appNames(for item: ContentRecord) -> [String] {
-        snapshot.apps.filter { item.appIds.contains($0.id) }.map(\.name)
-    }
-
-    private func displayStatus(_ item: ContentRecord) -> String {
-        guard item.kind == .social else { return item.status.displayTitle }
-        guard !item.destinations.isEmpty else { return item.status == .published ? "Posted" : "Not Posted" }
-        let posted = publishedCount(item)
-        if posted == item.destinations.count { return "Posted" }
-        let deliveryStates = item.destinations.compactMap { destination in
-            destination.status == .scheduled && destination.schedule?.mode == .api ? destination.schedule?.state : nil
-        }
-        if deliveryStates.contains(.outcomeUnknown) { return "Needs Review" }
-        if deliveryStates.contains(.failed) { return "Delivery Failed" }
-        if deliveryStates.contains(.overdue) { return "Overdue" }
-        if deliveryStates.contains(.canceled) { return "Schedule Canceled" }
-        if posted > 0 { return "Partially Posted" }
-        let statuses = item.destinations.map(\.status)
-        if statuses.allSatisfy({ $0 == .manuallyScheduled }) { return "Manually Scheduled" }
-        if statuses.allSatisfy({ $0 == .scheduled }) { return "Scheduled" }
-        if statuses.contains(.manuallyScheduled) || statuses.contains(.scheduled) { return "Mixed Schedule" }
-        return "Not Posted"
-    }
-    private var emptyStateTitle: String {
-        snapshot.content.isEmpty ? "No Marketing Content Yet" : "No Matching Content"
-    }
-    private var emptyStateMessage: String {
-        snapshot.content.isEmpty
-            ? "Create an article or social post to start planning your marketing."
-            : "Try a different search or filter, or show all content."
-    }
     private func requestSelection(_ id: String) {
         guard id != selectedID else { return }
         pendingCreateKind = nil
@@ -386,8 +234,9 @@ struct ContentLibraryView: View {
         pendingCreateKind = kind
         requestedNavigationID = createRequestMarker
     }
-    private func create(_ kind: ContentKind, completion: ((String?) -> Void)? = nil) {
-        let record = ContentRecord.draft(kind: kind, title: kind == .blog ? "Untitled Article" : kind == .social ? "Untitled Social Post" : "New Idea")
+    private func create(_ kind: ContentKind, plannedDate: Date? = nil, completion: ((String?) -> Void)? = nil) {
+        var record = ContentRecord.draft(kind: kind, title: kind == .blog ? "Untitled Article" : kind == .social ? "Untitled Social Post" : "New Idea")
+        record.plannedDate = plannedDate
         Task { do {
             try await store.createContent(record, body: "")
             refresh()
@@ -414,137 +263,6 @@ struct ContentLibraryView: View {
                 refresh()
             } catch { self.error = "Could not delete this content: \(error.localizedDescription)" }
         }
-    }
-}
-
-private struct ContentLibraryRow: View {
-    let item: ContentRecord
-    let apps: [String]
-    let snapshot: WorkspaceSnapshot
-    let statusText: String
-    let publishedCount: Int
-
-    private var destinationAccounts: [SocialAccountRecord] {
-        item.destinations.compactMap { destination in snapshot.socialAccounts.first { $0.id == destination.accountId } }
-    }
-    private var latestPublishedDate: Date? {
-        item.destinations.compactMap(\.publishedDate).max()
-    }
-    private var statusColor: Color {
-        switch statusText {
-        case "Posted": .green
-        case "Partially Posted": .blue
-        case "Needs Review", "Delivery Failed", "Overdue": .orange
-        case "Idea": .purple
-        default: .secondary
-        }
-    }
-    private var kindIcon: String {
-        switch item.kind {
-        case .social: "megaphone.fill"
-        case .blog: "doc.text.fill"
-        case .idea: "lightbulb.fill"
-        }
-    }
-    private var kindColor: Color {
-        switch item.kind {
-        case .social: .blue
-        case .blog: .purple
-        case .idea: .orange
-        }
-    }
-
-    var body: some View {
-        HStack(spacing: 14) {
-            Image(systemName: kindIcon)
-                .font(.system(size: 19, weight: .medium))
-                .foregroundStyle(kindColor)
-                .frame(width: 42, height: 42)
-                .background(kindColor.opacity(0.12), in: RoundedRectangle(cornerRadius: 10))
-            VStack(alignment: .leading, spacing: 5) {
-                Text(item.title.isEmpty ? "Untitled Content" : item.title)
-                    .font(.headline).lineLimit(2)
-                HStack(spacing: 6) {
-                    Text(item.kind == .social ? "Social Post" : item.kind == .blog ? "Blog Article" : "Idea")
-                    if !apps.isEmpty { Text("·"); Text(apps.joined(separator: ", ")).lineLimit(1) }
-                    else if item.kind == .blog, let site = snapshot.websites.first(where: { $0.id == item.websiteId }) {
-                        Text("·"); Text(site.name).lineLimit(1)
-                    }
-                }
-                .font(.subheadline).foregroundStyle(.secondary)
-                HStack(spacing: 8) {
-                    if item.kind == .social {
-                        if item.destinations.isEmpty {
-                            Label("No accounts yet", systemImage: "person.crop.circle")
-                        } else {
-                            HStack(spacing: 7) {
-                                ForEach(destinationAccounts.prefix(4), id: \.id) { account in
-                                    SocialPlatformIcon(platform: account.platform, size: 16)
-                                        .help("\(account.platform)\(account.handle.map { " · \($0)" } ?? "")")
-                                }
-                            }
-                            Text("\(item.destinations.count) account\(item.destinations.count == 1 ? "" : "s")")
-                        }
-                    } else if item.kind == .blog {
-                        Label("Website article", systemImage: "globe")
-                    } else {
-                        Label("No publishing destinations", systemImage: "tray")
-                    }
-                }
-                .font(.caption).foregroundStyle(.secondary)
-                if let scheduleSummary {
-                    Label(scheduleSummary, systemImage: "calendar.badge.clock")
-                        .font(.caption).foregroundStyle(.secondary)
-                }
-                Group {
-                    if isPostedRow, let date = latestPublishedDate {
-                        Label("Published \(date.formatted(date: .abbreviated, time: .omitted))", systemImage: "checkmark.circle")
-                    } else if let date = item.plannedDate {
-                        Label("Planned \(date.formatted(date: .abbreviated, time: .omitted))", systemImage: "calendar")
-                    } else if item.kind == .idea {
-                        Text("No planned date")
-                    } else {
-                        Text("Unscheduled")
-                    }
-                }
-                .font(.caption).foregroundStyle(.secondary)
-            }
-            Spacer(minLength: 12)
-            VStack(alignment: .trailing, spacing: 7) {
-                Text(statusText)
-                    .font(.caption.weight(.semibold))
-                    .padding(.horizontal, 9).padding(.vertical, 5)
-                    .background(statusColor.opacity(0.13), in: Capsule())
-                    .foregroundStyle(statusColor)
-                if item.kind == .social, !item.destinations.isEmpty {
-                    Text("\(publishedCount) of \(item.destinations.count) posted")
-                        .font(.caption).foregroundStyle(.secondary)
-                    ProgressView(value: Double(publishedCount), total: Double(item.destinations.count))
-                        .accessibilityHidden(true)
-                        .tint(publishedCount == item.destinations.count ? .green : .accentColor)
-                        .frame(width: 100)
-                }
-            }
-        }
-        .padding(.vertical, 7)
-        .contentShape(Rectangle())
-    }
-
-    private var isPostedRow: Bool {
-        if item.kind == .social { return !item.destinations.isEmpty && item.destinations.allSatisfy { $0.status == .published } }
-        return item.status == .published
-    }
-
-    private var scheduleSummary: String? {
-        let apiCount = item.destinations.filter { $0.status == .scheduled && $0.schedule?.mode == .api }.count
-        let manualCount = item.destinations.filter { $0.status == .manuallyScheduled || ($0.status == .scheduled && $0.schedule?.mode == .manual) }.count
-        let overdueCount = item.destinations.filter { $0.status == .scheduled && $0.schedule?.state == .overdue }.count
-        guard apiCount + manualCount > 0 else { return nil }
-        var parts: [String] = []
-        if overdueCount > 0 { parts.append("\(overdueCount) missed") }
-        if apiCount > overdueCount { parts.append("\(apiCount - overdueCount) automatic") }
-        if manualCount > 0 { parts.append("\(manualCount) manual") }
-        return parts.joined(separator: " · ")
     }
 }
 
