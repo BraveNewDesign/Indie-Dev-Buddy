@@ -18,13 +18,17 @@ Download the signed, notarized Apple silicon build from [GitHub Releases](https:
 
 ## Screenshots
 
-![Indie Dev Buddy dashboard and app workspace](docs/screenshots/01-workspace.png)
+![Indie Dev Buddy dashboard with upcoming posts and an app library](docs/screenshots/marketing/workspace.webp)
 
-| App Store release status | Social post composer |
-| --- | --- |
-| ![App Store Connect release status for Dictate Bar](docs/screenshots/02-releases.png) | ![Social post composer with an account preview](docs/screenshots/03-social.png) |
+![Content board for moving ideas through Drafts, To Post, and Posted](docs/screenshots/marketing/content-board.webp)
 
-![Indie Dev Buddy local workspace file browser](docs/screenshots/04-local.png)
+![App library alongside App Store Connect customer reviews and TestFlight feedback](docs/screenshots/marketing/app-store-connect.webp)
+
+![App showcase editor and an exported image of the app lineup](docs/screenshots/marketing/app-showcase.webp)
+
+<p align="center">
+  <img src="docs/screenshots/marketing/less-marketing.webp" alt="Less marketing. More making." width="480">
+</p>
 
 ## What to expect
 
