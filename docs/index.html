@@ -6,7 +6,7 @@ layout: null
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="description" content="Indie Dev Buddy is an open-source Mac app for tracking your apps, checking App Store releases, and drafting social posts.">
+  <meta name="description" content="Organize your apps, plan marketing, manage social publishing, and stay close to App Store Connect in one local-first Mac app.">
   <link rel="icon" type="image/png" sizes="32x32" href="assets/favicon.png">
   <title>Indie Dev Buddy for Mac</title>
   <style>
@@ -35,11 +35,24 @@ layout: null
     img { display: block; width: 100%; height: auto; border: 1px solid var(--line); border-radius: 8px; }
     figcaption { margin-top: 10px; color: var(--muted); }
     figcaption strong { display: block; color: var(--ink); }
-    .setup { margin-top: 56px; max-width: 680px; }
+    .section { margin-top: clamp(56px, 8vw, 96px); }
+    .section-lede { max-width: 720px; color: var(--muted); font-size: 18px; }
+    .feature-grid { display: grid; gap: 16px; }
+    .feature { padding: 24px; border: 1px solid var(--line); border-radius: 12px; background: #fffefa; }
+    .feature h3 { margin: 0 0 8px; font-size: 20px; letter-spacing: -.02em; }
+    .feature p:last-child { margin-bottom: 0; }
+    .callout { margin-top: 24px; padding: 20px 24px; border-left: 4px solid #77947c; border-radius: 0 8px 8px 0; background: #e8eee8; }
+    .callout p:last-child { margin-bottom: 0; }
+    .steps { padding-left: 24px; max-width: 760px; }
+    .steps li { padding-left: 6px; margin-bottom: 12px; }
+    .action-links { display: flex; flex-wrap: wrap; gap: 12px 24px; margin-top: 20px; font-weight: 650; }
+    code { overflow-wrap: anywhere; }
+    .setup { max-width: 800px; }
     .tagline { max-width: 480px; margin: 48px auto 0; }
     @media (min-width: 740px) {
       .hero { grid-template-columns: minmax(0, 2fr) minmax(0, 3fr); }
       .screens { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+      .feature-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
     }
   </style>
 </head>
@@ -53,16 +66,27 @@ layout: null
     <section class="hero">
       <div>
         <h1>Indie Dev Buddy</h1>
-        <p class="intro">A Mac app for keeping track of your apps, checking App Store releases, and writing social posts.</p>
+        <p class="intro">A little more organization for everything that comes after making an app. Bring your projects, marketing, social accounts, and App Store Connect information together.</p>
         <a class="download" href="https://github.com/BraveNewDesign/Indie-Dev-Buddy/releases/latest">Download for Mac</a>
-        <p class="requirements">Requires Apple silicon and macOS 27.2 or later.</p>
+        <p class="requirements">Early access · Apple silicon · macOS 27.2 or later · Open source</p>
       </div>
       <figure>
         <a href="screenshots/marketing/workspace.webp"><img src="screenshots/marketing/workspace.webp" width="1920" height="1200" alt="Indie Dev Buddy dashboard with upcoming posts and an app library"></a>
       </figure>
     </section>
 
-    <section aria-labelledby="screenshots">
+    <section class="section" aria-labelledby="features">
+      <h2 id="features">Everything in its place</h2>
+      <p class="section-lede">From the first idea to your next release, keep the details close at hand.</p>
+      <div class="feature-grid">
+        <article class="feature"><h3>Organize your projects</h3><p>Keep app descriptions, icons, project folders, repositories, websites, and App Store and TestFlight links together in a workspace you choose.</p></article>
+        <article class="feature"><h3>Plan and share your work</h3><p>Write articles, social posts, and ideas. Use a calendar or board to plan, customize posts for each account, and preview them before sharing.</p></article>
+        <article class="feature"><h3>Stay close to App Store Connect</h3><p>See release and build status, listing details, reviews, TestFlight feedback, available analytics, and screenshots. Prepare release notes and marketing drafts.</p></article>
+        <article class="feature"><h3>Keep assets ready</h3><p>Organize reusable images, create and check screenshot sets, and export a shareable image of your app lineup.</p></article>
+      </div>
+    </section>
+
+    <section class="section" aria-labelledby="screenshots">
       <h2 id="screenshots">Inside the app</h2>
       <div class="screens">
         <figure>
@@ -80,10 +104,37 @@ layout: null
       </div>
     </section>
 
-    <section class="setup" aria-labelledby="setup">
-      <h2 id="setup">Setup</h2>
-      <p>To publish from the app, <a href="{{ '/social-connections/' | relative_url }}">connect a supported social account</a>. Credentials are stored in the macOS Keychain. Scheduled posts require Indie Dev Buddy to be running and your Mac to be awake.</p>
-      <p>App Store Connect access is optional and read-only. It uses your existing <code>asc</code> CLI sign-in.</p>
+    <section class="section setup" aria-labelledby="start">
+      <h2 id="start">Get started</h2>
+      <ol class="steps">
+        <li><a href="https://github.com/BraveNewDesign/Indie-Dev-Buddy/releases/latest">Download the latest release</a>, open the DMG, and drag Indie Dev Buddy to Applications.</li>
+        <li>Open the app and create a workspace, or choose an existing one. Pick a folder you can access and back up.</li>
+        <li>Add an app or website, then create a draft or connect a social account when you're ready.</li>
+      </ol>
+      <p>The app is signed and notarized and checks for updates through Sparkle. <a href="{{ '/getting-started/' | relative_url }}">Read the getting started guide</a>.</p>
+    </section>
+
+    <section class="section" aria-labelledby="publishing">
+      <h2 id="publishing">Share on your terms</h2>
+      <p class="section-lede">Connect a supported account to publish or schedule from the app, or plan manually and post elsewhere.</p>
+      <p><strong>Connected publishing:</strong> Bluesky, Facebook Pages, Threads, Instagram, X, LinkedIn, and Mastodon.<br><strong>Manual planning:</strong> GitHub accounts and custom platforms.</p>
+      <p>Where providers permit it, review account activity and interact with posts or comments. Features depend on the provider, account setup, and permissions. <a href="{{ '/social-connections/' | relative_url }}">Explore social connections</a>.</p>
+      <aside class="callout"><p><strong>Scheduled posts run on your Mac.</strong> Indie Dev Buddy must be open and your Mac awake at the scheduled time. Manual schedules are reminders and don't send posts. Delivery history helps you review completed, missed, or uncertain attempts.</p></aside>
+    </section>
+
+    <section class="section" aria-labelledby="workspace">
+      <h2 id="workspace">Your workspace, your tools</h2>
+      <p class="section-lede">Your workspace lives in a folder you choose, with ordinary files you can back up. There is no hosted account or cloud scheduler.</p>
+      <div class="feature-grid">
+        <article class="feature"><h3>Built for people and agents</h3><p>The included <code>indiedevbuddy</code> command-line tool lets people, scripts, and AI agents manage workspace records and drafts. It returns structured JSON and supports revision checks and validation. Each workspace includes agent guidance and a marketing content skill; no MCP server is required.</p><p>The CLI manages workspace data. Connecting accounts, scheduling, and publishing happen in the app.</p><a href="{{ '/cli-guide/' | relative_url }}">Explore the command-line guide →</a></article>
+        <article class="feature"><h3>Optional integrations</h3><p>Social credentials are stored in macOS Keychain. App Store Connect requires an installed, authenticated <code>asc</code> command-line tool and provides read-only access. It cannot upload metadata or screenshots, submit versions, or reply to reviews. Analytics depend on available reports and profile permissions.</p><a href="{{ '/social-connections/' | relative_url }}">Learn about social setup →</a></article>
+      </div>
+    </section>
+
+    <section class="section" aria-labelledby="opensource">
+      <h2 id="opensource">Open source and ready to explore</h2>
+      <p>Indie Dev Buddy is available under the MIT License. Build from source with Xcode 27.2 or later, or help improve the app through issues, code, and documentation.</p>
+      <div class="action-links"><a href="https://github.com/BraveNewDesign/Indie-Dev-Buddy">View source on GitHub →</a><a href="{{ '/documentation/' | relative_url }}">Browse documentation →</a><a href="{{ '/contributing/' | relative_url }}">Contribute →</a></div>
     </section>
     <img class="tagline" src="screenshots/marketing/less-marketing.webp" width="1920" height="1200" loading="lazy" alt="Less marketing. More making.">
   </main>
