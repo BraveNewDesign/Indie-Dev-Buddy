@@ -3,6 +3,24 @@
     <channel>
         <title>Indie Dev Buddy</title>
         <item>
+            <title>1.2</title>
+            <pubDate>Fri, 13 Nov 2026 09:33:49 -0500</pubDate>
+            <sparkle:version>3</sparkle:version>
+            <sparkle:shortVersionString>1.2</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>27.2</sparkle:minimumSystemVersion>
+            <description sparkle:format="markdown"><![CDATA[## New in 1.2
+
+- Plan marketing content in the calendar, move posts through stages on the board, and track publishing by social account.
+- Browse releases, listing details, screenshots, customer reviews, TestFlight feedback, and available analytics from an app’s App Store tab. Import screenshots or turn localized release notes into a draft.
+- Create and share a customizable PNG showcase of your app lineup.
+- See upcoming posts on the dashboard, pin frequently used social accounts, and rename or switch workspaces from the sidebar.
+- Organize reusable media in the shared asset library and group screenshots by platform.
+
+Requires Apple silicon and macOS 27.2 or later.
+]]></description>
+            <enclosure url="https://bravenewdesign.github.io/Indie-Dev-Buddy/updates/Indie%20Dev%20Buddy-1.2.zip" length="6577695" type="application/octet-stream" sparkle:edSignature="wzNB9rTGNPagy1s70EjLOLVqRZwOS09hxLMOojlhABUQNYOrj+aE7crb5JOd7Wzs+6cU4VVGxqxIJBQVDOiPAg=="/>
+        </item>
+        <item>
             <title>1.1</title>
             <pubDate>Wed, 11 Nov 2026 18:06:27 -0500</pubDate>
             <sparkle:version>2</sparkle:version>
