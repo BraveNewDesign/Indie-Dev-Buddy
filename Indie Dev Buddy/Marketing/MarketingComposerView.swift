@@ -708,7 +708,7 @@ struct MarketingComposerView: View {
                            let platform = SocialPlatform(rawValue: entry.intent.recipient.platform) {
                             let id = SocialAccount.ID(platform: platform, server: entry.intent.recipient.server,
                                                       remoteID: entry.intent.recipient.remoteID)
-                            if let recovery = socialPublishingRuntime.connectionStatus[id], recovery != .ready {
+                            if let recovery = socialPublishingRuntime.connectionStatus[id], !recovery.isAvailable {
                                 Label(recovery.message, systemImage: "exclamationmark.circle")
                                     .font(.caption).foregroundStyle(.orange)
                             }

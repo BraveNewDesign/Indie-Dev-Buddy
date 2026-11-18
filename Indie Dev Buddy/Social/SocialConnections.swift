@@ -124,38 +124,50 @@ actor SocialConnections {
     private var recoveryRetryAt: [SocialAccount.ID: Date] = [:]
 
     enum Recovery: Equatable, Sendable {
-        case ready, authorizationRequired, permissionsRequired, keychainUnavailable, retryLater, configurationRequired
+        case ready, renewed, missingCredential, authorizationRequired, permissionsRequired
+        case keychainUnavailable, retryLater, configurationRequired, rateLimited(until: Date)
+
+        var isAvailable: Bool { self == .ready || self == .renewed }
 
         var message: String {
             switch self {
-            case .ready: "Saved connection is available."
-            case .authorizationRequired: "Sign in again to restore this account."
+            case .ready: "The saved connection is available."
+            case .renewed: "Indie Dev Buddy renewed your saved authorization and stored it in Keychain."
+            case .missingCredential: "This account is linked to the workspace, but its credential is missing from this Mac’s Keychain."
+            case .authorizationRequired: "The saved authorization has expired or the provider rejected it. This account needs fresh authorization."
             case .permissionsRequired: "Authorize the required permissions to restore this account."
             case .keychainUnavailable: "Keychain is unavailable. Unlock it and check again."
-            case .retryLater: "Connection check delayed. Indie Dev Buddy will retry."
+            case .retryLater: "The provider could not be checked right now. Indie Dev Buddy kept your saved credential and will retry."
+            case .rateLimited(let until):
+                "The provider asked Indie Dev Buddy to wait. Try again after \(until.formatted(date: .abbreviated, time: .shortened))."
             case .configurationRequired: "Review this account’s connection setup."
             }
         }
 
         var needsAuthorization: Bool {
-            self == .authorizationRequired || self == .permissionsRequired || self == .configurationRequired
+            self == .missingCredential || self == .authorizationRequired || self == .permissionsRequired || self == .configurationRequired
         }
     }
 
-    func recover(_ identity: ContentRecipientIdentity, force: Bool = false) async -> Recovery {
+    func recover(_ identity: ContentRecipientIdentity, force: Bool = false, manual: Bool = false) async -> Recovery {
         guard let id = try? accountID(for: identity) else { return .configurationRequired }
         if let task = recoveryTasks[id] { return await task.value }
-        if let retryAt = recoveryRetryAt[id], retryAt > .now { return .retryLater }
-        let task = Task { await runRecovery(for: id, force: force) }
+        if let retryAt = recoveryRetryAt[id], retryAt > .now { return .rateLimited(until: retryAt) }
+        let task = Task { await runRecovery(for: id, force: force, manual: manual) }
         recoveryTasks[id] = task
         return await task.value
     }
 
-    private func runRecovery(for id: SocialAccount.ID, force: Bool) async -> Recovery {
+    private func runRecovery(for id: SocialAccount.ID, force: Bool, manual: Bool) async -> Recovery {
         defer { recoveryTasks.removeValue(forKey: id) }
         do {
-            try await refreshCredentialsIfNeeded(for: id, force: force, checkingConnection: true)
+            guard let saved = try await store.credential(for: id) else { return .missingCredential }
+            try await refreshCredentialsIfNeeded(for: id, force: force, checkingConnection: true, manual: manual)
             recoveryRetryAt.removeValue(forKey: id)
+            if let current = try await store.credential(for: id),
+               current.accessToken != saved.accessToken || current.expiresAt != saved.expiresAt {
+                return .renewed
+            }
             return .ready
         } catch let error as SocialError {
             switch error {
@@ -167,8 +179,9 @@ actor SocialConnections {
             case .invalidConfiguration: return .configurationRequired
             case .rateLimited(let retryAfter):
                 let delay = max(300, retryAfter.flatMap(TimeInterval.init) ?? 0)
-                recoveryRetryAt[id] = Date().addingTimeInterval(delay)
-                return .retryLater
+                let retryAt = Date().addingTimeInterval(delay)
+                recoveryRetryAt[id] = retryAt
+                return .rateLimited(until: retryAt)
             default: return .retryLater
             }
         } catch {
@@ -697,7 +710,7 @@ actor SocialConnections {
     }
 
     private func refreshCredentialsIfNeeded(for id: SocialAccount.ID, now: Date = Date(),
-                                            force: Bool = false, checkingConnection: Bool = false) async throws {
+                                            force: Bool = false, checkingConnection: Bool = false, manual: Bool = false) async throws {
         guard let credential = try await store.credential(for: id) else {
             throw SocialError.authenticationRequired
         }
@@ -705,7 +718,7 @@ actor SocialConnections {
             let expired = credential.expiresAt.map { $0 <= now } ?? false
             if expired, id.platform != .facebookPages, credential.facebookPageSourceGrant == nil { throw SocialError.authenticationRequired }
             do {
-                try await checkMetaCredential(id, force: expired || force, now: now)
+                try await checkMetaCredential(id, force: expired || force, manual: manual, now: now)
             } catch let error as SocialError where !checkingConnection && Self.isTransientCredentialCheckError(error) {
                 // Renewal can fail independently of an otherwise usable token.
                 // The provider still checks the current credential on the publishing request.
@@ -730,14 +743,15 @@ actor SocialConnections {
             }
         }
         if expired { throw SocialError.authenticationRequired }
-        if id.platform == .bluesky, force || !checkingConnection {
+        if force || (id.platform == .bluesky && !checkingConnection) {
             do {
                 try await verifyNonMetaConnection(id)
             } catch SocialError.httpStatus(401) {
+                guard !nearExpiry, try await capabilities(for: identity).contains(.refreshSession) else {
+                    throw SocialError.authenticationRequired
+                }
                 _ = try await refresh(identity)
             }
-        } else if checkingConnection && force {
-            try await verifyNonMetaConnection(id)
         }
     }
 
@@ -829,13 +843,16 @@ actor SocialConnections {
         metaCheckResults.removeValue(forKey: id)
     }
 
-    private func checkMetaCredential(_ id: SocialAccount.ID, force: Bool = false, now: Date = Date()) async throws {
+    private func checkMetaCredential(_ id: SocialAccount.ID, force: Bool = false, manual: Bool = false, now: Date = Date()) async throws {
         if let check = metaChecks[id] {
             return try await check.value
         }
-        if let result = metaCheckResults[id], now < result.nextCheck, !force || result.error != nil {
-            if let error = result.error { throw error }
-            return
+        if let result = metaCheckResults[id], now < result.nextCheck {
+            if let error = result.error, case .rateLimited = error { throw error }
+            if !manual && (!force || result.error != nil) {
+                if let error = result.error { throw error }
+                return
+            }
         }
 
         let check = Task { try await runMetaCheck(id, now: now) }

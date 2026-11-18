@@ -12,6 +12,7 @@ final class SocialPublishingRuntime {
     private let coordinator: PublishingCoordinator?
     private(set) var metaCredentialStatus: [SocialAccount.ID: String] = [:]
     private(set) var connectionStatus: [SocialAccount.ID: SocialConnections.Recovery] = [:]
+    private(set) var lastManualCheck: [SocialAccount.ID: Date] = [:]
     private(set) var lastAvailable: [SocialAccount.ID: Date] = [:]
     private var networkMonitor: NWPathMonitor?
     private var networkWasAvailable: Bool?
@@ -168,7 +169,7 @@ final class SocialPublishingRuntime {
             let stale = lastAvailable[id].map { Date().timeIntervalSince($0) >= 6 * 60 * 60 } ?? true
             let status = connectionStatus[id]
             if !force, !id.platform.isMeta, status?.needsAuthorization == true { continue }
-            let retrying = status == .retryLater || status == .keychainUnavailable
+            let retrying = status.map { !$0.isAvailable && !$0.needsAuthorization } ?? false
             _ = await checkConnection(identity, force: force || (!id.platform.isMeta && (stale || retrying)))
         }
         for account in accounts where account.platform.isMeta {
@@ -182,11 +183,16 @@ final class SocialPublishingRuntime {
         credentialTask = nil
     }
 
-    func checkConnection(_ identity: ContentRecipientIdentity, force: Bool = true) async -> SocialConnections.Recovery {
-        let result = await connections.recover(identity, force: force)
+    func checkConnection(_ identity: ContentRecipientIdentity, force: Bool = true, manual: Bool = false) async -> SocialConnections.Recovery {
+        let result = await connections.recover(identity, force: force, manual: manual)
         guard !Task.isCancelled, let id = connectionID(for: identity) else { return result }
-        connectionStatus[id] = result
-        if result == .ready, force || lastAvailable[id] == nil {
+        if manual {
+            lastManualCheck[id] = .now
+        }
+        if result != .ready || manual || connectionStatus[id] != .renewed {
+            connectionStatus[id] = result
+        }
+        if result.isAvailable, force || lastAvailable[id] == nil {
             let now = Date()
             lastAvailable[id] = now
             UserDefaults.standard.set(now, forKey: availabilityKey(identity))

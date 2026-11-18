@@ -10,6 +10,7 @@ struct SocialOAuthConnectionSheet: View {
     @Environment(\.dismiss) private var dismiss
     let platform: SocialPlatform
     var expected: ContentRecipientIdentity? = nil
+    var recovery: SocialConnections.Recovery? = nil
     let onConnected: (SocialAccount) -> Void
     @State private var registration = SocialOAuthRegistration()
     @State private var brokerCredential = ""
@@ -34,6 +35,14 @@ struct SocialOAuthConnectionSheet: View {
 
     var body: some View {
         Form {
+            if let recovery, recovery.needsAuthorization {
+                Label(recovery.message, systemImage: "exclamationmark.circle")
+                    .foregroundStyle(.secondary)
+                if isMetaPlatform && metaMethod == .accessToken {
+                    Text("Paste a current token for this same account. Indie Dev Buddy verifies it before updating Keychain.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+            }
             if isMetaPlatform {
                 Section("Connection method") {
                     if associatedDomains.contains(where: { $0.hasPrefix("webcredentials:") }) {

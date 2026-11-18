@@ -1822,7 +1822,7 @@ private struct SocialAccountRecordEditor: View {
         }
         .sheet(isPresented: $showingOAuthConnect) {
             if let apiPlatform {
-                SocialOAuthConnectionSheet(platform: apiPlatform, expected: expectedConnection, onConnected: applyConnection)
+                SocialOAuthConnectionSheet(platform: apiPlatform, expected: expectedConnection, recovery: expectedConnection == nil ? nil : connectionRecovery, onConnected: applyConnection)
             }
         }
         .sheet(isPresented: $showingAccountActivity) {
@@ -1837,8 +1837,9 @@ private struct SocialAccountRecordEditor: View {
                     capabilities: connectionCapabilities, statusMessage: connectionMessage,
                     recovery: connectionRecovery, lastAvailable: connectionLastAvailable,
                     checking: checkingConnection,
-                    onCheck: { Task { await repairConnection(allowAuthorization: false) } },
-                    onReconnect: { Task { await repairConnection(allowAuthorization: true) } },
+                    lastAttempt: connectionID.flatMap { socialPublishingRuntime.lastManualCheck[$0] },
+                    onCheck: { Task { await repairConnection() } },
+                    onAuthorize: { dismissConnectionManager(then: .authorize) },
                     onSwitch: { dismissConnectionManager(then: .switchAccount) },
                     onActivity: { dismissConnectionManager(then: .activity) },
                     onUnlink: unlinkConnection
@@ -1916,7 +1917,7 @@ private struct SocialAccountRecordEditor: View {
                     } else {
                         Button("Manage Connection…") {
                             showingConnectionManager = true
-                            Task { await repairConnection(allowAuthorization: false) }
+                            Task { await repairConnection() }
                         }
                             .buttonStyle(.bordered)
                             .accessibilityHint("View capabilities and manage authorization")
@@ -1971,7 +1972,7 @@ private struct SocialAccountRecordEditor: View {
         return "API connection is optional"
     }
     private var connectionSummary: String {
-        if let connectionRecovery, connectionRecovery != .ready { return connectionRecovery.message }
+        if let connectionRecovery, !connectionRecovery.isAvailable { return connectionRecovery.message }
         if let connectionMessage { return connectionMessage }
         if providerIdentity != nil && connectedAccount == nil { return "Credentials may be missing or need renewal." }
         if connectedAccount != nil {
@@ -1984,7 +1985,7 @@ private struct SocialAccountRecordEditor: View {
     private var connectionTint: Color { connectionNeedsAttention ? .orange : (connectedAccount == nil ? (providerIdentity == nil ? .secondary : .orange) : .green) }
     private var connectionNeedsAttention: Bool {
         if connectionMessage != nil { return true }
-        if let connectionRecovery, connectionRecovery != .ready { return true }
+        if let connectionRecovery, !connectionRecovery.isAvailable { return true }
         guard let id = connectedAccount?.id else { return false }
         return socialPublishingRuntime.metaCredentialStatus[id]?.localizedCaseInsensitiveContains("reconnect") == true
     }
@@ -2045,7 +2046,7 @@ private struct SocialAccountRecordEditor: View {
         let identity = SocialOAuthRegistration.identity(for: account)
         let result = await socialPublishingRuntime.checkConnection(identity)
         guard !Task.isCancelled, providerIdentity == nil, apiPlatform == account.platform else { return }
-        if result == .ready {
+        if result.isAvailable {
             connectionMessage = nil
             applyConnection(account)
         } else if result.needsAuthorization {
@@ -2073,17 +2074,15 @@ private struct SocialAccountRecordEditor: View {
         }
     }
 
-    private func repairConnection(allowAuthorization: Bool) async {
+    private func repairConnection() async {
         guard !checkingConnection, let identity = providerIdentity else { return }
         checkingConnection = true
         defer { checkingConnection = false }
-        let result = await socialPublishingRuntime.checkConnection(identity)
+        let result = await socialPublishingRuntime.checkConnection(identity, manual: true)
         guard providerIdentity == identity else { return }
         connectionMessage = nil
-        if result == .ready {
+        if result.isAvailable {
             await loadSavedConnection(identity)
-        } else if allowAuthorization && result.needsAuthorization {
-            dismissConnectionManager(then: .authorize)
         }
     }
 
@@ -2091,7 +2090,7 @@ private struct SocialAccountRecordEditor: View {
         guard let record, connectionRequest == record.id, let apiPlatform else { return }
         connectionRequest = nil
         if providerIdentity == nil { presentConnection(for: apiPlatform) }
-        else { showingConnectionManager = true; Task { await repairConnection(allowAuthorization: false) } }
+        else { showingConnectionManager = true; Task { await repairConnection() } }
     }
 
     private func presentConnection(for platform: SocialPlatform, switching: Bool = false) {
@@ -2287,8 +2286,9 @@ private struct SocialConnectionManagementSheet: View {
     let recovery: SocialConnections.Recovery?
     let lastAvailable: Date?
     let checking: Bool
+    let lastAttempt: Date?
     let onCheck: () -> Void
-    let onReconnect: () -> Void
+    let onAuthorize: () -> Void
     let onSwitch: () -> Void
     let onActivity: () -> Void
     let onUnlink: () -> Void
@@ -2325,15 +2325,18 @@ private struct SocialConnectionManagementSheet: View {
                 }
             } else if identity != nil {
                 Label("Connection unavailable on this Mac", systemImage: "exclamationmark.triangle.fill").foregroundStyle(.orange)
-                Text("Credentials may be missing or expired. Reconnect to restore access.").foregroundStyle(.secondary)
             }
             if checking {
-                HStack { ProgressView().controlSize(.small); Text("Checking saved connection…") }
+                HStack { ProgressView().controlSize(.small); Text("Checking Keychain and provider authorization…") }
             } else if let recovery {
-                Label(recovery.message, systemImage: recovery == .ready ? "checkmark.circle" : "exclamationmark.circle")
-                    .foregroundStyle(recovery == .ready ? Color.secondary : .orange)
+                Label(recovery.message, systemImage: recovery.isAvailable ? "checkmark.circle" : "exclamationmark.circle")
+                    .foregroundStyle(recovery.isAvailable ? Color.secondary : .orange)
             } else if let statusMessage {
                 Label(statusMessage, systemImage: "exclamationmark.circle").foregroundStyle(.orange)
+            }
+            if let lastAttempt {
+                LabeledContent("Last check", value: lastAttempt.formatted(date: .abbreviated, time: .standard))
+                    .font(.caption).foregroundStyle(.secondary)
             }
             if let lastAvailable {
                 LabeledContent("Last available", value: lastAvailable.formatted(date: .abbreviated, time: .shortened))
@@ -2367,17 +2370,18 @@ private struct SocialConnectionManagementSheet: View {
                     Button("Unlink", role: .destructive) { confirmingUnlink = true }
                 }
                 .disabled(identity == nil || checking)
+                Button(recovery?.needsAuthorization == true ? "Retry Saved Connection" : "Check Connection",
+                       systemImage: "arrow.clockwise", action: onCheck)
+                    .disabled(checking)
+                    .buttonStyle(.bordered)
                 if recovery?.needsAuthorization == true {
-                    Button("Reconnect…", systemImage: "arrow.clockwise", action: onReconnect)
-                        .buttonStyle(.borderedProminent).disabled(checking)
-                } else {
-                    Button("Check Connection", systemImage: "arrow.clockwise", action: onCheck)
+                    Button("Authorize Again…", action: onAuthorize)
                         .buttonStyle(.borderedProminent).disabled(checking)
                 }
             }
         }
         .padding(22)
-        .frame(minWidth: 520, idealWidth: 580, minHeight: 340, idealHeight: 410)
+        .frame(minWidth: 630, idealWidth: 680, minHeight: 360, idealHeight: 420)
         .confirmationDialog("Switch the account linked to this workspace?", isPresented: $confirmingSwitch, titleVisibility: .visible) {
             Button("Switch Account…", action: onSwitch)
             Button("Cancel", role: .cancel) {}
@@ -2406,6 +2410,10 @@ private struct BlueskyConnectionSheet: View {
     var body: some View {
         Form {
             TextField("Handle", text: $handle, prompt: Text("name.bsky.social"))
+            if expected != nil {
+                Text("Bluesky’s saved session could not be restored. Enter an existing Bluesky app password, or create one in Bluesky settings.")
+                    .font(.callout).foregroundStyle(.secondary)
+            }
             SecureField("App password", text: $appPassword)
             TextField("PDS server", text: $server)
             Text("Create an app password in Bluesky settings. The resulting connection credential is stored in Keychain.")

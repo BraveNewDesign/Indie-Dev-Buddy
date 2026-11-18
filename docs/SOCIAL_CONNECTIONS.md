@@ -92,7 +92,7 @@ The app stores the verified provider credential in the Mac’s Keychain. For Fac
 
 Unlinking a workspace record leaves its Keychain credential available to other workspace records that may share that connection. To revoke provider access, revoke the app grant in Meta separately.
 
-In **Manage Connection**, choose **Check Connection** to reuse or renew the saved grant. **Reconnect** opens authorization if Indie Dev Buddy needs a new grant for that same account. Use **Switch Account** to link a different profile. Existing scheduled deliveries remain tied to the identity they were approved for.
+In **Manage Connection**, choose **Check Connection** to reuse or renew the saved grant. **Retry Saved Connection** runs the check again and shows the result. When a fresh grant is needed, **Authorize Again** opens the authorization form for the same account. Use **Switch Account** to link a different profile. Existing scheduled deliveries remain tied to the identity they were approved for.
 
 Public registration settings are saved per account. When you use a trusted exchange service, you can opt in to remembering its credential in Keychain for that account and endpoint. Provider app secrets stay on the service.
 

@@ -70,8 +70,12 @@ struct MetaCredentialCheckTests {
         await store.save(SocialCredential(account: account, accessToken: "saved-token"))
         let transport = CredentialCheckTransport([HTTPResponse(statusCode: 429, headers: ["Retry-After": "600"])])
         let connections = SocialConnections(credentialStore: store, metaTransport: transport)
-        #expect(await connections.recover(identity, force: true) == .retryLater)
-        #expect(await connections.recover(identity, force: true) == .retryLater)
+        if case .rateLimited = await connections.recover(identity, force: true) {} else {
+            Issue.record("Expected a provider rate limit")
+        }
+        if case .rateLimited = await connections.recover(identity, force: true) {} else {
+            Issue.record("Expected a provider rate limit")
+        }
         #expect(await transport.paths == ["/api/v1/accounts/verify_credentials"])
         #expect(await store.credential(for: account.id)?.accessToken == "saved-token")
 
@@ -92,9 +96,25 @@ struct MetaCredentialCheckTests {
         ])
         let connections = SocialConnections(credentialStore: store, metaTransport: transport)
         let identity = SocialOAuthRegistration.identity(for: account)
-        #expect(await connections.recover(identity, force: true) == .ready)
+        #expect(await connections.recover(identity, force: true) == .renewed)
         #expect(await transport.paths == ["/xrpc/com.atproto.server.getSession", "/xrpc/com.atproto.server.refreshSession"])
         #expect(await store.credential(for: account.id)?.refreshToken == "new-refresh")
+    }
+
+    @Test func manualRetryRechecksRejectedSavedTokenAndReportsMissingCredential() async throws {
+        let store = MemoryCredentialStore()
+        let account = account
+        let identity = SocialOAuthRegistration.identity(for: account)
+        let transport = CredentialCheckTransport([
+            response(status: 400, code: 190),
+            HTTPResponse(statusCode: 200, body: Data(#"{"id":"abc","username":"studio"}"#.utf8))
+        ])
+        let connections = SocialConnections(credentialStore: store, metaTransport: transport)
+        #expect(await connections.recover(identity, force: true, manual: true) == .missingCredential)
+        await store.save(SocialCredential(account: account, accessToken: "saved-token"))
+        #expect(await connections.recover(identity, force: true) == .authorizationRequired)
+        #expect(await connections.recover(identity, force: true, manual: true) == .ready)
+        #expect(await transport.calls == 2)
     }
 
     private var account: SocialAccount {
