@@ -530,11 +530,20 @@ private struct DashboardArtworkView: View {
 }
 
 struct WorkspaceThumbnailRequest: Hashable, Sendable {
+    nonisolated static let identityPhotoMaxPixelSize = 192
+
     let root: URL
     let folder: String?
     let paths: [String]
     let generation: Int
     var maxPixelSize = 640
+    var decodeToSDR = false
+
+    static func identityPhoto(root: URL, path: String?, generation: Int) -> Self? {
+        guard let path, !path.isEmpty, !path.hasPrefix("asset:") else { return nil }
+        return Self(root: root, folder: nil, paths: [path], generation: generation,
+                    maxPixelSize: identityPhotoMaxPixelSize, decodeToSDR: true)
+    }
 }
 
 actor WorkspaceThumbnailCache {
@@ -563,18 +572,51 @@ actor WorkspaceThumbnailCache {
             }
             guard let values = try? url.resourceValues(forKeys: [.isRegularFileKey, .contentModificationDateKey, .fileSizeKey]),
                   values.isRegularFile == true else { continue }
-            let key = "\(url.path)|\(values.contentModificationDate?.timeIntervalSinceReferenceDate ?? 0)|\(values.fileSize ?? 0)|\(request.maxPixelSize)" as NSString
+            let key = "\(url.path)|\(values.contentModificationDate?.timeIntervalSinceReferenceDate ?? 0)|\(values.fileSize ?? 0)|\(request.maxPixelSize)|\(request.decodeToSDR)" as NSString
             if let image = cache.object(forKey: key) { return image }
-            guard let source = CGImageSourceCreateWithURL(url as CFURL, [kCGImageSourceShouldCache: false] as CFDictionary),
-                  let image = CGImageSourceCreateThumbnailAtIndex(source, 0, [
-                    kCGImageSourceCreateThumbnailFromImageAlways: true,
-                    kCGImageSourceCreateThumbnailWithTransform: true,
-                    kCGImageSourceThumbnailMaxPixelSize: request.maxPixelSize,
-                    kCGImageSourceShouldCacheImmediately: true
-                  ] as CFDictionary) else { continue }
+            let options = Self.sourceOptions(decodeToSDR: request.decodeToSDR)
+            guard let source = CGImageSourceCreateWithURL(url as CFURL, options as CFDictionary),
+                  let image = Self.thumbnail(from: source, maxPixelSize: request.maxPixelSize,
+                                             decodeToSDR: request.decodeToSDR) else { continue }
             cache.setObject(image, forKey: key, cost: image.bytesPerRow * image.height)
             return image
         }
         return nil
+    }
+
+    @concurrent
+    nonisolated static func identityPhotoImport(from url: URL) async throws -> Data {
+        let access = url.startAccessingSecurityScopedResource()
+        defer { if access { url.stopAccessingSecurityScopedResource() } }
+        let data = try Data(contentsOf: url)
+        guard !data.isEmpty, data.count <= 20 * 1_024 * 1_024,
+              let source = CGImageSourceCreateWithData(data as CFData, sourceOptions(decodeToSDR: true) as CFDictionary),
+              thumbnail(from: source, maxPixelSize: WorkspaceThumbnailRequest.identityPhotoMaxPixelSize,
+                        decodeToSDR: true) != nil else {
+            throw CocoaError(.fileReadCorruptFile)
+        }
+        return data
+    }
+
+    nonisolated private static func sourceOptions(decodeToSDR: Bool) -> [CFString: Any] {
+        var options: [CFString: Any] = [kCGImageSourceShouldCache: false]
+        if decodeToSDR {
+            options[kCGImageSourceDecodeRequest] = kCGImageSourceDecodeToSDR
+            options[kCGImageSourceGenerateImageSpecificLumaScaling] = false
+        }
+        return options
+    }
+
+    nonisolated private static func thumbnail(
+        from source: CGImageSource, maxPixelSize: Int, decodeToSDR: Bool
+    ) -> CGImage? {
+        var options = sourceOptions(decodeToSDR: decodeToSDR)
+        options[kCGImageSourceShouldCache] = true
+        options[kCGImageSourceShouldCacheImmediately] = true
+        options[kCGImageSourceCreateThumbnailFromImageAlways] = true
+        options[kCGImageSourceCreateThumbnailWithTransform] = true
+        options[kCGImageSourceThumbnailMaxPixelSize] = maxPixelSize
+        let index = decodeToSDR ? CGImageSourceGetPrimaryImageIndex(source) : 0
+        return CGImageSourceCreateThumbnailAtIndex(source, index, options as CFDictionary)
     }
 }

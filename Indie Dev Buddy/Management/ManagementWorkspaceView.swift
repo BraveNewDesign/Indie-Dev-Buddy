@@ -304,12 +304,8 @@ struct ManagementWorkspaceView: View {
                     let isPinned = pinnedIDs.contains(row.id)
                     HStack(spacing: 10) {
                         Group {
-                            if let iconURL = row.iconURL, let image = NSImage(contentsOf: iconURL) {
-                                if section == .identities {
-                                    Image(nsImage: image).resizable().scaledToFill().clipShape(Circle())
-                                } else {
-                                    Image(nsImage: image).resizable().scaledToFit()
-                                }
+                            if section == .identities {
+                                IdentityRowPhoto(request: row.photoRequest, symbol: row.symbol)
                             } else if let platform = row.socialPlatform {
                                 SocialPlatformIcon(platform: platform, size: 24)
                             } else {
@@ -442,7 +438,7 @@ struct ManagementWorkspaceView: View {
         case .apps: []
         case .identities:
             snapshot.identities.map { identity in
-                ManagementRow(id: identity.id, title: identity.name, subtitle: identity.kind ?? "", symbol: "person.crop.circle", iconURL: Self.safeWorkspacePhotoURL(root: store.rootURL, photoPath: identity.photoPath))
+                ManagementRow(id: identity.id, title: identity.name, subtitle: identity.kind ?? "", symbol: "person.crop.circle", photoRequest: .identityPhoto(root: store.rootURL, path: identity.photoPath, generation: snapshotGeneration))
             }
         case .websites:
             snapshot.websites.filter { matchesOwnerFilter($0.owner) }.map { record in
@@ -503,7 +499,7 @@ struct ManagementWorkspaceView: View {
     @ViewBuilder private func editor(for record: IdentityRecord?) -> some View {
         VStack(spacing: 0) {
             if let record { scopedAssetsButton(AssetOwner(.identity, record.id)) }
-            IdentityRecordEditor(record: record, workspaceStore: store, onDirtyChange: setDirty, onSave: { await save($0, category: "Identities", name: $0.name, expectedRevision: loadedRevision) }).id("\(record?.id ?? "new-identity")-\(editorGeneration)")
+            IdentityRecordEditor(record: record, workspaceStore: store, snapshotGeneration: snapshotGeneration, onDirtyChange: setDirty, onSave: { await save($0, category: "Identities", name: $0.name, expectedRevision: loadedRevision) }).id("\(record?.id ?? "new-identity")-\(editorGeneration)")
             if let record {
                 relatedRecords(owner: RecordOwner(type: .identity, id: record.id))
             }
@@ -839,7 +835,7 @@ private struct ManagementRow: Identifiable {
     let title: String
     let subtitle: String
     let symbol: String
-    var iconURL: URL? = nil
+    var photoRequest: WorkspaceThumbnailRequest? = nil
     var socialPlatform: String? = nil
 }
 
@@ -1485,9 +1481,34 @@ private struct AppRecordEditor: View {
     }
 }
 
+private struct IdentityRowPhoto: View {
+    let request: WorkspaceThumbnailRequest?
+    let symbol: String
+    @State private var photo: NSImage?
+
+    var body: some View {
+        Group {
+            if let photo {
+                Image(nsImage: photo).resizable().scaledToFill().clipShape(Circle())
+            } else {
+                Image(systemName: symbol).font(.title3).foregroundStyle(.secondary)
+            }
+        }
+        .frame(width: 30, height: 30)
+        .clipped()
+        .task(id: request) {
+            guard let request else { photo = nil; return }
+            let image = await WorkspaceThumbnailCache.shared.load(request)
+            guard !Task.isCancelled else { return }
+            photo = image.map { NSImage(cgImage: $0, size: .zero) }
+        }
+    }
+}
+
 private struct IdentityRecordEditor: View {
     let record: IdentityRecord?
     let workspaceStore: WorkspaceStore
+    let snapshotGeneration: Int
     let onDirtyChange: (Bool) -> Void
     let onSave: (IdentityRecord) async -> Bool
     @State private var name = ""
@@ -1496,6 +1517,7 @@ private struct IdentityRecordEditor: View {
     @State private var photoPath: String?
     @State private var photoPreview: NSImage?
     @State private var photoError: String?
+    @State private var photoUnavailable = false
     @State private var showingPhotoPicker = false
     @State private var saving = false
     var body: some View {
@@ -1527,10 +1549,15 @@ private struct IdentityRecordEditor: View {
                                 photoPath = nil
                                 photoPreview = nil
                                 photoError = nil
+                                photoUnavailable = false
                             }
                         }
                         if let photoError { Text(photoError).font(.caption).foregroundStyle(.red) }
-                        else if photoPath == nil { Text("Used as the default avatar for this identity’s social accounts.").font(.caption).foregroundStyle(.secondary) }
+                        else if photoUnavailable || (photoPath != nil && photoRequest == nil) {
+                            Text("The linked photo is unavailable or unreadable. Replace or remove it.")
+                                .font(.caption)
+                                .foregroundStyle(.red)
+                        } else if photoPath == nil { Text("Used as the default avatar for this identity’s social accounts.").font(.caption).foregroundStyle(.secondary) }
                     }
                 }
             }
@@ -1547,8 +1574,14 @@ private struct IdentityRecordEditor: View {
                 name = record.name
                 kind = record.kind ?? "Personal"
                 photoPath = record.photoPath
-                if let photoPath { Task { await loadPhotoPreview(relativePath: photoPath) } }
             }
+        }
+        .task(id: photoRequest) {
+            guard let photoRequest else { return }
+            let image = await WorkspaceThumbnailCache.shared.load(photoRequest)
+            guard !Task.isCancelled, self.photoRequest == photoRequest else { return }
+            photoPreview = image.map { NSImage(cgImage: $0, size: .zero) }
+            photoUnavailable = image == nil
         }
         .onChange(of: name) { _, _ in onDirtyChange(isDirty) }
         .onChange(of: kind) { _, _ in onDirtyChange(isDirty) }
@@ -1562,6 +1595,10 @@ private struct IdentityRecordEditor: View {
             }
         }
     }
+    private var photoRequest: WorkspaceThumbnailRequest? {
+        .identityPhoto(root: workspaceStore.rootURL, path: photoPath, generation: snapshotGeneration)
+    }
+
     private var canSave: Bool {
         !(name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || saving)
     }
@@ -1576,26 +1613,10 @@ private struct IdentityRecordEditor: View {
         }
         return false
     }
-    private func loadPhotoPreview(relativePath: String) async {
-        do {
-            let data = try await workspaceStore.read(relativePath: relativePath).data
-            guard photoPath == relativePath else { return }
-            photoPreview = NSImage(data: data)
-            if photoPreview == nil { photoError = "The linked photo file is not a readable image. Replace or remove it." }
-        } catch {
-            guard photoPath == relativePath else { return }
-            photoPreview = nil
-            photoError = "The linked photo is unavailable. Replace or remove it. \(error.localizedDescription)"
-        }
-    }
     private func importPhoto(from sourceURL: URL) async {
-        let access = sourceURL.startAccessingSecurityScopedResource()
-        defer { if access { sourceURL.stopAccessingSecurityScopedResource() } }
         do {
-            let data = try Data(contentsOf: sourceURL)
-            guard !data.isEmpty, data.count <= 20 * 1_024 * 1_024,
-                  let image = NSImage(data: data),
-                  let type = UTType(filenameExtension: sourceURL.pathExtension), type.conforms(to: .image) else {
+            let data = try await WorkspaceThumbnailCache.identityPhotoImport(from: sourceURL)
+            guard let type = UTType(filenameExtension: sourceURL.pathExtension), type.conforms(to: .image) else {
                 throw CocoaError(.fileReadCorruptFile)
             }
             let ext = type.preferredFilenameExtension ?? sourceURL.pathExtension.lowercased()
@@ -1608,8 +1629,9 @@ private struct IdentityRecordEditor: View {
             let path = "\(identityFolder)/Assets/identity-photo-\(UUID().uuidString.lowercased()).\(ext)"
             _ = try await workspaceStore.write(data, relativePath: path, expectedRevision: nil)
             photoPath = path
-            photoPreview = image
+            photoPreview = nil
             photoError = nil
+            photoUnavailable = false
         } catch {
             photoError = "Could not import this photo: \(error.localizedDescription)"
         }
