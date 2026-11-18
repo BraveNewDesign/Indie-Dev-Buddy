@@ -380,7 +380,7 @@ struct ManagementWorkspaceView: View {
             }
             if SocialPlatform.workspacePlatform(account.platform) != nil {
                 Divider()
-                Button(account.providerIdentity == nil ? "Connect…" : "Reconnect…", systemImage: "link") {
+                Button(account.providerIdentity == nil ? "Connect…" : "Manage Connection…", systemImage: "link") {
                     requestNavigation(.connectAccount(row.id))
                 }
             }
@@ -1727,6 +1727,11 @@ private struct SocialAccountRecordEditor: View {
     @State private var identityAvatarPreview: NSImage?
     @State private var avatarError: String?
     @State private var showingAvatarPicker = false
+    private enum ConnectionFollowUp { case authorize, switchAccount, activity }
+    @State private var connectionFollowUp: ConnectionFollowUp?
+    @State private var savedConnections: [SocialAccount] = []
+    @State private var expectedConnection: ContentRecipientIdentity?
+    @State private var checkingConnection = false
     @State private var showingBlueskyConnect = false
     @State private var showingOAuthConnect = false
     @State private var showingAccountActivity = false
@@ -1812,11 +1817,12 @@ private struct SocialAccountRecordEditor: View {
             Task { completion(await save()) }
         } : nil)
         .sheet(isPresented: $showingBlueskyConnect) {
-            BlueskyConnectionSheet(initialHandle: handle, onConnected: applyConnection)
+            let savedHandle = savedConnections.first { SocialOAuthRegistration.identity(for: $0) == expectedConnection }?.username
+            BlueskyConnectionSheet(initialHandle: savedHandle ?? handle, expected: expectedConnection, onConnected: applyConnection)
         }
         .sheet(isPresented: $showingOAuthConnect) {
             if let apiPlatform {
-                SocialOAuthConnectionSheet(platform: apiPlatform, onConnected: applyConnection)
+                SocialOAuthConnectionSheet(platform: apiPlatform, expected: expectedConnection, onConnected: applyConnection)
             }
         }
         .sheet(isPresented: $showingAccountActivity) {
@@ -1824,19 +1830,17 @@ private struct SocialAccountRecordEditor: View {
                 SocialAccountActivityView(identity: providerIdentity, account: connectedAccount)
             }
         }
-        .sheet(isPresented: $showingConnectionManager) {
+        .sheet(isPresented: $showingConnectionManager, onDismiss: openConnectionFollowUp) {
             if let apiPlatform {
                 SocialConnectionManagementSheet(
                     platform: apiPlatform, identity: providerIdentity, account: connectedAccount,
                     capabilities: connectionCapabilities, statusMessage: connectionMessage,
-                    onReconnect: {
-                        showingConnectionManager = false
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { presentConnection(for: apiPlatform) }
-                    },
-                    onActivity: {
-                        showingConnectionManager = false
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { showingAccountActivity = true }
-                    },
+                    recovery: connectionRecovery, lastAvailable: connectionLastAvailable,
+                    checking: checkingConnection,
+                    onCheck: { Task { await repairConnection(allowAuthorization: false) } },
+                    onReconnect: { Task { await repairConnection(allowAuthorization: true) } },
+                    onSwitch: { dismissConnectionManager(then: .switchAccount) },
+                    onActivity: { dismissConnectionManager(then: .activity) },
                     onUnlink: unlinkConnection
                 )
             }
@@ -1853,19 +1857,10 @@ private struct SocialAccountRecordEditor: View {
             connectionCapabilities = []
             connectionMessage = nil
             guard let identity = providerIdentity else { return }
-            let accounts = try? await socialPublishingRuntime.connections.accounts()
-            guard !Task.isCancelled, providerIdentity == identity else { return }
-            connectedAccount = accounts?.first {
-                $0.platform.rawValue == identity.platform && $0.server == identity.server && $0.remoteID == identity.remoteID
-            }
-            guard connectedAccount != nil else { connectionCapabilities = []; return }
-            do {
-                connectionCapabilities = try await socialPublishingRuntime.connections.capabilities(for: identity)
-                connectionMessage = nil
-            } catch {
-                connectionCapabilities = []
-                connectionMessage = "Connection check failed. Reconnect if publishing is unavailable."
-            }
+            await loadSavedConnection(identity)
+        }
+        .task(id: apiPlatform) {
+            await refreshSavedConnections()
         }
         .onChange(of: platformValue) { _, newValue in
             if SocialPlatform.workspacePlatform(newValue)?.rawValue != providerIdentity?.platform { providerIdentity = nil }
@@ -1902,11 +1897,27 @@ private struct SocialAccountRecordEditor: View {
                     }
                     Spacer(minLength: 8)
                     if providerIdentity == nil {
-                        Button("Connect API…") { presentConnection(for: apiPlatform) }
-                            .buttonStyle(.bordered)
-                            .accessibilityHint("Optionally connect this account to its provider; manual posting remains available")
+                        let saved = savedConnections.filter { $0.platform == apiPlatform }
+                        if saved.isEmpty {
+                            Button("Connect API…") { presentConnection(for: apiPlatform) }
+                                .buttonStyle(.bordered)
+                        } else {
+                            Menu("Connect API") {
+                                ForEach(saved) { account in
+                                    Button("Use @\(account.username)") {
+                                        Task { await reuseSavedConnection(account) }
+                                    }
+                                }
+                                Divider()
+                                Button("Connect Another Account…") { presentConnection(for: apiPlatform) }
+                            }
+                            .disabled(checkingConnection)
+                        }
                     } else {
-                        Button("Manage Connection…") { showingConnectionManager = true }
+                        Button("Manage Connection…") {
+                            showingConnectionManager = true
+                            Task { await repairConnection(allowAuthorization: false) }
+                        }
                             .buttonStyle(.bordered)
                             .accessibilityHint("View capabilities and manage authorization")
                     }
@@ -1953,12 +1964,14 @@ private struct SocialAccountRecordEditor: View {
 
     private var selectedOwnerName: String? { owners.first(where: { $0.id == ownerID })?.title }
     private var connectionTitle: String {
-        if connectedAccount != nil && connectionMessage != nil { return "Connection needs attention" }
+        if checkingConnection { return "Checking saved connection…" }
+        if connectedAccount != nil && connectionNeedsAttention { return "Connection needs attention" }
         if providerIdentity != nil && connectedAccount == nil { return "Connection unavailable on this Mac" }
         if connectedAccount != nil { return "Connected as @\(connectedAccount?.username ?? "account")" }
         return "API connection is optional"
     }
     private var connectionSummary: String {
+        if let connectionRecovery, connectionRecovery != .ready { return connectionRecovery.message }
         if let connectionMessage { return connectionMessage }
         if providerIdentity != nil && connectedAccount == nil { return "Credentials may be missing or need renewal." }
         if connectedAccount != nil {
@@ -1971,6 +1984,7 @@ private struct SocialAccountRecordEditor: View {
     private var connectionTint: Color { connectionNeedsAttention ? .orange : (connectedAccount == nil ? (providerIdentity == nil ? .secondary : .orange) : .green) }
     private var connectionNeedsAttention: Bool {
         if connectionMessage != nil { return true }
+        if let connectionRecovery, connectionRecovery != .ready { return true }
         guard let id = connectedAccount?.id else { return false }
         return socialPublishingRuntime.metaCredentialStatus[id]?.localizedCaseInsensitiveContains("reconnect") == true
     }
@@ -1992,19 +2006,102 @@ private struct SocialAccountRecordEditor: View {
         }
     }
 
+    private var connectionID: SocialAccount.ID? {
+        guard let identity = providerIdentity, let platform = SocialPlatform(rawValue: identity.platform) else { return nil }
+        return .init(platform: platform, server: identity.server, remoteID: identity.remoteID)
+    }
+
+    private var connectionRecovery: SocialConnections.Recovery? {
+        connectionID.flatMap { socialPublishingRuntime.connectionStatus[$0] }
+    }
+
+    private var connectionLastAvailable: Date? {
+        providerIdentity.flatMap { socialPublishingRuntime.lastAvailable(for: $0) }
+    }
+
+    private func dismissConnectionManager(then followUp: ConnectionFollowUp) {
+        connectionFollowUp = followUp
+        showingConnectionManager = false
+    }
+
+    private func openConnectionFollowUp() {
+        guard let followUp = connectionFollowUp, let platform = apiPlatform else { return }
+        connectionFollowUp = nil
+        switch followUp {
+        case .authorize: presentConnection(for: platform)
+        case .switchAccount: presentConnection(for: platform, switching: true)
+        case .activity: showingAccountActivity = true
+        }
+    }
+
+    private func refreshSavedConnections() async {
+        savedConnections = (try? await socialPublishingRuntime.connections.accounts()) ?? []
+    }
+
+    private func reuseSavedConnection(_ account: SocialAccount) async {
+        guard !checkingConnection else { return }
+        checkingConnection = true
+        defer { checkingConnection = false }
+        let identity = SocialOAuthRegistration.identity(for: account)
+        let result = await socialPublishingRuntime.checkConnection(identity)
+        guard !Task.isCancelled, providerIdentity == nil, apiPlatform == account.platform else { return }
+        if result == .ready {
+            connectionMessage = nil
+            applyConnection(account)
+        } else if result.needsAuthorization {
+            expectedConnection = identity
+            if account.platform == .bluesky { showingBlueskyConnect = true }
+            else { showingOAuthConnect = true }
+        } else {
+            connectionMessage = result.message
+        }
+    }
+
+    private func loadSavedConnection(_ identity: ContentRecipientIdentity) async {
+        let accounts = try? await socialPublishingRuntime.connections.accounts()
+        guard !Task.isCancelled, providerIdentity == identity else { return }
+        connectedAccount = accounts?.first {
+            $0.platform.rawValue == identity.platform && $0.server == identity.server && $0.remoteID == identity.remoteID
+        }
+        guard connectedAccount != nil else { connectionCapabilities = []; return }
+        do {
+            connectionCapabilities = try await socialPublishingRuntime.connections.capabilities(for: identity)
+            connectionMessage = nil
+        } catch {
+            connectionCapabilities = []
+            connectionMessage = "Connection check failed. Reconnect if publishing is unavailable."
+        }
+    }
+
+    private func repairConnection(allowAuthorization: Bool) async {
+        guard !checkingConnection, let identity = providerIdentity else { return }
+        checkingConnection = true
+        defer { checkingConnection = false }
+        let result = await socialPublishingRuntime.checkConnection(identity)
+        guard providerIdentity == identity else { return }
+        connectionMessage = nil
+        if result == .ready {
+            await loadSavedConnection(identity)
+        } else if allowAuthorization && result.needsAuthorization {
+            dismissConnectionManager(then: .authorize)
+        }
+    }
+
     private func openRequestedConnection() {
         guard let record, connectionRequest == record.id, let apiPlatform else { return }
         connectionRequest = nil
-        presentConnection(for: apiPlatform)
+        if providerIdentity == nil { presentConnection(for: apiPlatform) }
+        else { showingConnectionManager = true; Task { await repairConnection(allowAuthorization: false) } }
     }
 
-    private func presentConnection(for platform: SocialPlatform) {
+    private func presentConnection(for platform: SocialPlatform, switching: Bool = false) {
+        expectedConnection = switching ? nil : providerIdentity
         if platform == .bluesky { showingBlueskyConnect = true }
         else { showingOAuthConnect = true }
     }
 
     private func applyConnection(_ account: SocialAccount) {
-        if account.platform.isMeta { socialPublishingRuntime.updateCredentialStatus(for: account.id) }
+        socialPublishingRuntime.updateCredentialStatus(for: account.id)
         connectedAccount = account
         providerIdentity = ContentRecipientIdentity(platform: account.platform.rawValue,
                                                      server: account.server,
@@ -2070,6 +2167,7 @@ private struct SocialAccountRecordEditor: View {
                 connectionCapabilities = []
                 baselineRecord = unlinkedRecord
                 connectionMessage = nil
+                await refreshSavedConnections()
                 onDirtyChange(isDirty)
             } else {
                 connectionMessage = "The workspace link could not be removed. Try again after saving the account."
@@ -2186,10 +2284,16 @@ private struct SocialConnectionManagementSheet: View {
     let account: SocialAccount?
     let capabilities: Set<SocialCapability>
     let statusMessage: String?
+    let recovery: SocialConnections.Recovery?
+    let lastAvailable: Date?
+    let checking: Bool
+    let onCheck: () -> Void
     let onReconnect: () -> Void
+    let onSwitch: () -> Void
     let onActivity: () -> Void
     let onUnlink: () -> Void
     @State private var confirmingUnlink = false
+    @State private var confirmingSwitch = false
 
     private var capabilityItems: [(SocialCapability, String)] {
         [(.publishText, "Publish text"), (.publishMedia, "Publish media"),
@@ -2212,7 +2316,7 @@ private struct SocialConnectionManagementSheet: View {
             }
             Divider()
             if let account {
-                Label("Connected as @\(account.username)", systemImage: "checkmark.circle.fill").foregroundStyle(.green)
+                Label("@\(account.username)", systemImage: "person.crop.circle")
                 if let name = account.authenticatedUserName, name != account.displayName {
                     LabeledContent("Authorized by", value: name)
                 }
@@ -2223,8 +2327,17 @@ private struct SocialConnectionManagementSheet: View {
                 Label("Connection unavailable on this Mac", systemImage: "exclamationmark.triangle.fill").foregroundStyle(.orange)
                 Text("Credentials may be missing or expired. Reconnect to restore access.").foregroundStyle(.secondary)
             }
-            if let statusMessage {
-                Label(statusMessage, systemImage: "exclamationmark.circle").font(.callout).foregroundStyle(.orange)
+            if checking {
+                HStack { ProgressView().controlSize(.small); Text("Checking saved connection…") }
+            } else if let recovery {
+                Label(recovery.message, systemImage: recovery == .ready ? "checkmark.circle" : "exclamationmark.circle")
+                    .foregroundStyle(recovery == .ready ? Color.secondary : .orange)
+            } else if let statusMessage {
+                Label(statusMessage, systemImage: "exclamationmark.circle").foregroundStyle(.orange)
+            }
+            if let lastAvailable {
+                LabeledContent("Last available", value: lastAvailable.formatted(date: .abbreviated, time: .shortened))
+                    .font(.caption).foregroundStyle(.secondary)
             }
             GroupBox("Available capabilities") {
                 if account == nil {
@@ -2249,13 +2362,26 @@ private struct SocialConnectionManagementSheet: View {
                     Button("View Account Activity…", systemImage: "text.bubble") { onActivity() }
                 }
                 Spacer()
-                Button("Unlink", role: .destructive) { confirmingUnlink = true }.disabled(identity == nil)
-                Button("Reconnect…", systemImage: "arrow.clockwise") { onReconnect() }
-                    .buttonStyle(.borderedProminent)
+                Menu("Account Actions") {
+                    Button("Switch Account…") { confirmingSwitch = true }
+                    Button("Unlink", role: .destructive) { confirmingUnlink = true }
+                }
+                .disabled(identity == nil || checking)
+                if recovery?.needsAuthorization == true {
+                    Button("Reconnect…", systemImage: "arrow.clockwise", action: onReconnect)
+                        .buttonStyle(.borderedProminent).disabled(checking)
+                } else {
+                    Button("Check Connection", systemImage: "arrow.clockwise", action: onCheck)
+                        .buttonStyle(.borderedProminent).disabled(checking)
+                }
             }
         }
         .padding(22)
         .frame(minWidth: 520, idealWidth: 580, minHeight: 340, idealHeight: 410)
+        .confirmationDialog("Switch the account linked to this workspace?", isPresented: $confirmingSwitch, titleVisibility: .visible) {
+            Button("Switch Account…", action: onSwitch)
+            Button("Cancel", role: .cancel) {}
+        }
         .confirmationDialog("Unlink this provider identity from the workspace account?", isPresented: $confirmingUnlink, titleVisibility: .visible) {
             Button("Unlink Account", role: .destructive) { onUnlink(); dismiss() }
             Button("Cancel", role: .cancel) {}
@@ -2269,6 +2395,7 @@ private struct BlueskyConnectionSheet: View {
     @Environment(SocialPublishingRuntime.self) private var socialPublishingRuntime
     @Environment(\.dismiss) private var dismiss
     let initialHandle: String
+    let expected: ContentRecipientIdentity?
     let onConnected: (SocialAccount) -> Void
     @State private var handle = ""
     @State private var appPassword = ""
@@ -2294,7 +2421,10 @@ private struct BlueskyConnectionSheet: View {
         }
         .padding(20)
         .frame(width: 430)
-        .onAppear { handle = initialHandle }
+        .onAppear {
+            handle = initialHandle
+            if let expected { server = expected.server.absoluteString }
+        }
     }
 
     private func connect() async {
@@ -2309,7 +2439,7 @@ private struct BlueskyConnectionSheet: View {
             let account = try await socialPublishingRuntime.connections.connectBluesky(
                 identifier: handle.trimmingCharacters(in: .whitespacesAndNewlines),
                 appPassword: appPassword,
-                server: serverURL
+                server: serverURL, expected: expected
             )
             appPassword = ""
             onConnected(account)

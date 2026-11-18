@@ -19,7 +19,7 @@ In **Websites & Social Accounts → Social Accounts**, choose a provider, connec
 
 ## Schedule and delivery
 
-In the composer, choose **Scheduled on This Mac** for local API delivery or **Manually Scheduled** for a date you plan to handle yourself. A manual schedule never sends. For API delivery, Indie Dev Buddy must be running and the Mac awake when a post is due. Before delivery, the app checks stored credentials and stops if it knows the connection needs authorization. It also checks Meta connections on launch, on wake, and periodically while the Mac is awake. Account settings and the schedule editor show known expiry and reconnect status.
+In the composer, choose **Scheduled on This Mac** for local API delivery or **Manually Scheduled** for a date you plan to handle yourself. A manual schedule never sends. For API delivery, Indie Dev Buddy must be running and the Mac awake when a post is due. Before delivery, the app checks stored credentials and stops if it knows the connection needs authorization. It checks saved connections at launch, after wake, when the network returns, and periodically while the Mac is awake. Account settings show the last time a connection was available. Delivery history shows connection problems beside affected schedules.
 
 Review missed or uncertain attempts in the composer’s API Delivery History. An API schedule keeps an immutable snapshot of its approved text, resolved mentions, recipient, media, and time. Draft edits do not alter it. Choose **Reschedule with Current Draft** to replace the scheduled intent with the current version and a new future time or media link. Delivery errors that could follow a provider write are marked uncertain; check the account before another attempt. The workspace's saved delivery state and receipt appear in the content library when the app records the result. Workspace JSON and the CLI alone cannot authorize delivery; the app's device-local journal is required.
 
@@ -91,6 +91,10 @@ Meta's [Threads app setup](https://developers.facebook.com/docs/threads/get-star
 The app stores the verified provider credential in the Mac’s Keychain. For Facebook Pages and Instagram Facebook Login, the Page token and source Facebook user grant are saved separately in the same credential record; the app can use the source grant to recover that same Page token while the grant is valid. For Threads and the separate Instagram Login option, mark a token long-lived only when Meta confirms that it is. The app waits at least 24 hours after import before using the provider’s renewal endpoint. A known expired token requires reconnection. Unknown expiry stays unknown unless the provider returns a lifetime. A short-lived token exchange that needs an app secret must happen outside Indie Dev Buddy or on a configured confidential broker. Never paste tokens into chat, source files, or logs.
 
 Unlinking a workspace record leaves its Keychain credential available to other workspace records that may share that connection. To revoke provider access, revoke the app grant in Meta separately.
+
+In **Manage Connection**, choose **Check Connection** to reuse or renew the saved grant. **Reconnect** opens authorization if Indie Dev Buddy needs a new grant for that same account. Use **Switch Account** to link a different profile. Existing scheduled deliveries remain tied to the identity they were approved for.
+
+Public registration settings are saved per account. When you use a trusted exchange service, you can opt in to remembering its credential in Keychain for that account and endpoint. Provider app secrets stay on the service.
 
 ## Optional browser sign-in
 

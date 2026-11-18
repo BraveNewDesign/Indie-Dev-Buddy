@@ -102,7 +102,10 @@ actor SocialConnections {
     private let facebook: SocialClient<FacebookPagesAdapter>
     private let threads: SocialClient<ThreadsAdapter>
     private let instagram: SocialClient<InstagramAdapter>
-    private var x: SocialClient<XAdapter>
+    private let x: SocialClient<XAdapter>
+    private var xClients: [String: SocialClient<XAdapter>] = [:]
+    private var linkedInClients: [SocialAccount.ID: SocialClient<LinkedInAdapter>] = [:]
+    private let verificationTransport: any HTTPTransport
     private let linkedIn: SocialClient<LinkedInAdapter>
     private let mastodon: SocialClient<MastodonAdapter>
     private var metaChecks: [SocialAccount.ID: Task<Void, Error>] = [:]
@@ -116,6 +119,79 @@ actor SocialConnections {
         let error: SocialError?
     }
 
+    private var authorizingPlatforms: Set<SocialPlatform> = []
+    private var recoveryTasks: [SocialAccount.ID: Task<Recovery, Never>] = [:]
+    private var recoveryRetryAt: [SocialAccount.ID: Date] = [:]
+
+    enum Recovery: Equatable, Sendable {
+        case ready, authorizationRequired, permissionsRequired, keychainUnavailable, retryLater, configurationRequired
+
+        var message: String {
+            switch self {
+            case .ready: "Saved connection is available."
+            case .authorizationRequired: "Sign in again to restore this account."
+            case .permissionsRequired: "Authorize the required permissions to restore this account."
+            case .keychainUnavailable: "Keychain is unavailable. Unlock it and check again."
+            case .retryLater: "Connection check delayed. Indie Dev Buddy will retry."
+            case .configurationRequired: "Review this account’s connection setup."
+            }
+        }
+
+        var needsAuthorization: Bool {
+            self == .authorizationRequired || self == .permissionsRequired || self == .configurationRequired
+        }
+    }
+
+    func recover(_ identity: ContentRecipientIdentity, force: Bool = false) async -> Recovery {
+        guard let id = try? accountID(for: identity) else { return .configurationRequired }
+        if let task = recoveryTasks[id] { return await task.value }
+        if let retryAt = recoveryRetryAt[id], retryAt > .now { return .retryLater }
+        let task = Task { await runRecovery(for: id, force: force) }
+        recoveryTasks[id] = task
+        return await task.value
+    }
+
+    private func runRecovery(for id: SocialAccount.ID, force: Bool) async -> Recovery {
+        defer { recoveryTasks.removeValue(forKey: id) }
+        do {
+            try await refreshCredentialsIfNeeded(for: id, force: force, checkingConnection: true)
+            recoveryRetryAt.removeValue(forKey: id)
+            return .ready
+        } catch let error as SocialError {
+            switch error {
+            case .authenticationRequired, .authorizationFailed, .unsupported(.refreshSession), .httpStatus(401):
+                return .authorizationRequired
+            case .permissionDenied, .permissionDeniedAt, .httpStatus(403):
+                return .permissionsRequired
+            case .credentialStorage: return .keychainUnavailable
+            case .invalidConfiguration: return .configurationRequired
+            case .rateLimited(let retryAfter):
+                let delay = max(300, retryAfter.flatMap(TimeInterval.init) ?? 0)
+                recoveryRetryAt[id] = Date().addingTimeInterval(delay)
+                return .retryLater
+            default: return .retryLater
+            }
+        } catch {
+            return .retryLater
+        }
+    }
+
+    private func validateConnection(_ account: SocialAccount, expected: ContentRecipientIdentity?) throws {
+        guard let expected else { return }
+        guard try accountID(for: expected) == account.id else { throw ConnectionIdentityMismatch() }
+    }
+
+    private func connectVerified<Adapter: SocialAdapter>(
+        _ adapter: Adapter, using client: SocialClient<Adapter>,
+        authorization: Adapter.Authorization, expected: ContentRecipientIdentity?
+    ) async throws -> SocialAccount {
+        guard authorizingPlatforms.insert(adapter.platform).inserted else { throw SocialError.accountBusy }
+        defer { authorizingPlatforms.remove(adapter.platform) }
+        let credential = try await adapter.connect(authorization)
+        try validateConnection(credential.account, expected: expected)
+        return try await client.saveVerifiedCredential(credential)
+    }
+
     private var pendingMastodonCredential: SocialCredential?
 
     init(
@@ -127,14 +203,52 @@ actor SocialConnections {
         let store = credentialStore ?? KeychainCredentialStore(service: serviceName)
         self.store = store
         self.configuration = configuration
-        bluesky = SocialClient(adapter: BlueskyAdapter(), store: store)
+        verificationTransport = metaTransport
+        bluesky = SocialClient(adapter: BlueskyAdapter(transport: metaTransport), store: store)
         facebook = SocialClient(adapter: FacebookPagesAdapter(transport: metaTransport), store: store)
         threads = SocialClient(adapter: ThreadsAdapter(transport: metaTransport), store: store)
         instagram = SocialClient(adapter: InstagramAdapter(transport: metaTransport), store: store)
         x = SocialClient(adapter: XAdapter(clientID: configuration.xClientID ?? "",
                                             includeMediaWriteScope: configuration.xMediaWriteEnabled), store: store)
+        if let clientID = configuration.xClientID { xClients[clientID] = x }
         linkedIn = SocialClient(adapter: LinkedInAdapter(oauthBroker: configuration.linkedinExchange), store: store)
         mastodon = SocialClient(adapter: MastodonAdapter(), store: store)
+    }
+
+    private func xClient(clientID: String) -> SocialClient<XAdapter> {
+        if let client = xClients[clientID] { return client }
+        let client = SocialClient(adapter: XAdapter(clientID: clientID,
+                                                  includeMediaWriteScope: configuration.xMediaWriteEnabled), store: store)
+        xClients[clientID] = client
+        return client
+    }
+
+    private func xClient(for id: SocialAccount.ID) -> SocialClient<XAdapter> {
+        let registration = SocialOAuthRegistration.load(.x, identity: identity(for: id))
+        return registration.clientID.isEmpty ? x : xClient(clientID: registration.clientID)
+    }
+
+    private func linkedinClient(for id: SocialAccount.ID) -> SocialClient<LinkedInAdapter> {
+        if let client = linkedInClients[id] { return client }
+        let identity = identity(for: id)
+        let registration = SocialOAuthRegistration.load(.linkedIn, identity: identity)
+        guard let endpoint = URL(string: registration.brokerEndpoint),
+              let bearer = SocialOAuthRegistration.exchangeCredential(for: identity, endpoint: endpoint),
+              let broker = try? SocialOAuthBroker(endpoint: endpoint, bearer: bearer) else { return linkedIn }
+        let client = SocialClient(adapter: LinkedInAdapter(oauthBroker: broker), store: store)
+        linkedInClients[id] = client
+        return client
+    }
+
+    private func identity(for id: SocialAccount.ID) -> ContentRecipientIdentity {
+        .init(platform: id.platform.rawValue, server: id.server, remoteID: id.remoteID)
+    }
+
+    func didAuthorize(_ id: SocialAccount.ID) async {
+        if let task = recoveryTasks[id] { _ = await task.value }
+        recoveryRetryAt.removeValue(forKey: id)
+        linkedInClients.removeValue(forKey: id)
+        if id.platform.isMeta { await clearMetaCheckResult(for: id) }
     }
 
     func accounts() async throws -> [SocialAccount] {
@@ -151,8 +265,8 @@ actor SocialConnections {
         case .facebookPages: return try await facebook.refresh(id)
         case .threads: return try await threads.refresh(id)
         case .instagram: return try await instagram.refresh(id)
-        case .x: return try await x.refresh(id)
-        case .linkedIn: return try await linkedIn.refresh(id)
+        case .x: return try await xClient(for: id).refresh(id)
+        case .linkedIn: return try await linkedinClient(for: id).refresh(id)
         case .mastodon: return try await mastodon.refresh(id)
         }
     }
@@ -164,8 +278,8 @@ actor SocialConnections {
         case .facebookPages: return try await facebook.capabilities(for: id)
         case .threads: return try await threads.capabilities(for: id)
         case .instagram: return try await instagram.capabilities(for: id)
-        case .x: return try await x.capabilities(for: id)
-        case .linkedIn: return try await linkedIn.capabilities(for: id)
+        case .x: return try await xClient(for: id).capabilities(for: id)
+        case .linkedIn: return try await linkedinClient(for: id).capabilities(for: id)
         case .mastodon: return try await mastodon.capabilities(for: id)
         }
     }
@@ -198,7 +312,10 @@ actor SocialConnections {
               server == id.server else { throw SocialError.invalidInput }
 
         do {
+            if let recovery = recoveryTasks[id] { _ = await recovery.value }
             try await refreshCredentialsIfNeeded(for: id)
+        } catch is CancellationError {
+            throw CancellationError()
         } catch let error as SocialError {
             return ContentDeliveryResult(state: .failed, message: Self.refreshFailureMessage(error))
         } catch {
@@ -245,13 +362,13 @@ actor SocialConnections {
                     // X requires uploaded image bytes; a public URL is not an interchangeable payload.
                     throw SocialError.unsupported(.publishMedia)
                 }
-                post = try await x.publish(draft, as: id)
+                post = try await xClient(for: id).publish(draft, as: id)
             case .linkedIn:
                 guard media.isEmpty else {
                     // LinkedIn also requires image bytes and an explicitly selected upload flow.
                     throw SocialError.unsupported(.publishMedia)
                 }
-                post = try await linkedIn.publish(draft, as: id)
+                post = try await linkedinClient(for: id).publish(draft, as: id)
             case .mastodon:
                 guard media.isEmpty else { throw SocialError.unsupported(.publishMedia) }
                 post = try await mastodon.publish(draft, as: id)
@@ -291,8 +408,8 @@ actor SocialConnections {
         case .facebookPages: return try await facebook.posts(cursor: cursor, as: id)
         case .threads: return try await threads.posts(cursor: cursor, as: id)
         case .instagram: return try await instagram.posts(cursor: cursor, as: id)
-        case .x: return try await x.posts(cursor: cursor, as: id)
-        case .linkedIn: return try await linkedIn.posts(cursor: cursor, as: id)
+        case .x: return try await xClient(for: id).posts(cursor: cursor, as: id)
+        case .linkedIn: return try await linkedinClient(for: id).posts(cursor: cursor, as: id)
         case .mastodon: return try await mastodon.posts(cursor: cursor, as: id)
         }
     }
@@ -304,8 +421,8 @@ actor SocialConnections {
         case .facebookPages: return try await facebook.post(id: postID, as: id)
         case .threads: return try await threads.post(id: postID, as: id)
         case .instagram: return try await instagram.post(id: postID, as: id)
-        case .x: return try await x.post(id: postID, as: id)
-        case .linkedIn: return try await linkedIn.post(id: postID, as: id)
+        case .x: return try await xClient(for: id).post(id: postID, as: id)
+        case .linkedIn: return try await linkedinClient(for: id).post(id: postID, as: id)
         case .mastodon: return try await mastodon.post(id: postID, as: id)
         }
     }
@@ -317,8 +434,8 @@ actor SocialConnections {
         case .facebookPages: return try await facebook.replies(to: postID, cursor: cursor, as: id)
         case .threads: return try await threads.replies(to: postID, cursor: cursor, as: id)
         case .instagram: return try await instagram.replies(to: postID, cursor: cursor, as: id)
-        case .x: return try await x.replies(to: postID, cursor: cursor, as: id)
-        case .linkedIn: return try await linkedIn.replies(to: postID, cursor: cursor, as: id)
+        case .x: return try await xClient(for: id).replies(to: postID, cursor: cursor, as: id)
+        case .linkedIn: return try await linkedinClient(for: id).replies(to: postID, cursor: cursor, as: id)
         }
     }
 
@@ -330,8 +447,8 @@ actor SocialConnections {
         case .facebookPages: return try await facebook.reply(draft, to: postID, as: id)
         case .threads: return try await threads.reply(draft, to: postID, as: id)
         case .instagram: return try await instagram.reply(draft, to: postID, as: id)
-        case .x: return try await x.reply(draft, to: postID, as: id)
-        case .linkedIn: return try await linkedIn.reply(draft, to: postID, as: id)
+        case .x: return try await xClient(for: id).reply(draft, to: postID, as: id)
+        case .linkedIn: return try await linkedinClient(for: id).reply(draft, to: postID, as: id)
         }
     }
 
@@ -343,8 +460,8 @@ actor SocialConnections {
             try await bluesky.setLiked(true, postID: postID, as: id)
         case .facebookPages: try await facebook.setLiked(liked, postID: postID, as: id)
         case .threads, .instagram: throw SocialError.unsupported(liked ? .like : .unlike)
-        case .x: try await x.setLiked(liked, postID: postID, as: id)
-        case .linkedIn: try await linkedIn.setLiked(liked, postID: postID, as: id)
+        case .x: try await xClient(for: id).setLiked(liked, postID: postID, as: id)
+        case .linkedIn: try await linkedinClient(for: id).setLiked(liked, postID: postID, as: id)
         case .mastodon: try await mastodon.setLiked(liked, postID: postID, as: id)
         }
     }
@@ -353,7 +470,7 @@ actor SocialConnections {
         let id = try accountID(for: identity)
         switch id.platform {
         case .threads: try await threads.setReposted(reposted, postID: postID, as: id)
-        case .x: try await x.setReposted(reposted, postID: postID, as: id)
+        case .x: try await xClient(for: id).setReposted(reposted, postID: postID, as: id)
         case .bluesky, .facebookPages, .instagram, .linkedIn, .mastodon:
             throw SocialError.unsupported(reposted ? .repost : .unrepost)
         }
@@ -374,7 +491,7 @@ actor SocialConnections {
         case .facebookPages: try await facebook.deleteReply(id: replyID, as: id)
         case .threads: try await threads.deleteReply(id: replyID, as: id)
         case .instagram: try await instagram.deleteReply(id: replyID, as: id)
-        case .x: try await x.deleteReply(id: replyID, as: id)
+        case .x: try await xClient(for: id).deleteReply(id: replyID, as: id)
         case .bluesky, .linkedIn, .mastodon: throw SocialError.unsupported(.deleteReply)
         }
     }
@@ -386,15 +503,16 @@ actor SocialConnections {
         case .facebookPages: try await facebook.disconnect(id)
         case .threads: try await threads.disconnect(id)
         case .instagram: try await instagram.disconnect(id)
-        case .x: try await x.disconnect(id)
-        case .linkedIn: try await linkedIn.disconnect(id)
+        case .x: try await xClient(for: id).disconnect(id)
+        case .linkedIn: try await linkedinClient(for: id).disconnect(id)
         case .mastodon: try await mastodon.disconnect(id)
         }
         metaCheckResults.removeValue(forKey: id)
     }
 
-    func connectBluesky(identifier: String, appPassword: String, server: URL = URL(string: "https://bsky.social")!) async throws -> SocialAccount {
-        try await bluesky.connect(.init(identifier: identifier, appPassword: appPassword, server: server))
+    func connectBluesky(identifier: String, appPassword: String, server: URL = URL(string: "https://bsky.social")!, expected: ContentRecipientIdentity? = nil) async throws -> SocialAccount {
+        try await connectVerified(BlueskyAdapter(transport: verificationTransport), using: bluesky,
+                                  authorization: .init(identifier: identifier, appPassword: appPassword, server: server), expected: expected)
     }
 
     /// Imports a user-generated Meta access token without sending it through an exchange service.
@@ -404,7 +522,8 @@ actor SocialConnections {
         platform: SocialPlatform,
         pageID: String? = nil,
         instagramAccessMethod: InstagramAccessMethod = .instagramLogin,
-        instagramAccountID: String? = nil
+        instagramAccountID: String? = nil,
+        expected: ContentRecipientIdentity? = nil
     ) async throws -> SocialAccount {
         let credential: SocialCredential
         switch platform {
@@ -412,16 +531,17 @@ actor SocialConnections {
             guard let pageID, !pageID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
                 throw SocialError.invalidInput
             }
-            credential = try await FacebookPagesAdapter().developmentCredential(token, pageID: pageID)
+            credential = try await FacebookPagesAdapter(transport: verificationTransport).developmentCredential(token, pageID: pageID)
         case .threads:
-            credential = try await ThreadsAdapter().developmentCredential(token)
+            credential = try await ThreadsAdapter(transport: verificationTransport).developmentCredential(token)
         case .instagram:
-            credential = try await InstagramAdapter().developmentCredential(
+            credential = try await InstagramAdapter(transport: verificationTransport).developmentCredential(
                 token, accessMethod: instagramAccessMethod, instagramAccountID: instagramAccountID
             )
         default:
             throw SocialError.invalidInput
         }
+        try validateConnection(credential.account, expected: expected)
         let account: SocialAccount
         switch platform {
         case .facebookPages: account = try await facebook.saveVerifiedCredential(credential)
@@ -483,42 +603,43 @@ actor SocialConnections {
         instance: URL?,
         exchange: (any ConfidentialOAuthExchange)?,
         requestLinkedInActivity: Bool = false,
+        expected: ContentRecipientIdentity? = nil,
         browser: @escaping OAuthBrowser
     ) async throws -> SocialAccount {
         switch platform {
         case .facebookPages:
             guard let exchange else { throw SocialError.invalidConfiguration }
-            let account = try await facebook.connect(.init(clientID: clientID, redirectURI: redirectURI,
-                                                    pageID: accountTarget, browser: browser, exchange: exchange))
+            let account = try await connectVerified(FacebookPagesAdapter(transport: verificationTransport), using: facebook, authorization: .init(clientID: clientID, redirectURI: redirectURI,
+                                                    pageID: accountTarget, browser: browser, exchange: exchange), expected: expected)
             await clearMetaCheckResult(for: account.id)
             return account
         case .threads:
             guard let exchange else { throw SocialError.invalidConfiguration }
-            let account = try await threads.connect(.init(clientID: clientID, redirectURI: redirectURI,
-                                                   browser: browser, exchange: exchange))
+            let account = try await connectVerified(ThreadsAdapter(transport: verificationTransport), using: threads, authorization: .init(clientID: clientID, redirectURI: redirectURI,
+                                                   browser: browser, exchange: exchange), expected: expected)
             await clearMetaCheckResult(for: account.id)
             return account
         case .instagram:
             guard let exchange else { throw SocialError.invalidConfiguration }
-            let account = try await instagram.connect(.init(clientID: clientID, redirectURI: redirectURI,
-                                                     browser: browser, exchange: exchange))
+            let account = try await connectVerified(InstagramAdapter(transport: verificationTransport), using: instagram, authorization: .init(clientID: clientID, redirectURI: redirectURI,
+                                                     browser: browser, exchange: exchange), expected: expected)
             await clearMetaCheckResult(for: account.id)
             return account
         case .x:
-            let client = SocialClient(adapter: XAdapter(clientID: clientID), store: store)
-            let account = try await client.connect(.init(redirectURI: redirectURI, browser: browser))
-            x = client
-            return account
+            let adapter = XAdapter(clientID: clientID)
+            let client = xClient(clientID: clientID)
+            return try await connectVerified(adapter, using: client, authorization: .init(redirectURI: redirectURI, browser: browser), expected: expected)
         case .linkedIn:
             guard let exchange else { throw SocialError.invalidConfiguration }
-            let client = SocialClient(adapter: LinkedInAdapter(oauthBroker: exchange), store: store)
+            let adapter = LinkedInAdapter(oauthBroker: exchange)
+            let client = try expected.map { linkedinClient(for: try accountID(for: $0)) } ?? linkedIn
             let scopes: Set<String>? = requestLinkedInActivity
                 ? (accountTarget == nil
                     ? ["openid", "profile", "w_member_social", "r_member_social", "w_member_social_feed", "r_member_social_feed"]
                     : ["openid", "profile", "w_organization_social", "r_organization_social", "w_organization_social_feed", "r_organization_social_feed"])
                 : nil
-            return try await client.connect(.init(clientID: clientID, redirectURI: redirectURI,
-                                                  scopes: scopes, organizationURN: accountTarget, browser: browser))
+            return try await connectVerified(adapter, using: client, authorization: .init(clientID: clientID, redirectURI: redirectURI,
+                                              scopes: scopes, organizationURN: accountTarget, browser: browser), expected: expected)
         case .mastodon:
             guard let instance else { throw SocialError.invalidConfiguration }
             let credential = try await MastodonAdapter().connect(.init(
@@ -527,9 +648,10 @@ actor SocialConnections {
                 applicationName: "Indie Dev Buddy",
                 browser: browser
             ))
+            try validateConnection(credential.account, expected: expected)
             try Task.checkCancellation()
             do {
-                try await store.save(credential)
+                _ = try await mastodon.saveVerifiedCredential(credential)
                 pendingMastodonCredential = nil
                 return credential.account
             } catch {
@@ -540,11 +662,16 @@ actor SocialConnections {
         }
     }
 
-    func retryPendingMastodonCredentialSave() async throws -> SocialAccount {
+    func retryPendingMastodonCredentialSave(expected: ContentRecipientIdentity? = nil) async throws -> SocialAccount {
         guard let credential = pendingMastodonCredential else { throw SocialError.invalidConfiguration }
-        try await store.save(credential)
+        try validateConnection(credential.account, expected: expected)
+        _ = try await mastodon.saveVerifiedCredential(credential)
         pendingMastodonCredential = nil
         return credential.account
+    }
+
+    func discardPendingMastodonCredential() {
+        pendingMastodonCredential = nil
     }
 
     func testCredentialStorage() async throws {
@@ -569,16 +696,17 @@ actor SocialConnections {
         return SocialAccount.ID(platform: platform, server: identity.server, remoteID: identity.remoteID)
     }
 
-    private func refreshCredentialsIfNeeded(for id: SocialAccount.ID, now: Date = Date()) async throws {
+    private func refreshCredentialsIfNeeded(for id: SocialAccount.ID, now: Date = Date(),
+                                            force: Bool = false, checkingConnection: Bool = false) async throws {
         guard let credential = try await store.credential(for: id) else {
             throw SocialError.authenticationRequired
         }
         if id.platform.isMeta {
             let expired = credential.expiresAt.map { $0 <= now } ?? false
-            if expired, id.platform != .facebookPages { throw SocialError.authenticationRequired }
+            if expired, id.platform != .facebookPages, credential.facebookPageSourceGrant == nil { throw SocialError.authenticationRequired }
             do {
-                try await checkMetaCredential(id, force: expired, now: now)
-            } catch let error as SocialError where Self.isTransientCredentialCheckError(error) {
+                try await checkMetaCredential(id, force: expired || force, now: now)
+            } catch let error as SocialError where !checkingConnection && Self.isTransientCredentialCheckError(error) {
                 // Renewal can fail independently of an otherwise usable token.
                 // The provider still checks the current credential on the publishing request.
                 guard credential.expiresAt.map({ $0 > Date() }) ?? true else {
@@ -587,14 +715,95 @@ actor SocialConnections {
             }
             return
         }
-        guard let expiresAt = credential.expiresAt, expiresAt <= now.addingTimeInterval(300) else { return }
-
-        let identity = ContentRecipientIdentity(platform: id.platform.rawValue, server: id.server, remoteID: id.remoteID)
-        let currentCapabilities = try await capabilities(for: identity)
-        guard currentCapabilities.contains(.refreshSession) else {
-            throw SocialError.authenticationRequired
+        let expired = credential.expiresAt.map { $0 <= now } ?? false
+        let nearExpiry = credential.expiresAt.map { $0 <= now.addingTimeInterval(300) } ?? false
+        let identity = identity(for: id)
+        if nearExpiry {
+            let currentCapabilities = try await capabilities(for: identity)
+            if currentCapabilities.contains(.refreshSession) {
+                do {
+                    _ = try await refresh(identity)
+                    return
+                } catch SocialError.unsupported(.refreshSession) where !expired {
+                    // A broker without refresh support can still have a usable access token.
+                }
+            }
         }
-        _ = try await refresh(identity)
+        if expired { throw SocialError.authenticationRequired }
+        if id.platform == .bluesky, force || !checkingConnection {
+            do {
+                try await verifyNonMetaConnection(id)
+            } catch SocialError.httpStatus(401) {
+                _ = try await refresh(identity)
+            }
+        } else if checkingConnection && force {
+            try await verifyNonMetaConnection(id)
+        }
+    }
+
+    private func verifyNonMetaConnection(_ id: SocialAccount.ID) async throws {
+        let transport = verificationTransport
+        let url: URL
+        switch id.platform {
+        case .bluesky:
+            url = id.server.appendingPathComponent("xrpc/com.atproto.server.getSession")
+        case .mastodon:
+            url = id.server.appendingPathComponent("api/v1/accounts/verify_credentials")
+        case .x:
+            url = URL(string: "https://api.x.com/2/users/me")!
+        case .linkedIn:
+            url = URL(string: "https://api.linkedin.com/v2/userinfo")!
+        default:
+            return
+        }
+        guard url.scheme == "https", url.host != nil, url.user == nil, url.password == nil else {
+            throw SocialError.invalidConfiguration
+        }
+        let check: @Sendable (SocialCredential) async throws -> Void = { credential in
+            var request = URLRequest(url: url)
+            request.setValue("Bearer \(credential.accessToken)", forHTTPHeaderField: "Authorization")
+            let response = try await transport.send(request)
+            switch response.statusCode {
+            case 200..<300: break
+            case 400 where id.platform == .bluesky:
+                let body = try? JSONSerialization.jsonObject(with: response.body) as? [String: Any]
+                if let code = body?["error"] as? String, ["ExpiredToken", "InvalidToken"].contains(code) {
+                    throw SocialError.httpStatus(401)
+                }
+                throw SocialError.httpStatus(400)
+            case 429: throw SocialError.rateLimited(retryAfter: response.header("Retry-After"))
+            default: throw SocialError.httpStatus(response.statusCode)
+            }
+            guard let body = try JSONSerialization.jsonObject(with: response.body) as? [String: Any] else {
+                throw SocialError.invalidResponse
+            }
+            let returnedID: String?
+            let expectedID: String?
+            switch id.platform {
+            case .bluesky:
+                returnedID = body["did"] as? String
+                expectedID = id.remoteID
+            case .x:
+                returnedID = (body["data"] as? [String: Any])?["id"] as? String
+                expectedID = id.remoteID
+            case .linkedIn:
+                returnedID = (body["sub"] as? String).map { "urn:li:person:" + $0 }
+                expectedID = id.remoteID.hasPrefix("urn:li:person:") ? id.remoteID : nil
+            default:
+                returnedID = body["id"] as? String
+                expectedID = id.remoteID
+            }
+            guard let returnedID, expectedID.map({ $0 == returnedID }) ?? true else {
+                throw SocialError.authenticationRequired
+            }
+        }
+        switch id.platform {
+        case .bluesky: try await bluesky.verifyCredential(id) { _, credential in try await check(credential) }
+        case .mastodon: try await mastodon.verifyCredential(id) { _, credential in try await check(credential) }
+        case .x: try await xClient(for: id).verifyCredential(id) { _, credential in try await check(credential) }
+        case .linkedIn: try await linkedinClient(for: id).verifyCredential(id) { _, credential in try await check(credential) }
+        default: break
+        }
     }
 
     /// Only non-secret connection status leaves the actor. The app can refresh it while awake.
@@ -608,6 +817,11 @@ actor SocialConnections {
             status[account.id] = metaCredentialStatus(credential, now: now)
         }
         return status
+    }
+
+    func savedMetaStatus(for account: SocialAccount) async -> String? {
+        guard let credential = try? await store.credential(for: account.id) else { return nil }
+        return metaCredentialStatus(credential)
     }
 
     private func clearMetaCheckResult(for id: SocialAccount.ID) async {
@@ -672,6 +886,18 @@ actor SocialConnections {
                       source.expiresAt.map({ $0 > now }) ?? true else { throw error }
                 _ = try await facebook.refresh(id)
             }
+        case .instagram where credential.facebookPageSourceGrant != nil:
+            do {
+                try await instagram.verifyCredential(id) { adapter, credential in
+                    guard try await adapter.profile(credential: credential).id == id else {
+                        throw SocialError.authenticationRequired
+                    }
+                }
+            } catch let error as SocialError where Self.requiresReconnect(error) {
+                guard let source = credential.facebookPageSourceGrant,
+                      source.expiresAt.map({ $0 > now }) ?? true else { throw error }
+                _ = try await instagram.refresh(id)
+            }
         case .instagram, .threads:
             guard !expired else { throw SocialError.authenticationRequired }
             if credential.canRefreshMetaLongLivedToken(at: now),
@@ -729,17 +955,23 @@ actor SocialConnections {
 
     private static func requiresReconnect(_ error: SocialError) -> Bool {
         switch error {
-        case .authenticationRequired, .authorizationFailed, .permissionDenied, .permissionDeniedAt: true
+        case .authenticationRequired, .authorizationFailed, .permissionDenied, .permissionDeniedAt, .httpStatus(401): true
         default: false
         }
     }
 
     private static func refreshFailureMessage(_ error: SocialError) -> String {
         switch error {
-        case .authenticationRequired, .authorizationFailed, .unsupported(.refreshSession), .permissionDenied, .permissionDeniedAt:
-            "The account authorization is expired or revoked. Reconnect the account before scheduled delivery."
+        case .authenticationRequired, .authorizationFailed, .unsupported(.refreshSession), .httpStatus(401):
+            "The account authorization is expired or revoked. Reconnect the account before retrying delivery."
+        case .permissionDenied, .permissionDeniedAt, .httpStatus(403):
+            "The provider denied a required permission. Review the account’s access before retrying."
+        case .credentialStorage:
+            "Keychain is unavailable. Unlock it and check the connection before retrying."
+        case .transportFailure, .accountBusy:
+            "The connection could not be checked. Try again when the provider is reachable."
         case .rateLimited:
-            "The provider rate limited credential refresh. The post was not sent; review or reconnect before trying again."
+            "The provider rate limited the connection check. Wait before retrying delivery."
         case .billingRequired:
             "The provider requires additional API access or credits. The post was not sent."
         default:
@@ -767,4 +999,9 @@ actor SocialConnections {
             false
         }
     }
+}
+
+
+struct ConnectionIdentityMismatch: LocalizedError {
+    var errorDescription: String? { "The provider returned a different account. Sign in to the original account, or use Switch Account." }
 }

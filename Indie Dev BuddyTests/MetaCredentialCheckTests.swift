@@ -44,6 +44,59 @@ struct MetaCredentialCheckTests {
         #expect(await store.credential(for: account.id)?.expiresAt == nil)
     }
 
+    @Test func reconnectRejectsDifferentProfileBeforeSavingCredential() async throws {
+        let store = MemoryCredentialStore()
+        let original = account
+        await store.save(SocialCredential(account: original, accessToken: "original-token"))
+        let transport = CredentialCheckTransport([
+            HTTPResponse(statusCode: 200, body: Data(#"{"id":"different","username":"other"}"#.utf8))
+        ])
+        let connections = SocialConnections(credentialStore: store, metaTransport: transport)
+        await #expect(throws: ConnectionIdentityMismatch.self) {
+            try await connections.importMetaToken(
+                OAuthToken(accessToken: "replacement-token"), platform: .threads,
+                expected: SocialOAuthRegistration.identity(for: original)
+            )
+        }
+        #expect(await store.accounts().map(\.id) == [original.id])
+        #expect(await store.credential(for: original.id)?.accessToken == "original-token")
+    }
+
+    @Test func savedMastodonConnectionDistinguishesRateLimitingAndRevocation() async throws {
+        let instance = try #require(URL(string: "https://social.example"))
+        let account = SocialAccount(platform: .mastodon, server: instance, remoteID: "123", username: "studio")
+        let identity = SocialOAuthRegistration.identity(for: account)
+        let store = MemoryCredentialStore()
+        await store.save(SocialCredential(account: account, accessToken: "saved-token"))
+        let transport = CredentialCheckTransport([HTTPResponse(statusCode: 429, headers: ["Retry-After": "600"])])
+        let connections = SocialConnections(credentialStore: store, metaTransport: transport)
+        #expect(await connections.recover(identity, force: true) == .retryLater)
+        #expect(await connections.recover(identity, force: true) == .retryLater)
+        #expect(await transport.paths == ["/api/v1/accounts/verify_credentials"])
+        #expect(await store.credential(for: account.id)?.accessToken == "saved-token")
+
+        let revoked = SocialConnections(credentialStore: store,
+                                        metaTransport: CredentialCheckTransport([HTTPResponse(statusCode: 401)]))
+        #expect(await revoked.recover(identity, force: true) == .authorizationRequired)
+        #expect(await store.credential(for: account.id)?.accessToken == "saved-token")
+    }
+
+    @Test func savedBlueskyRefreshGrantRepairsExpiredAccessToken() async throws {
+        let server = try #require(URL(string: "https://bsky.example"))
+        let account = SocialAccount(platform: .bluesky, server: server, remoteID: "did:plc:fixture", username: "studio")
+        let store = MemoryCredentialStore()
+        await store.save(SocialCredential(account: account, accessToken: "expired-access", refreshToken: "saved-refresh"))
+        let transport = CredentialCheckTransport([
+            HTTPResponse(statusCode: 400, body: Data(#"{"error":"ExpiredToken"}"#.utf8)),
+            HTTPResponse(statusCode: 200, body: Data(#"{"did":"did:plc:fixture","handle":"studio","accessJwt":"new-access","refreshJwt":"new-refresh"}"#.utf8))
+        ])
+        let connections = SocialConnections(credentialStore: store, metaTransport: transport)
+        let identity = SocialOAuthRegistration.identity(for: account)
+        #expect(await connections.recover(identity, force: true) == .ready)
+        #expect(await transport.paths == ["/xrpc/com.atproto.server.getSession", "/xrpc/com.atproto.server.refreshSession"])
+        #expect(await store.credential(for: account.id)?.refreshToken == "new-refresh")
+    }
+
     private var account: SocialAccount {
         SocialAccount(platform: .threads, server: URL(string: "https://graph.threads.net")!,
                       remoteID: "abc", username: "studio")

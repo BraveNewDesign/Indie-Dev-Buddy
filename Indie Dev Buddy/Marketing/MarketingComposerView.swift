@@ -704,6 +704,15 @@ struct MarketingComposerView: View {
                             Text(entry.intent.scheduledDate.formatted(date: .abbreviated, time: .shortened))
                                 .font(.caption).foregroundStyle(.secondary)
                         }
+                        if entry.state == .queued || entry.state == .overdue,
+                           let platform = SocialPlatform(rawValue: entry.intent.recipient.platform) {
+                            let id = SocialAccount.ID(platform: platform, server: entry.intent.recipient.server,
+                                                      remoteID: entry.intent.recipient.remoteID)
+                            if let recovery = socialPublishingRuntime.connectionStatus[id], recovery != .ready {
+                                Label(recovery.message, systemImage: "exclamationmark.circle")
+                                    .font(.caption).foregroundStyle(.orange)
+                            }
+                        }
                         if let attempt = entry.attempts.last {
                             Text(attempt.message ?? attempt.finishedAt?.formatted(date: .abbreviated, time: .shortened) ?? "Delivery in progress")
                                 .font(.caption).foregroundStyle(.secondary)

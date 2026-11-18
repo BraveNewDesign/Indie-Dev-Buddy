@@ -1,6 +1,7 @@
 import AppKit
 import Foundation
 import Observation
+import Network
 import SocialKit
 
 /// App-owned runtime shared by all windows. The schedule journal and sender live for the
@@ -10,6 +11,10 @@ final class SocialPublishingRuntime {
     let connections: SocialConnections
     private let coordinator: PublishingCoordinator?
     private(set) var metaCredentialStatus: [SocialAccount.ID: String] = [:]
+    private(set) var connectionStatus: [SocialAccount.ID: SocialConnections.Recovery] = [:]
+    private(set) var lastAvailable: [SocialAccount.ID: Date] = [:]
+    private var networkMonitor: NWPathMonitor?
+    private var networkWasAvailable: Bool?
     private var credentialTask: Task<Void, Never>?
     private var timerTask: Task<Void, Never>?
     private var workspaceTokens: [NSObjectProtocol] = []
@@ -46,6 +51,21 @@ final class SocialPublishingRuntime {
     func start() {
         guard timerTask == nil else { return }
         installLifecycleObservers()
+        let monitor = NWPathMonitor()
+        monitor.pathUpdateHandler = { [weak self] path in
+            let available = path.status == .satisfied
+            Task { @MainActor in
+                guard let self, self.networkMonitor != nil else { return }
+                let recovered = available && self.networkWasAvailable == false
+                self.networkWasAvailable = available
+                if recovered, self.credentialTask != nil {
+                    self.stopCredentialChecks()
+                    self.startCredentialChecks()
+                }
+            }
+        }
+        networkMonitor = monitor
+        monitor.start(queue: DispatchQueue(label: "indiedevbuddy.social.network"))
         setEligible(true)
         startCredentialChecks()
         timerTask = Task { [weak self] in
@@ -61,6 +81,9 @@ final class SocialPublishingRuntime {
         timerTask?.cancel()
         timerTask = nil
         stopCredentialChecks()
+        networkMonitor?.cancel()
+        networkMonitor = nil
+        networkWasAvailable = nil
         setEligible(false)
         for token in workspaceTokens { NSWorkspace.shared.notificationCenter.removeObserver(token) }
         workspaceTokens.removeAll()
@@ -120,15 +143,37 @@ final class SocialPublishingRuntime {
 
     private func startCredentialChecks() {
         guard credentialTask == nil else { return }
-        credentialTask = Task { [weak self, connections] in
+        credentialTask = Task { [weak self] in
             var force = true
             while !Task.isCancelled {
-                let status = await connections.checkMetaCredentials(force: force)
+                await self?.checkSavedConnections(force: force)
                 guard !Task.isCancelled else { return }
-                self?.metaCredentialStatus = status
                 force = false
                 try? await Task.sleep(for: .seconds(300))
             }
+        }
+    }
+
+    private func checkSavedConnections(force: Bool) async {
+        let accounts = (try? await connections.accounts()) ?? []
+        var identities = Set(accounts.map(SocialOAuthRegistration.identity(for:)))
+        if let coordinator {
+            let entries = await coordinator.history()
+            for entry in entries where entry.state == .queued || entry.state == .overdue {
+                identities.insert(entry.intent.recipient)
+            }
+        }
+        for identity in identities {
+            guard !Task.isCancelled, let id = connectionID(for: identity) else { continue }
+            let stale = lastAvailable[id].map { Date().timeIntervalSince($0) >= 6 * 60 * 60 } ?? true
+            let status = connectionStatus[id]
+            if !force, !id.platform.isMeta, status?.needsAuthorization == true { continue }
+            let retrying = status == .retryLater || status == .keychainUnavailable
+            _ = await checkConnection(identity, force: force || (!id.platform.isMeta && (stale || retrying)))
+        }
+        for account in accounts where account.platform.isMeta {
+            guard !Task.isCancelled else { return }
+            metaCredentialStatus[account.id] = await connections.savedMetaStatus(for: account)
         }
     }
 
@@ -137,11 +182,40 @@ final class SocialPublishingRuntime {
         credentialTask = nil
     }
 
+    func checkConnection(_ identity: ContentRecipientIdentity, force: Bool = true) async -> SocialConnections.Recovery {
+        let result = await connections.recover(identity, force: force)
+        guard !Task.isCancelled, let id = connectionID(for: identity) else { return result }
+        connectionStatus[id] = result
+        if result == .ready, force || lastAvailable[id] == nil {
+            let now = Date()
+            lastAvailable[id] = now
+            UserDefaults.standard.set(now, forKey: availabilityKey(identity))
+        }
+        return result
+    }
+
+    func lastAvailable(for identity: ContentRecipientIdentity) -> Date? {
+        guard let id = connectionID(for: identity) else { return nil }
+        return lastAvailable[id] ?? UserDefaults.standard.object(forKey: availabilityKey(identity)) as? Date
+    }
+
+    private func connectionID(for identity: ContentRecipientIdentity) -> SocialAccount.ID? {
+        guard let platform = SocialPlatform(rawValue: identity.platform) else { return nil }
+        return .init(platform: platform, server: identity.server, remoteID: identity.remoteID)
+    }
+
+    private func availabilityKey(_ identity: ContentRecipientIdentity) -> String {
+        SocialOAuthRegistration.accountKey(identity) + ".lastAvailable"
+    }
+
     func updateCredentialStatus(for id: SocialAccount.ID) {
         metaCredentialStatus.removeValue(forKey: id)
-        guard credentialTask != nil else { return }
-        stopCredentialChecks()
-        startCredentialChecks()
+        connectionStatus.removeValue(forKey: id)
+        Task {
+            await connections.didAuthorize(id)
+            let identity = ContentRecipientIdentity(platform: id.platform.rawValue, server: id.server, remoteID: id.remoteID)
+            _ = await checkConnection(identity)
+        }
     }
 
     private func installLifecycleObservers() {

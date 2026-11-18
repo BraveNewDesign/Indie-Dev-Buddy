@@ -93,7 +93,22 @@ actor SocialOAuthBroker: SessionBoundMetaOAuthExchange, CustomStringConvertible,
                           metaLongLivedRefreshEligibleAt: eligibleAt)
     }
 
-    private func post<Response: Decodable & Sendable>(_ operation: String, fields: [String: String]) async throws -> Response {
+    func refresh(platform: SocialPlatform, token: OAuthToken) async throws -> OAuthToken {
+        guard platform == .linkedIn, let refreshToken = token.refreshToken, !refreshToken.isEmpty else {
+            throw SocialError.unsupported(.refreshSession)
+        }
+        let response: TokenResponse = try await post("refresh", fields: [
+            "platform": platform.rawValue, "refresh_token": refreshToken
+        ], isRefresh: true)
+        guard !response.access_token.isEmpty else { throw SocialError.invalidResponse }
+        return OAuthToken(accessToken: response.access_token, refreshToken: response.refresh_token,
+                          expiresAt: try response.expires_at.map(Self.decodeDate),
+                          grantedScopes: response.granted_scopes)
+    }
+
+    private func post<Response: Decodable & Sendable>(
+        _ operation: String, fields: [String: String], isRefresh: Bool = false
+    ) async throws -> Response {
         do {
             try Task.checkCancellation()
             let url = endpoint.appendingPathComponent("oauth").appendingPathComponent(operation)
@@ -106,12 +121,22 @@ actor SocialOAuthBroker: SessionBoundMetaOAuthExchange, CustomStringConvertible,
             let (data, response) = try await send(request)
             try Task.checkCancellation()
             guard let response = response as? HTTPURLResponse, response.url == url,
-                  (200..<300).contains(response.statusCode), data.count <= 64 * 1024 else {
+                  data.count <= 64 * 1024 else { throw SocialError.invalidResponse }
+            if isRefresh {
+                switch response.statusCode {
+                case 200..<300: break
+                case 404, 405, 501: throw SocialError.unsupported(.refreshSession)
+                case 400, 401, 403: throw SocialError.authorizationFailed
+                case 429: throw SocialError.rateLimited(retryAfter: response.value(forHTTPHeaderField: "Retry-After"))
+                default: throw SocialError.httpStatus(response.statusCode)
+                }
+            } else if !(200..<300).contains(response.statusCode) {
                 throw SocialError.authorizationFailed
             }
             return try JSONDecoder().decode(Response.self, from: data)
         } catch {
             try Task.checkCancellation()
+            if isRefresh { throw error as? SocialError ?? .transportFailure }
             throw SocialError.authorizationFailed
         }
     }

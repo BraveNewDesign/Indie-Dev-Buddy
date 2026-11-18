@@ -61,6 +61,24 @@ struct SocialOAuthBrokerTests {
         ])
     }
 
+    @Test func linkedInRenewalUsesRefreshGrantAndPreservesRateLimit() async throws {
+        let endpoint = try #require(URL(string: "https://broker.example"))
+        let broker = try SocialOAuthBroker(endpoint: endpoint, bearer: "fixture-service-key") { request in
+            let url = try #require(request.url)
+            #expect(url.path == "/oauth/refresh")
+            #expect(request.value(forHTTPHeaderField: "Authorization") == "Bearer fixture-service-key")
+            let fields = try JSONDecoder().decode([String: String].self, from: #require(request.httpBody))
+            #expect(fields == ["platform": SocialPlatform.linkedIn.rawValue, "refresh_token": "saved-refresh"])
+            let response = try #require(HTTPURLResponse(url: url, statusCode: 429, httpVersion: nil,
+                                                      headerFields: ["Retry-After": "600"]))
+            return (Data(), response)
+        }
+        await #expect(throws: SocialError.rateLimited(retryAfter: "600")) {
+            try await broker.refresh(platform: .linkedIn,
+                                     token: OAuthToken(accessToken: "current-access", refreshToken: "saved-refresh"))
+        }
+    }
+
     @Test func cancellationPreventsExchangeAndFailureConsumesAttempt() async throws {
         let fixture = BrokerFixture(failExchange: true)
         let endpoint = try #require(URL(string: "https://broker.example"))

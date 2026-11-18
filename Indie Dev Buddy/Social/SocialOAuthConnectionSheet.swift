@@ -9,16 +9,20 @@ struct SocialOAuthConnectionSheet: View {
     @Environment(SocialPublishingRuntime.self) private var runtime
     @Environment(\.dismiss) private var dismiss
     let platform: SocialPlatform
+    var expected: ContentRecipientIdentity? = nil
     let onConnected: (SocialAccount) -> Void
     @State private var registration = SocialOAuthRegistration()
     @State private var brokerCredential = ""
+    @State private var rememberBroker = false
+    @State private var loadedBroker: String?
     @State private var connectionTask: Task<Void, Never>?
     @State private var message: String?
     @State private var canRetryCredentialSave = false
+    @State private var canFinishConnection: SocialAccount?
     @State private var showingMetaAccessHelp = false
     @State private var metaMethod: MetaConnectionMethod = .accessToken
     @State private var instagramAccessMethod: InstagramAccessMethod = .facebookLogin
-    @State private var instagramAccountID = "17841469532626741"
+    @State private var instagramAccountID = ""
     @State private var associatedDomains: [String] = []
     @State private var accessToken = ""
     @State private var reportedScopes = ""
@@ -80,7 +84,8 @@ struct SocialOAuthConnectionSheet: View {
                 }
                 Spacer()
                 Button(actionTitle) {
-                    if isMetaPlatform && metaMethod == .accessToken { importAccessToken() }
+                    if let account = canFinishConnection { onConnected(account); dismiss() }
+                    else if isMetaPlatform && metaMethod == .accessToken { importAccessToken() }
                     else { beginConnection() }
                 }
                     .buttonStyle(.borderedProminent)
@@ -90,14 +95,42 @@ struct SocialOAuthConnectionSheet: View {
         .padding(20)
         .frame(width: 560)
         .onAppear {
-            registration = .load(platform)
-            if isMetaPlatform { associatedDomains = SocialOAuthRegistration.signedAssociatedDomains() }
+            registration = .load(platform, identity: expected)
+
+            if let expected {
+                if platform == .facebookPages { registration.accountTarget = expected.remoteID }
+                if platform == .mastodon { registration.instance = expected.server.absoluteString }
+                if platform == .linkedIn {
+                    registration.accountTarget = expected.remoteID.hasPrefix("urn:li:organization:") ? expected.remoteID : ""
+                }
+                if platform == .instagram { instagramAccountID = expected.remoteID }
+            }
+            if platform == .instagram, let expected {
+                instagramAccessMethod = expected.server.host == "graph.instagram.com" ? .instagramLogin : .facebookLogin
+            } else if let method = registration.instagramMethod {
+                instagramAccessMethod = method == "instagram" ? .instagramLogin : .facebookLogin
+            }
+            if isMetaPlatform {
+                associatedDomains = SocialOAuthRegistration.signedAssociatedDomains()
+                if registration.prefersBrowser == true, associatedDomains.contains(where: { $0.hasPrefix("webcredentials:") }) {
+                    metaMethod = .oauth
+                }
+            }
+            loadSavedBroker()
+        }
+        .onChange(of: registration.brokerEndpoint) { _, _ in
+            brokerCredential = ""
+            loadSavedBroker()
         }
         .sheet(isPresented: $showingMetaAccessHelp) {
             MetaAccessHelpView(platform: platform)
         }
         .onDisappear {
+            loadedBroker = nil
             connectionTask?.cancel()
+            if platform == .mastodon {
+                Task { await runtime.connections.discardPendingMastodonCredential() }
+            }
             brokerCredential = ""
             accessToken = ""
         }
@@ -134,7 +167,12 @@ struct SocialOAuthConnectionSheet: View {
         Section("Trusted Exchange Service") {
             TextField("HTTPS service base URL", text: $registration.brokerEndpoint)
             SecureField("Service access credential", text: $brokerCredential)
-            Text("Use a service you control that implements the token exchange contract. Keep the provider app secret on that service. The service credential is used for this connection and is not saved.")
+            Toggle("Remember exchange credential in Keychain", isOn: $rememberBroker)
+            if savedBrokerCredential != nil && brokerCredential.isEmpty {
+                Label("Saved credential available for this endpoint", systemImage: "key.fill")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            Text("Keep the provider app secret on the exchange service. A remembered credential is available only for this endpoint.")
                 .font(.caption).foregroundStyle(.secondary)
             if platform == .facebookPages {
                 Text("Keychain stores the Page token and the source Facebook user grant. Indie Dev Buddy uses the grant only to recover access to this same Page while the grant remains valid.")
@@ -199,11 +237,13 @@ struct SocialOAuthConnectionSheet: View {
     }
 
     private var actionTitle: String {
+        if canFinishConnection != nil { return "Done" }
         guard connectionTask == nil else { return "Connecting…" }
         return isMetaPlatform && metaMethod == .accessToken ? "Verify and Save Token" : "Authorize in Browser"
     }
 
     private var canConnect: Bool {
+        if canFinishConnection != nil { return true }
         guard connectionTask == nil else { return false }
         if isMetaPlatform && metaMethod == .accessToken {
             return !accessToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -214,9 +254,23 @@ struct SocialOAuthConnectionSheet: View {
         return !isMetaPlatform || metaBrowserReady
     }
 
+    private var savedBrokerCredential: String? {
+        loadedBroker
+    }
+
+    private func loadSavedBroker() {
+        loadedBroker = nil
+        if let expected, let endpoint = URL(string: registration.brokerEndpoint) {
+            loadedBroker = SocialOAuthRegistration.exchangeCredential(for: expected, endpoint: endpoint)
+        }
+        rememberBroker = loadedBroker != nil
+    }
+
+    private var effectiveBrokerCredential: String { brokerCredential.isEmpty ? savedBrokerCredential ?? "" : brokerCredential }
+
     private var metaBrowserReady: Bool {
         registration.metaBrowserReady(for: platform, associatedDomains: associatedDomains)
-            && SocialOAuthBroker.validBearer(brokerCredential)
+            && SocialOAuthBroker.validBearer(effectiveBrokerCredential)
     }
 
     private func beginConnection() {
@@ -235,10 +289,11 @@ struct SocialOAuthConnectionSheet: View {
             message = "Enter a trusted HTTPS Mastodon server."
             return
         }
+        let bearer = effectiveBrokerCredential
         let broker: SocialOAuthBroker?
         if platform.requiresBroker {
             guard let endpoint = URL(string: registration.brokerEndpoint),
-                  let validated = try? SocialOAuthBroker(endpoint: endpoint, bearer: brokerCredential) else {
+                  let validated = try? SocialOAuthBroker(endpoint: endpoint, bearer: bearer) else {
                 message = "Enter a trusted HTTPS exchange service and its access credential."
                 return
             }
@@ -247,7 +302,8 @@ struct SocialOAuthConnectionSheet: View {
             broker = nil
         }
         let browser = SocialAuthorizationBrowser()
-        let settings = registration
+        var settings = registration
+        settings.prefersBrowser = true
         let accountTarget = settings.accountTarget.isEmpty ? nil : settings.accountTarget
         message = nil
         canRetryCredentialSave = false
@@ -258,12 +314,26 @@ struct SocialOAuthConnectionSheet: View {
                 let account = try await runtime.connections.connectOAuth(
                     platform: platform, clientID: settings.clientID, redirectURI: redirect,
                     accountTarget: accountTarget, instance: instance, exchange: broker,
-                    requestLinkedInActivity: settings.requestLinkedInActivity ?? false
+                    requestLinkedInActivity: settings.requestLinkedInActivity ?? false, expected: expected
                 ) { authorizationURL, callbackURL in
                     try await browser.authenticate(authorizationURL, redirect: callbackURL)
                 }
                 try Task.checkCancellation()
-                settings.save(platform)
+                let identity = SocialOAuthRegistration.identity(for: account)
+                settings.save(platform, identity: identity)
+                if platform.requiresBroker, let endpoint = URL(string: settings.brokerEndpoint) {
+                    do {
+                        if rememberBroker {
+                            try SocialOAuthRegistration.saveExchangeCredential(bearer, for: identity, endpoint: endpoint)
+                        } else {
+                            try SocialOAuthRegistration.removeExchangeCredential(for: identity, endpoint: endpoint)
+                        }
+                    } catch {
+                        canFinishConnection = account
+                        message = "The account is connected, but Keychain could not remember the exchange credential."
+                        return
+                    }
+                }
                 onConnected(account)
                 dismiss()
             } catch is CancellationError {
@@ -283,9 +353,9 @@ struct SocialOAuthConnectionSheet: View {
         connectionTask = Task {
             defer { connectionTask = nil }
             do {
-                let account = try await runtime.connections.retryPendingMastodonCredentialSave()
+                let account = try await runtime.connections.retryPendingMastodonCredentialSave(expected: expected)
                 try Task.checkCancellation()
-                registration.save(.mastodon)
+                registration.save(.mastodon, identity: SocialOAuthRegistration.identity(for: account))
                 canRetryCredentialSave = false
                 onConnected(account)
                 dismiss()
@@ -313,6 +383,7 @@ struct SocialOAuthConnectionSheet: View {
     }
 
     private func authorizationFailureMessage(for error: any Error) -> String {
+        if let mismatch = error as? ConnectionIdentityMismatch { return mismatch.localizedDescription }
         guard let socialError = error as? SocialError else {
             let error = error as NSError
             return "Could not connect \(platform.workspaceTitle). Diagnostic: \(error.domain) error \(error.code)."
@@ -362,9 +433,14 @@ struct SocialOAuthConnectionSheet: View {
                     pageID: platform == .facebookPages ? registration.accountTarget : nil,
                     instagramAccessMethod: instagramAccessMethod,
                     instagramAccountID: platform == .instagram && instagramAccessMethod == .facebookLogin
-                        ? instagramAccountID.trimmingCharacters(in: .whitespacesAndNewlines) : nil
+                        ? instagramAccountID.trimmingCharacters(in: .whitespacesAndNewlines) : nil,
+                    expected: expected
                 )
                 try Task.checkCancellation()
+                var settings = registration
+                settings.prefersBrowser = false
+                settings.instagramMethod = instagramAccessMethod == .instagramLogin ? "instagram" : "facebook"
+                settings.save(platform, identity: SocialOAuthRegistration.identity(for: account))
                 onConnected(account)
                 dismiss()
             } catch is CancellationError {
@@ -372,7 +448,7 @@ struct SocialOAuthConnectionSheet: View {
             } catch let error as SocialError {
                 message = "Could not connect \(platform.workspaceTitle): \(error.localizedDescription)"
             } catch {
-                message = "Could not connect \(platform.workspaceTitle). Check the connection details and try again."
+                message = error.localizedDescription
             }
         }
     }
@@ -392,21 +468,71 @@ nonisolated struct SocialOAuthRegistration: Codable {
     var brokerEndpoint = ""
     var requestLinkedInActivity: Bool? = false
 
-    static func load(_ platform: SocialPlatform) -> Self {
-        if let data = UserDefaults.standard.data(forKey: key(platform)),
+    var prefersBrowser: Bool?
+    var instagramMethod: String?
+
+    static func identity(for account: SocialAccount) -> ContentRecipientIdentity {
+        .init(platform: account.platform.rawValue, server: account.server, remoteID: account.remoteID)
+    }
+
+    static func load(_ platform: SocialPlatform, identity: ContentRecipientIdentity? = nil) -> Self {
+        let defaults = UserDefaults.standard
+        let data = identity.flatMap { defaults.data(forKey: accountKey($0)) } ?? defaults.data(forKey: key(platform))
+        if let data,
            let registration = try? JSONDecoder().decode(Self.self, from: data) {
             return registration
         }
         return Self(redirect: platform == .mastodon ? "\(callbackScheme):/mastodon" : "")
     }
 
-    func save(_ platform: SocialPlatform) {
+    func save(_ platform: SocialPlatform, identity: ContentRecipientIdentity? = nil) {
         if let data = try? JSONEncoder().encode(self) {
             UserDefaults.standard.set(data, forKey: Self.key(platform))
+            if let identity { UserDefaults.standard.set(data, forKey: Self.accountKey(identity)) }
         }
     }
 
     private static func key(_ platform: SocialPlatform) -> String { "social.oauth.registration.\(platform.rawValue)" }
+
+    static func accountKey(_ identity: ContentRecipientIdentity) -> String {
+        let parts = [identity.platform, identity.server.absoluteString, identity.remoteID]
+        let encoded = parts.map { Data($0.utf8).base64EncodedString() }.joined(separator: ".")
+        return "social.oauth.account." + encoded
+    }
+
+    private static func credentialQuery(_ identity: ContentRecipientIdentity, endpoint: URL) -> [String: Any] {
+        [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: "com.bravenewdesign.indiedevbuddy.social.exchange",
+            kSecAttrAccount as String: accountKey(identity) + "." + endpoint.absoluteString
+        ]
+    }
+
+    static func exchangeCredential(for identity: ContentRecipientIdentity, endpoint: URL) -> String? {
+        var query = credentialQuery(identity, endpoint: endpoint)
+        query[kSecReturnData as String] = true
+        query[kSecMatchLimit as String] = kSecMatchLimitOne
+        var result: CFTypeRef?
+        guard SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess,
+              let data = result as? Data else { return nil }
+        return String(data: data, encoding: .utf8)
+    }
+
+    static func saveExchangeCredential(_ secret: String, for identity: ContentRecipientIdentity, endpoint: URL) throws {
+        let query = credentialQuery(identity, endpoint: endpoint)
+        let attributes = [kSecValueData as String: Data(secret.utf8)]
+        let updated = SecItemUpdate(query as CFDictionary, attributes as CFDictionary)
+        if updated == errSecSuccess { return }
+        guard updated == errSecItemNotFound else { throw SocialError.credentialStorage(updated) }
+        let item = query.merging(attributes) { _, new in new }
+        let added = SecItemAdd(item as CFDictionary, nil)
+        guard added == errSecSuccess else { throw SocialError.credentialStorage(added) }
+    }
+
+    static func removeExchangeCredential(for identity: ContentRecipientIdentity, endpoint: URL) throws {
+        let status = SecItemDelete(credentialQuery(identity, endpoint: endpoint) as CFDictionary)
+        guard status == errSecSuccess || status == errSecItemNotFound else { throw SocialError.credentialStorage(status) }
+    }
 
     func callback(for platform: SocialPlatform) -> URL? {
         guard let url = URL(string: redirect),
