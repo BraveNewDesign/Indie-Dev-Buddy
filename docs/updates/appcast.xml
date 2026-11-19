@@ -3,6 +3,24 @@
     <channel>
         <title>Indie Dev Buddy</title>
         <item>
+            <title>1.3</title>
+            <pubDate>Thu, 19 Nov 2026 13:35:07 -0800</pubDate>
+            <sparkle:version>4</sparkle:version>
+            <sparkle:shortVersionString>1.3</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>27.2</sparkle:minimumSystemVersion>
+            <description sparkle:format="markdown"><![CDATA[## New in 1.3
+
+- Open Inbox, Performance, and Social Accounts from the Social section in the sidebar.
+- Review recent comments with the original post in view. Flag comments for follow-up, mark them done, or reply from the connected profile when the provider allows it.
+- Compare post formats by profile and filter results by date. Open performance and the loaded conversation directly from a published post.
+- See which social accounts need attention and reconnect from the account editor. Find eligible Facebook Pages and linked professional Instagram accounts during token setup.
+- See each profile’s refresh policy, last update, and permission issues. X and LinkedIn refresh individually on request.
+
+Requires Apple silicon and macOS 27.2 or later.
+]]></description>
+            <enclosure url="https://bravenewdesign.github.io/Indie-Dev-Buddy/updates/Indie%20Dev%20Buddy-1.3.zip" length="6928207" type="application/octet-stream" sparkle:edSignature="hhuB3UvLswGJFYosNs66usQ2ahe1eor4v9658hIjCUeXqvf/xXrfsZTqrexd/XdE7QbT6cm9JVMcMWIiuW5wAA=="/>
+        </item>
+        <item>
             <title>1.2</title>
             <pubDate>Fri, 13 Nov 2026 09:33:49 -0500</pubDate>
             <sparkle:version>3</sparkle:version>
