@@ -27,3 +27,6 @@ xcuserdata/
 
 # Local marketing concepts
 /marketing-mockups/
+
+# Local Netlify folder
+.netlify

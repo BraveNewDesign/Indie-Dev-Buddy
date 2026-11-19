@@ -210,7 +210,7 @@ struct SocialAccountActivityView: View {
                     Text(date.formatted(date: .abbreviated, time: .shortened)).font(.caption2).foregroundStyle(.tertiary)
                 }
             }
-            Text(verbatim: readableText(post)).textSelection(.enabled)
+            Text(verbatim: post.readableText).textSelection(.enabled)
             if let url = post.url, url.scheme?.lowercased() == "https", url.host != nil {
                 Link("View on Provider", destination: url).font(.caption)
             }
@@ -306,17 +306,6 @@ struct SocialAccountActivityView: View {
         }
     }
 
-    private func readableText(_ post: SocialPost) -> String {
-        guard post.textFormat == .html else { return post.text }
-        var value = post.text.replacingOccurrences(of: #"(?is)<(script|style)[^>]*>.*?</\1\s*>"#, with: "", options: .regularExpression)
-        value = value.replacingOccurrences(of: #"(?i)<br\s*/?>|</p\s*>|</li\s*>|</div\s*>"#, with: "\n", options: .regularExpression)
-        value = value.replacingOccurrences(of: #"<[^>]+>"#, with: "", options: .regularExpression)
-        for (entity, replacement) in [("&nbsp;", " "), ("&amp;", "&"), ("&lt;", "<"), ("&gt;", ">"), ("&quot;", "\""), ("&#39;", "'")] {
-            value = value.replacingOccurrences(of: entity, with: replacement)
-        }
-        return value.trimmingCharacters(in: .whitespacesAndNewlines)
-    }
-
     private func message(for error: Error, fallback: String) -> String {
         guard let error = error as? SocialError else { return fallback }
         switch error {
@@ -360,5 +349,18 @@ struct SocialAccountActivityView: View {
         if let data = try? JSONEncoder().encode(activity) {
             UserDefaults.standard.set(data, forKey: activityKey)
         }
+    }
+}
+
+extension SocialPost {
+    nonisolated var readableText: String {
+        guard textFormat == .html else { return text }
+        var value = text.replacingOccurrences(of: #"(?is)<(script|style)[^>]*>.*?</\1\s*>"#, with: "", options: .regularExpression)
+        value = value.replacingOccurrences(of: #"(?i)<br\s*/?>|</p\s*>|</li\s*>|</div\s*>"#, with: "\n", options: .regularExpression)
+        value = value.replacingOccurrences(of: #"<[^>]+>"#, with: "", options: .regularExpression)
+        for (entity, replacement) in [("&nbsp;", " "), ("&amp;", "&"), ("&lt;", "<"), ("&gt;", ">"), ("&quot;", "\""), ("&#39;", "'")] {
+            value = value.replacingOccurrences(of: entity, with: replacement)
+        }
+        return value.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 }

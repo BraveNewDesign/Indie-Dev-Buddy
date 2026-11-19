@@ -18,6 +18,78 @@ struct SocialOAuthBrokerTests {
         #expect(!registration.metaBrowserReady(for: .instagram, associatedDomains: domains))
     }
 
+    @Test func facebookPresetRequiresSignedDomainAndAllowsPageDiscovery() throws {
+        #expect(SocialOAuthRegistration.facebookBrowserPreset(associatedDomains: []) == nil)
+        let domains = ["webcredentials:connect.bravenewdesign.com"]
+        var preset = try #require(SocialOAuthRegistration.facebookBrowserPreset(associatedDomains: domains))
+        #expect(preset.redirect == "https://connect.bravenewdesign.com/oauth/callback/facebook")
+        #expect(preset.brokerEndpoint == "https://connect.bravenewdesign.com")
+        #expect(preset.accountTarget.isEmpty)
+        #expect(preset.metaBrowserReady(for: .facebookPages, associatedDomains: domains))
+        preset.accountTarget = "a Page name"
+        #expect(!preset.metaBrowserReady(for: .facebookPages, associatedDomains: domains))
+    }
+
+    @Test func facebookBrowserDiscoverySavesOnlyChosenPage() async throws {
+        let fixture = BrokerFixture()
+        let endpoint = try #require(URL(string: "https://broker.example"))
+        let redirect = try #require(URL(string: "https://callback.example/facebook"))
+        let broker = try SocialOAuthBroker(endpoint: endpoint, bearer: "fixture-service-key") {
+            try await fixture.respond(to: $0)
+        }
+        let credentials = MemoryCredentialStore()
+        let connections = SocialConnections(credentialStore: credentials, metaTransport: FacebookDiscoveryFixture())
+        let account = try await connections.connectOAuth(
+            platform: .facebookPages, clientID: "123", redirectURI: redirect,
+            accountTarget: nil, instance: nil, exchange: broker,
+            chooseFacebookPage: { pages in
+                #expect(pages.map(\.remoteID) == ["101", "102"])
+                return "102"
+            }
+        ) { authorize, callback in
+            let request = try #require(URLComponents(url: authorize, resolvingAgainstBaseURL: false))
+            let state = try #require(request.queryItems?.first { $0.name == "state" }?.value)
+            var result = try #require(URLComponents(url: callback, resolvingAgainstBaseURL: false))
+            result.queryItems = [URLQueryItem(name: "state", value: state), URLQueryItem(name: "code", value: "fixture-code")]
+            return try #require(result.url)
+        }
+        #expect(account.remoteID == "102")
+        #expect(await credentials.accounts().map(\.remoteID) == ["102"])
+        #expect(await fixture.requests.count == 2)
+    }
+
+    @Test func instagramFacebookLoginDiscoversLinkedProfileAndSavesPageGrant() async throws {
+        let fixture = BrokerFixture()
+        let endpoint = try #require(URL(string: "https://broker.example"))
+        let redirect = try #require(URL(string: "https://callback.example/facebook"))
+        let broker = try SocialOAuthBroker(endpoint: endpoint, bearer: "fixture-service-key") {
+            try await fixture.respond(to: $0)
+        }
+        let credentials = MemoryCredentialStore()
+        let connections = SocialConnections(credentialStore: credentials, metaTransport: InstagramFacebookDiscoveryFixture())
+        let account = try await connections.connectOAuth(
+            platform: .instagram, clientID: "123", redirectURI: redirect,
+            accountTarget: nil, instance: nil, exchange: broker,
+            instagramFacebookLogin: true,
+            chooseFacebookPage: { _ in
+                Issue.record("A single linked Instagram profile should connect automatically")
+                return "201"
+            }
+        ) { authorize, callback in
+            let request = try #require(URLComponents(url: authorize, resolvingAgainstBaseURL: false))
+            let query = try #require(request.queryItems)
+            let state = try #require(query.first { $0.name == "state" }?.value)
+            #expect(query.first { $0.name == "scope" }?.value?.contains("instagram_manage_insights") == true)
+            var result = try #require(URLComponents(url: callback, resolvingAgainstBaseURL: false))
+            result.queryItems = [URLQueryItem(name: "state", value: state), URLQueryItem(name: "code", value: "fixture-code")]
+            return try #require(result.url)
+        }
+        #expect(account.platform == .instagram)
+        #expect(account.remoteID == "201")
+        #expect(await credentials.credential(for: account.id)?.facebookPageSourceGrant != nil)
+        #expect(await fixture.requests.map { $0["platform"] } == ["facebookPages", "facebookPages"])
+    }
+
     @Test func metaExchangeUsesOnePreparedAttemptAndRejectsMismatchedProviderOrRedirect() async throws {
         let fixture = BrokerFixture()
         let endpoint = try #require(URL(string: "https://broker.example"))
@@ -121,7 +193,52 @@ private actor BrokerFixture {
         let response = try #require(HTTPURLResponse(url: url, statusCode: status, httpVersion: nil, headerFields: nil))
         let body = isRegistration
             ? #"{"session_id":"test-session"}"#
-            : #"{"access_token":"fixture-access","refresh_token":"ignored","expires_at":"2027-01-01T00:00:00Z","meta_long_lived_refresh_eligible_at":"2026-12-02T00:00:00Z"}"#
+            : requests.last?["platform"] == "facebookPages"
+                ? #"{"access_token":"fixture-access"}"#
+                : #"{"access_token":"fixture-access","refresh_token":"ignored","expires_at":"2027-01-01T00:00:00Z","meta_long_lived_refresh_eligible_at":"2026-12-02T00:00:00Z"}"#
         return (Data(body.utf8), response)
+    }
+}
+
+private nonisolated struct FacebookDiscoveryFixture: HTTPTransport {
+    func send(_ request: URLRequest) async throws -> HTTPResponse {
+        let url = try #require(request.url)
+        let body: String
+        switch url.path {
+        case "/v27.0/me/permissions":
+            body = #"{"data":[{"permission":"pages_manage_posts","status":"granted"}]}"#
+        case "/v27.0/me/accounts":
+            let includesTokens = url.query?.contains("access_token") == true
+            body = includesTokens
+                ? #"{"data":[{"id":"101","name":"First","access_token":"page-one","tasks":["CREATE_CONTENT"]},{"id":"102","name":"Second","access_token":"page-two","tasks":["CREATE_CONTENT"]}]}"#
+                : #"{"data":[{"id":"101","name":"First"},{"id":"102","name":"Second"}]}"#
+        case "/v27.0/me":
+            #expect(request.value(forHTTPHeaderField: "Authorization") == "Bearer page-two")
+            body = #"{"id":"102","name":"Second"}"#
+        default:
+            Issue.record("Unexpected Facebook endpoint")
+            return HTTPResponse(statusCode: 404)
+        }
+        return HTTPResponse(statusCode: 200, body: Data(body.utf8))
+    }
+}
+
+private nonisolated struct InstagramFacebookDiscoveryFixture: HTTPTransport {
+    func send(_ request: URLRequest) async throws -> HTTPResponse {
+        let url = try #require(request.url)
+        let body: String
+        switch url.path {
+        case "/v27.0/me/permissions":
+            body = #"{"data":[{"permission":"pages_show_list","status":"granted"},{"permission":"pages_read_engagement","status":"granted"},{"permission":"instagram_basic","status":"granted"},{"permission":"instagram_content_publish","status":"granted"}]}"#
+        case "/v27.0/me/accounts":
+            body = #"{"data":[{"id":"101","name":"Studio","access_token":"page-one","tasks":["CREATE_CONTENT"],"instagram_business_account":{"id":"201","username":"studio"}}]}"#
+        case "/v27.0/201":
+            #expect(request.value(forHTTPHeaderField: "Authorization") == "Bearer page-one")
+            body = #"{"id":"201","username":"studio"}"#
+        default:
+            Issue.record("Unexpected linked Instagram endpoint")
+            return HTTPResponse(statusCode: 404)
+        }
+        return HTTPResponse(statusCode: 200, body: Data(body.utf8))
     }
 }

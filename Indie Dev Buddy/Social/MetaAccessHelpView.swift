@@ -3,6 +3,7 @@ import SwiftUI
 
 struct MetaAccessHelpView: View {
     let platform: SocialPlatform
+    let instagramAccessMethod: InstagramAccessMethod
 
     private var providerName: String { platform.workspaceTitle }
 
@@ -39,7 +40,7 @@ struct MetaAccessHelpView: View {
                 .font(.title2.weight(.semibold))
             Text(introText)
                 .foregroundStyle(.secondary)
-            Text("The Meta access token option is fully local and does not need an exchange service. Browser sign-in is optional and still requires one.")
+            Text("Create or select a Meta developer app you manage. For your own accounts, use Development mode and add your account as a role or tester where Meta requires it.")
                 .font(.callout)
         }
     }
@@ -63,21 +64,20 @@ struct MetaAccessHelpView: View {
             Text("Set it up")
                 .font(.headline)
             step(1, "Create or choose a Meta app", "Open Meta for Developers → My Apps. Create an app with the product/use case for \(providerName), or select one you manage. In Development mode, add your own account as an app role or tester where Meta asks.")
-            step(2, "Enable the needed permissions", permissionSetup)
+            step(2, "Set up Standard Access", "Open your use case’s Permissions and features screen. Add the permissions below for the features you plan to use. If a permission already shows Ready for testing, continue to token generation.")
             step(3, "Generate a user access token", tokenSetup)
-            step(4, "Verify and save it in Indie Dev Buddy", "Choose Connect \(providerName), leave the method set to Meta access token, paste the token, and click Verify and Save Token. For Facebook Pages, also enter the Page ID. The app checks the token with Meta, stores the resulting account credential in this Mac's Keychain, and sends posts directly from this Mac.")
-            step(5, "Request broader access only if needed", "Development tokens are for your own app-role/test accounts. To let people outside your app's roles connect, request the required Advanced Access in Meta App Review. Meta may ask for business verification, a privacy policy, reviewer access, and a recording showing the feature.")
+            step(4, "Verify and save it in Indie Dev Buddy", "Choose Connect \(providerName), leave the method set to Meta access token, paste the token, and click Verify and Save Token. Enter the account or Page ID if the form requests it. The app checks the token with Meta, stores the resulting account credential in this Mac's Keychain, and sends posts directly from this Mac.")
+            step(5, "Check Inbox and Performance", "Open Inbox to check comment access. In Performance, select a published post and click Refresh Post Insights. If you added a permission after generating your token, generate a fresh token with that permission and reconnect the same profile.")
         }
     }
 
     private var permissions: some View {
         GroupBox("Permissions to grant in Meta") {
             VStack(alignment: .leading, spacing: 9) {
-                Text(permissionSummary)
-                    .font(.callout)
-                Text("Only grant the permissions you need. Meta may limit a Development app to its own roles and test accounts; broader use can require Advanced Access and App Review.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                ForEach(permissionRows, id: \.title) { row in
+                    requirementRow(row.title, detail: row.scopes)
+                        .textSelection(.enabled)
+                }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
         }
@@ -100,7 +100,7 @@ struct MetaAccessHelpView: View {
             Text("Meta's official guides")
                 .font(.headline)
             Link("Open Meta for Developers", destination: URL(string: "https://developers.facebook.com/apps/")!)
-            if platform == .facebookPages {
+            if platform == .facebookPages || platform == .instagram && instagramAccessMethod == .facebookLogin {
                 Link("Open Graph API Explorer", destination: URL(string: "https://developers.facebook.com/tools/explorer/")!)
                 Link("Facebook long-lived tokens", destination: URL(string: "https://developers.facebook.com/docs/facebook-login/guides/access-tokens/get-long-lived/")!)
             }
@@ -110,7 +110,6 @@ struct MetaAccessHelpView: View {
             Link(destination: guideLink.url) {
                 Label(guideLink.title, systemImage: "arrow.up.right.square")
             }
-            Link("Meta App Review and permissions", destination: URL(string: "https://developers.facebook.com/docs/app-review/")!)
         }
     }
 
@@ -119,7 +118,9 @@ struct MetaAccessHelpView: View {
         case .facebookPages:
             "This connection publishes text to a Facebook Page you can manage. Personal Facebook profiles are not supported."
         case .instagram:
-            "This connection uses the legacy Instagram API with Facebook Login: a Facebook user token discovers the linked Page, then the Page token accesses Instagram. The Instagram account must be a professional account linked to a Facebook Page."
+            instagramAccessMethod == .facebookLogin
+                ? "Connect a professional Instagram account linked to a Facebook Page you manage using a Facebook user token."
+                : "Connect a professional Instagram account directly using an Instagram user token."
         case .threads:
             "This connection uses Threads Login to publish to a Threads profile you control."
         default:
@@ -127,29 +128,39 @@ struct MetaAccessHelpView: View {
         }
     }
 
-    private var permissionSummary: String {
+    private var permissionRows: [(title: String, scopes: String)] {
         switch platform {
         case .facebookPages:
-            "Needed: pages_show_list and pages_manage_posts for finding and publishing to a Page; pages_read_engagement and pages_read_user_content for reading Page activity; pages_manage_engagement for the supported comment and engagement actions."
+            [
+                ("Find your Page and publish", "pages_show_list, pages_manage_posts"),
+                ("Read Page posts", "pages_read_engagement"),
+                ("Read visitor comments", "pages_read_engagement, pages_read_user_content"),
+                ("Reply to comments", "pages_manage_engagement"),
+                ("Post insights", "read_insights")
+            ]
         case .instagram:
-            "For Instagram API with Facebook Login, grant pages_show_list, pages_read_engagement, instagram_basic, instagram_content_publish, and business_management. Meta may also require ads_read or ads_management for some Business Manager roles. Add instagram_manage_comments for supported comment actions."
+            instagramAccessMethod == .facebookLogin ? [
+                ("Find your linked account", "pages_show_list, pages_read_engagement, instagram_basic. Meta may require business_management, ads_read, or ads_management for some roles."),
+                ("Publish", "instagram_content_publish"),
+                ("Read and reply to comments", "instagram_manage_comments"),
+                ("Post insights", "instagram_manage_insights")
+            ] : [
+                ("Identify your account", "instagram_business_basic"),
+                ("Publish", "instagram_business_content_publish"),
+                ("Read and reply to comments", "instagram_business_manage_comments"),
+                ("Post insights", "instagram_business_manage_insights")
+            ]
         case .threads:
-            "Needed: threads_basic to identify the profile, threads_content_publish to publish, threads_read_replies and threads_manage_replies for replies, and threads_delete for supported reply deletion."
+            [
+                ("Identify your profile", "threads_basic"),
+                ("Publish", "threads_content_publish"),
+                ("Read replies", "threads_read_replies"),
+                ("Reply and manage replies", "threads_content_publish, threads_manage_replies"),
+                ("Post insights", "threads_manage_insights"),
+                ("Delete your replies", "threads_delete")
+            ]
         default:
-            "Permissions depend on the selected provider."
-        }
-    }
-
-    private var permissionSetup: String {
-        switch platform {
-        case .facebookPages:
-            "For publishing, enable pages_show_list and pages_manage_posts. For reading Page posts and comments, also enable pages_read_engagement and pages_read_user_content. For the supported comment actions, add pages_manage_engagement."
-        case .instagram:
-            "In the Meta app, open Instagram API → API setup with Facebook login and click Add required content permissions. Ensure the professional Instagram account is linked to the Facebook Page and the token user can manage that Page. In Graph API Explorer, request pages_show_list, pages_read_engagement, instagram_basic, instagram_content_publish, and business_management. If Meta requires it for your Business Manager Page role, also grant ads_read or ads_management. Add instagram_manage_comments for the supported comment actions. This connector uses a Facebook user token and linked Page token; the newer Unified Login setup issues a different system-user token."
-        case .threads:
-            "Enable threads_basic and threads_content_publish. Add threads_read_replies, threads_manage_replies, and threads_delete only if you also need the corresponding reply actions."
-        default:
-            "Enable only the permissions needed for your account."
+            []
         }
     }
 
@@ -158,9 +169,11 @@ struct MetaAccessHelpView: View {
         case .facebookPages:
             "In Graph API Explorer, select your Meta app, choose Get User Access Token, select the permissions above, and generate a token. Use Meta’s long-lived user token guide to extend that token before importing it. Indie Dev Buddy verifies access and saves both the selected Page token and the source user grant in this Mac’s Keychain so it can recover the Page token when the grant is valid."
         case .instagram:
-            "In Graph API Explorer, select the Indie Dev Buddy app, choose User Token, select the permissions above, and click Generate Access Token to create a Facebook user token. Paste that token here and use the Instagram professional account ID 17841469532626741 for @bravenewdesignofficial. Indie Dev Buddy verifies the grant, locates its linked Page, and saves the Page token and source user grant in this Mac’s Keychain. Leave the optional permissions field blank; the app reads granted permissions from Meta."
+            instagramAccessMethod == .facebookLogin
+                ? "In Graph API Explorer, select your Meta app and generate a Facebook user token. Then look up your linked Instagram ID with GET /me/accounts?fields=id,name,instagram_business_account{id}. Use the nested instagram_business_account.id, which is separate from the Facebook Page ID. Indie Dev Buddy reads the token’s granted permissions from Meta."
+                : "In your Meta app’s Instagram API setup with Instagram Login, add your professional account and generate an Instagram user access token. Paste it into the Instagram Login connection form."
         case .threads:
-            "In your app's Access the Threads API use case, add your account as a Threads tester and accept the invite in Threads. Then open Settings → User Token Generator, generate a token with the publishing permission. Use the Threads long-lived token guide to exchange a short-lived token outside Indie Dev Buddy and import only the resulting access token."
+            "In your app's Access the Threads API use case, add your account as a Threads tester and accept the invite in Threads. Then open Settings → User Token Generator, generate a token with the permissions for the features you selected. Use the Threads long-lived token guide to exchange a short-lived token outside Indie Dev Buddy and import only the resulting access token."
         default:
             "Generate an access token from Meta's developer tools."
         }
@@ -171,7 +184,9 @@ struct MetaAccessHelpView: View {
         case .facebookPages:
             return ("Facebook Pages API: get started", URL(string: "https://developers.facebook.com/docs/pages-api/getting-started/")!)
         case .instagram:
-            return ("Instagram API with Facebook Login", URL(string: "https://developers.facebook.com/docs/instagram-platform/instagram-api-with-facebook-login/get-started/")!)
+            return instagramAccessMethod == .facebookLogin
+                ? ("Instagram API with Facebook Login", URL(string: "https://developers.facebook.com/docs/instagram-platform/instagram-api-with-facebook-login/get-started/")!)
+                : ("Instagram API with Instagram Login", URL(string: "https://developers.facebook.com/docs/instagram-platform/instagram-api-with-instagram-login/")!)
         case .threads:
             return ("Threads API: get started", URL(string: "https://developers.facebook.com/docs/threads/get-started/")!)
         default:

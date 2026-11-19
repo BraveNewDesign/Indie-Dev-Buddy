@@ -9,6 +9,8 @@ enum ContentDestinationView: String, CaseIterable, Identifiable {
     case drafts = "Drafts"
     case ideas = "Ideas"
     case posted = "Posted"
+    case inbox = "Inbox"
+    case performance = "Performance"
 
     var id: String { rawValue }
 
@@ -18,7 +20,7 @@ enum ContentDestinationView: String, CaseIterable, Identifiable {
         case .drafts: .drafts
         case .ideas: .ideas
         case .posted: .posted
-        case .calendar, .board, .allItems: nil
+        case .calendar, .board, .allItems, .inbox, .performance: nil
         }
     }
 }
@@ -223,6 +225,7 @@ struct ContentView: View {
     @State private var sidebarVisibility: NavigationSplitViewVisibility = .automatic
     @State private var pendingWorkspaceToForget: URL?
     @AppStorage("marketingSelectionID") private var marketingSelectionID: String?
+    @State private var socialPerformanceTarget: SocialPerformanceTarget?
     @AppStorage("contentDestination") private var contentDestinationRawValue = ContentDestinationView.calendar.rawValue
     @State private var isContentExpanded = true
     @State private var contentCreateRequest: ContentKind?
@@ -242,6 +245,7 @@ struct ContentView: View {
         case section(String)
         case content(String)
         case contentDestination(ContentDestinationView)
+        case postPerformance(SocialPerformanceTarget)
         case showContentList
         case management(ManagementRecordSelection)
         case createContent(ContentKind)
@@ -650,19 +654,27 @@ struct ContentView: View {
                     createRecord: requestCreateManagement
                 )
             case "Marketing Content":
-                ContentLibraryView(
-                    snapshot: snapshot,
-                    snapshotGeneration: session.snapshotGeneration,
-                    store: store,
-                    refresh: session.refresh,
-                    initialSelectionID: marketingSelectionID,
-                    onInitialSelectionHandled: { marketingSelectionID = nil },
-                    listResetGeneration: contentListResetGeneration,
-                    destination: contentDestination,
-                    onUnsavedChangesChange: { hasUnsavedEdits = $0 },
-                    initialCreateKind: contentCreateRequest,
-                    onCreateRequestHandled: { contentCreateRequest = nil }
-                )
+                if contentDestination == .inbox || contentDestination == .performance {
+                    SocialWorkspaceView(snapshot: snapshot, inbox: contentDestination == .inbox, target: socialPerformanceTarget) { id in
+                        requestRootAction(.content(id))
+                    }
+                    .id(store.rootURL)
+                } else {
+                    ContentLibraryView(
+                        snapshot: snapshot,
+                        snapshotGeneration: session.snapshotGeneration,
+                        store: store,
+                        refresh: session.refresh,
+                        initialSelectionID: marketingSelectionID,
+                        onInitialSelectionHandled: { marketingSelectionID = nil },
+                        listResetGeneration: contentListResetGeneration,
+                        destination: contentDestination,
+                        onUnsavedChangesChange: { hasUnsavedEdits = $0 },
+                        initialCreateKind: contentCreateRequest,
+                        onCreateRequestHandled: { contentCreateRequest = nil },
+                        onOpenPerformance: { requestRootAction(.postPerformance($0)) }
+                    )
+                }
             case "Files":
                 AssetLibraryView(store: store, snapshot: snapshot)
                     .id(store.rootURL)
@@ -802,8 +814,21 @@ struct ContentView: View {
             managementSelectionRequest = nil
             if value != "Marketing Content" { marketingSelectionID = nil }
             if value == "Apps" { appsOverviewGeneration += 1 }
-        case .content(let id): section = "Marketing Content"; selectedAppID = nil; marketingSelectionID = id
+        case .content(let id):
+            section = "Marketing Content"
+            selectedAppID = nil
+            marketingSelectionID = id
+            if contentDestination == .inbox || contentDestination == .performance {
+                contentDestinationRawValue = ContentDestinationView.posted.rawValue
+            }
+        case .postPerformance(let target):
+            socialPerformanceTarget = target
+            section = "Marketing Content"
+            selectedAppID = nil
+            marketingSelectionID = nil
+            contentDestinationRawValue = ContentDestinationView.performance.rawValue
         case .contentDestination(let destination):
+            socialPerformanceTarget = nil
             section = "Marketing Content"
             selectedAppID = nil
             marketingSelectionID = nil
@@ -815,7 +840,13 @@ struct ContentView: View {
             section = selection.type.section.rawValue
             selectedAppID = selection.type == .app ? selection.id : nil
             managementSelectionRequest = selection
-        case .createContent(let kind): section = "Marketing Content"; selectedAppID = nil; contentCreateRequest = kind
+        case .createContent(let kind):
+            section = "Marketing Content"
+            selectedAppID = nil
+            contentCreateRequest = kind
+            if contentDestination == .inbox || contentDestination == .performance {
+                contentDestinationRawValue = ContentDestinationView.allItems.rawValue
+            }
         case .createManagement(let kind):
             section = kind.section.rawValue
             selectedAppID = nil

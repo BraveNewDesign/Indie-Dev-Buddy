@@ -25,6 +25,9 @@ struct SocialOAuthConnectionSheet: View {
     @State private var instagramAccessMethod: InstagramAccessMethod = .facebookLogin
     @State private var instagramAccountID = ""
     @State private var associatedDomains: [String] = []
+    @State private var facebookPages: [SocialAccount] = []
+    @State private var selectedPageID: String?
+    @State private var pageSelection: CheckedContinuation<String, any Error>?
     @State private var accessToken = ""
     @State private var reportedScopes = ""
     @State private var tokenIsLongLived = false
@@ -64,8 +67,12 @@ struct SocialOAuthConnectionSheet: View {
                 if metaMethod == .accessToken {
                     metaAccessTokenSection
                 } else {
-                    providerRegistrationSection
-                    if platform.requiresBroker { exchangeServiceSection }
+                    if usingHostedMetaPreset {
+                        hostedMetaSection
+                    } else {
+                        providerRegistrationSection
+                        if platform.requiresBroker { exchangeServiceSection }
+                    }
                     if !metaBrowserReady && connectionTask == nil {
                         Text("Browser sign-in is unavailable until the registration, associated callback, and exchange service are configured.")
                             .font(.caption).foregroundStyle(.secondary)
@@ -105,6 +112,7 @@ struct SocialOAuthConnectionSheet: View {
         .frame(width: 560)
         .onAppear {
             registration = .load(platform, identity: expected)
+            if platform == .facebookPages, expected == nil { registration.accountTarget = "" }
 
             if let expected {
                 if platform == .facebookPages { registration.accountTarget = expected.remoteID }
@@ -121,6 +129,15 @@ struct SocialOAuthConnectionSheet: View {
             }
             if isMetaPlatform {
                 associatedDomains = SocialOAuthRegistration.signedAssociatedDomains()
+                if let preset = SocialOAuthRegistration.hostedMetaPreset(for: platform, associatedDomains: associatedDomains),
+                   expected == nil || platform != .instagram || expected?.server.host == "graph.facebook.com",
+                   registration.clientID.isEmpty && registration.redirect.isEmpty && registration.brokerEndpoint.isEmpty {
+                    registration.clientID = preset.clientID
+                    registration.redirect = preset.redirect
+                    registration.brokerEndpoint = preset.brokerEndpoint
+                    registration.prefersBrowser = true
+                    registration.browserInstagramFacebookLogin = preset.browserInstagramFacebookLogin
+                }
                 if registration.prefersBrowser == true, associatedDomains.contains(where: { $0.hasPrefix("webcredentials:") }) {
                     metaMethod = .oauth
                 }
@@ -132,9 +149,29 @@ struct SocialOAuthConnectionSheet: View {
             loadSavedBroker()
         }
         .sheet(isPresented: $showingMetaAccessHelp) {
-            MetaAccessHelpView(platform: platform)
+            MetaAccessHelpView(platform: platform, instagramAccessMethod: metaMethod == .oauth
+                               ? (registration.browserInstagramFacebookLogin == true ? .facebookLogin : .instagramLogin)
+                               : instagramAccessMethod)
+        }
+        .sheet(isPresented: Binding(get: { pageSelection != nil }, set: { if !$0 { finishPageSelection(nil) } })) {
+            VStack(alignment: .leading, spacing: 12) {
+                Text(platform == .instagram ? "Choose an Instagram Account" : "Choose a Facebook Page").font(.headline)
+                List(facebookPages, id: \.remoteID, selection: $selectedPageID) { page in
+                    Text(page.displayName ?? page.username).tag(page.remoteID)
+                }
+                HStack {
+                    Button("Cancel") { finishPageSelection(nil) }.keyboardShortcut(.cancelAction)
+                    Spacer()
+                    Button(platform == .instagram ? "Connect Account" : "Connect Page") { finishPageSelection(selectedPageID) }
+                        .keyboardShortcut(.defaultAction)
+                        .disabled(selectedPageID == nil)
+                }
+            }
+            .padding(20)
+            .frame(width: 400, height: 280)
         }
         .onDisappear {
+            finishPageSelection(nil)
             loadedBroker = nil
             connectionTask?.cancel()
             if platform == .mastodon {
@@ -149,13 +186,19 @@ struct SocialOAuthConnectionSheet: View {
     private var providerRegistrationSection: some View {
         Section("Provider Registration") {
             if platform != .mastodon {
-                TextField("Public client or app ID", text: $registration.clientID)
+                TextField(isMetaPlatform ? "Meta app ID (optional with broker discovery)" : "Public client or app ID", text: $registration.clientID)
             } else {
                 TextField("Mastodon server", text: $registration.instance)
             }
             TextField("Registered callback URL", text: $registration.redirect)
+            if platform == .instagram {
+                Toggle("Use Facebook Login for Instagram", isOn: Binding(
+                    get: { registration.browserInstagramFacebookLogin == true },
+                    set: { registration.browserInstagramFacebookLogin = $0 }
+                ))
+            }
             if platform == .facebookPages {
-                TextField("Facebook Page ID", text: $registration.accountTarget)
+                TextField("Facebook Page ID (optional)", text: $registration.accountTarget)
             } else if platform == .linkedIn {
                 TextField("Organization URN (optional)", text: $registration.accountTarget)
                 Toggle("Request LinkedIn comment and feed access", isOn: Binding(
@@ -166,10 +209,78 @@ struct SocialOAuthConnectionSheet: View {
                     .font(.caption).foregroundStyle(.secondary)
             }
             if isMetaPlatform {
-                Button("How do I get a Meta access token?") { showingMetaAccessHelp = true }
+                if let preset = SocialOAuthRegistration.hostedMetaPreset(for: platform, associatedDomains: associatedDomains),
+                   expected == nil || platform != .instagram || expected?.server.host == "graph.facebook.com" {
+                    Button("Use Brave New Design Broker") {
+                        registration.clientID = preset.clientID
+                        registration.redirect = preset.redirect
+                        registration.brokerEndpoint = preset.brokerEndpoint
+                        registration.browserInstagramFacebookLogin = preset.browserInstagramFacebookLogin
+                    }
+                }
+                Button("Set Up My Meta App") { showingMetaAccessHelp = true }
                     .font(.caption)
             }
         }
+    }
+
+    private var usingHostedMetaPreset: Bool {
+        guard let preset = SocialOAuthRegistration.hostedMetaPreset(for: platform, associatedDomains: associatedDomains) else { return false }
+        return registration.redirect == preset.redirect && registration.brokerEndpoint == preset.brokerEndpoint &&
+            (preset.clientID.isEmpty || registration.clientID == preset.clientID) &&
+            (registration.browserInstagramFacebookLogin == true) == (preset.browserInstagramFacebookLogin == true)
+    }
+
+    private var hostedMetaSection: some View {
+        Section("Connect \(platform.workspaceTitle)") {
+            if platform == .facebookPages {
+                Text(expected == nil
+                     ? "Sign in to Facebook, grant access, and choose a Page. If you authorize only one Page, it connects automatically."
+                     : "Sign in to Facebook to restore access to this same Page.")
+            } else if platform == .instagram, registration.browserInstagramFacebookLogin == true {
+                Text("Sign in with Facebook and approve access to the Page linked to your professional Instagram account.")
+            } else {
+                Text("Sign in to \(platform.workspaceTitle) in your browser and approve access. Indie Dev Buddy saves the resulting connection in Keychain.")
+            }
+            SecureField("Broker password", text: $brokerCredential)
+                .textContentType(.password)
+            if savedBrokerCredential != nil && brokerCredential.isEmpty {
+                Label("Broker password saved in Keychain", systemImage: "key.fill")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            Toggle("Remember password for this broker in Keychain", isOn: $rememberBroker)
+            DisclosureGroup("Advanced Settings") {
+                TextField("Meta app ID", text: $registration.clientID)
+                TextField("Registered callback URL", text: $registration.redirect)
+                TextField("HTTPS service base URL", text: $registration.brokerEndpoint)
+                if platform == .facebookPages, expected == nil {
+                    TextField("Facebook Page ID (optional)", text: $registration.accountTarget)
+                }
+            }
+            .disabled(connectionTask != nil)
+        }
+    }
+
+    private func choosePage(_ pages: [SocialAccount]) async throws -> String {
+        try Task.checkCancellation()
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                facebookPages = pages
+                selectedPageID = nil
+                pageSelection = continuation
+            }
+        } onCancel: {
+            Task { @MainActor in finishPageSelection(nil) }
+        }
+    }
+
+    private func finishPageSelection(_ pageID: String?) {
+        guard let continuation = pageSelection else { return }
+        pageSelection = nil
+        facebookPages = []
+        selectedPageID = nil
+        if let pageID { continuation.resume(returning: pageID) }
+        else { continuation.resume(throwing: CancellationError()) }
     }
 
     private var exchangeServiceSection: some View {
@@ -192,6 +303,8 @@ struct SocialOAuthConnectionSheet: View {
 
     private var metaAccessTokenSection: some View {
         Section("Meta access token") {
+            Text("Use a token from a Meta developer app you manage. The setup guide lists the permissions for publishing, Inbox, and Performance.")
+                .font(.caption).foregroundStyle(.secondary)
             if platform == .instagram {
                 Picker("Instagram access method", selection: $instagramAccessMethod) {
                     Text("Facebook Login (Page token)").tag(InstagramAccessMethod.facebookLogin)
@@ -229,7 +342,7 @@ struct SocialOAuthConnectionSheet: View {
                     ? "Use a Facebook user access token from Graph API Explorer. Indie Dev Buddy checks the granted permissions, finds the linked Facebook Page by Instagram account ID, and stores the Page token plus source grant in this Mac’s Keychain. Leave permissions blank; Indie Dev Buddy reads them from Meta."
                     : "Use a long-lived user token from Meta. Indie Dev Buddy verifies the token with Meta, stores it in this Mac’s Keychain, and publishes directly from this Mac. Leave permissions blank if you are unsure.")
                 .font(.caption).foregroundStyle(.secondary)
-            Button("How do I get a Meta access token?") { showingMetaAccessHelp = true }
+            Button("Set Up My Meta App") { showingMetaAccessHelp = true }
                 .font(.caption)
         }
     }
@@ -248,7 +361,11 @@ struct SocialOAuthConnectionSheet: View {
     private var actionTitle: String {
         if canFinishConnection != nil { return "Done" }
         guard connectionTask == nil else { return "Connecting…" }
-        return isMetaPlatform && metaMethod == .accessToken ? "Verify and Save Token" : "Authorize in Browser"
+        if isMetaPlatform && metaMethod == .accessToken { return "Verify and Save Token" }
+        if platform == .facebookPages { return "Continue with Facebook" }
+        if platform == .instagram, registration.browserInstagramFacebookLogin == true { return "Continue with Facebook" }
+        if isMetaPlatform { return "Continue with \(platform.workspaceTitle)" }
+        return "Authorize in Browser"
     }
 
     private var canConnect: Bool {
@@ -267,18 +384,32 @@ struct SocialOAuthConnectionSheet: View {
         loadedBroker
     }
 
+    private static let hostedBrokerIdentity = ContentRecipientIdentity(
+        platform: "metaBroker", server: URL(string: "https://connect.bravenewdesign.com")!, remoteID: "operator"
+    )
+
     private func loadSavedBroker() {
         loadedBroker = nil
-        if let expected, let endpoint = URL(string: registration.brokerEndpoint) {
-            loadedBroker = SocialOAuthRegistration.exchangeCredential(for: expected, endpoint: endpoint)
+        if let endpoint = URL(string: registration.brokerEndpoint) {
+            if usingHostedMetaPreset {
+                loadedBroker = SocialOAuthRegistration.exchangeCredential(for: Self.hostedBrokerIdentity, endpoint: endpoint)
+            }
+            if loadedBroker == nil, let expected {
+                loadedBroker = SocialOAuthRegistration.exchangeCredential(for: expected, endpoint: endpoint)
+            }
         }
         rememberBroker = loadedBroker != nil
     }
 
     private var effectiveBrokerCredential: String { brokerCredential.isEmpty ? savedBrokerCredential ?? "" : brokerCredential }
 
+    private var discoversMetaRegistration: Bool {
+        isMetaPlatform && (registration.clientID.isEmpty || usingHostedMetaPreset && platform == .threads)
+    }
+
     private var metaBrowserReady: Bool {
-        registration.metaBrowserReady(for: platform, associatedDomains: associatedDomains)
+        registration.metaBrowserReady(for: platform, associatedDomains: associatedDomains,
+                                      allowMissingClientID: discoversMetaRegistration)
             && SocialOAuthBroker.validBearer(effectiveBrokerCredential)
     }
 
@@ -287,9 +418,9 @@ struct SocialOAuthConnectionSheet: View {
             message = "Set up the associated HTTPS callback and trusted exchange service, or connect with a Meta access token."
             return
         }
-        guard let redirect = registration.callback(for: platform),
-              platform == .mastodon || !registration.clientID.isEmpty,
-              platform != .facebookPages || !registration.accountTarget.isEmpty else {
+        let discoverRegistration = discoversMetaRegistration
+        guard registration.callback(for: platform) != nil,
+              discoverRegistration || platform == .mastodon || !registration.clientID.isEmpty else {
             message = "Enter the public registration values and the exact callback for this provider."
             return
         }
@@ -311,6 +442,7 @@ struct SocialOAuthConnectionSheet: View {
             broker = nil
         }
         let browser = SocialAuthorizationBrowser()
+        let rememberForHostedBroker = usingHostedMetaPreset
         var settings = registration
         settings.prefersBrowser = true
         let accountTarget = settings.accountTarget.isEmpty ? nil : settings.accountTarget
@@ -320,10 +452,30 @@ struct SocialOAuthConnectionSheet: View {
         connectionTask = Task {
             defer { connectionTask = nil }
             do {
+                if discoverRegistration, let broker {
+                    let hosted: SocialOAuthBroker.Registration
+                    do {
+                        hosted = try await broker.registration(for: settings.browserInstagramFacebookLogin == true ? .facebookPages : platform)
+                    } catch SocialError.httpStatus(503) {
+                        message = "\(platform.workspaceTitle) is not configured on the broker yet. Add its app ID and secret in Netlify, or use token import."
+                        return
+                    } catch SocialError.httpStatus(401) {
+                        message = "The broker rejected your password. Enter the current password and try again."
+                        return
+                    }
+                    guard hosted.redirect_uri == settings.redirect else { throw SocialError.invalidConfiguration }
+                    settings.clientID = hosted.client_id
+                    guard settings.metaBrowserReady(for: platform, associatedDomains: associatedDomains) else {
+                        throw SocialError.invalidConfiguration
+                    }
+                }
+                guard let redirect = settings.callback(for: platform) else { throw SocialError.invalidConfiguration }
                 let account = try await runtime.connections.connectOAuth(
                     platform: platform, clientID: settings.clientID, redirectURI: redirect,
                     accountTarget: accountTarget, instance: instance, exchange: broker,
-                    requestLinkedInActivity: settings.requestLinkedInActivity ?? false, expected: expected
+                    requestLinkedInActivity: settings.requestLinkedInActivity ?? false,
+                    instagramFacebookLogin: settings.browserInstagramFacebookLogin == true,
+                    chooseFacebookPage: { pages in try await choosePage(pages) }, expected: expected
                 ) { authorizationURL, callbackURL in
                     try await browser.authenticate(authorizationURL, redirect: callbackURL)
                 }
@@ -332,10 +484,14 @@ struct SocialOAuthConnectionSheet: View {
                 settings.save(platform, identity: identity)
                 if platform.requiresBroker, let endpoint = URL(string: settings.brokerEndpoint) {
                     do {
+                        let credentialIdentity = rememberForHostedBroker ? Self.hostedBrokerIdentity : identity
                         if rememberBroker {
-                            try SocialOAuthRegistration.saveExchangeCredential(bearer, for: identity, endpoint: endpoint)
+                            try SocialOAuthRegistration.saveExchangeCredential(bearer, for: credentialIdentity, endpoint: endpoint)
                         } else {
-                            try SocialOAuthRegistration.removeExchangeCredential(for: identity, endpoint: endpoint)
+                            try SocialOAuthRegistration.removeExchangeCredential(for: credentialIdentity, endpoint: endpoint)
+                            if rememberForHostedBroker {
+                                try SocialOAuthRegistration.removeExchangeCredential(for: identity, endpoint: endpoint)
+                            }
                         }
                     } catch {
                         canFinishConnection = account
@@ -479,6 +635,7 @@ nonisolated struct SocialOAuthRegistration: Codable {
 
     var prefersBrowser: Bool?
     var instagramMethod: String?
+    var browserInstagramFacebookLogin: Bool?
 
     static func identity(for account: SocialAccount) -> ContentRecipientIdentity {
         .init(platform: account.platform.rawValue, server: account.server, remoteID: account.remoteID)
@@ -559,10 +716,25 @@ nonisolated struct SocialOAuthRegistration: Codable {
         return url
     }
 
-    func metaBrowserReady(for platform: SocialPlatform, associatedDomains: [String]) -> Bool {
+    static func facebookBrowserPreset(associatedDomains: [String]) -> Self? {
+        hostedMetaPreset(for: .facebookPages, associatedDomains: associatedDomains)
+    }
+
+    static func hostedMetaPreset(for platform: SocialPlatform, associatedDomains: [String]) -> Self? {
+        let host = "connect.bravenewdesign.com"
+        guard platform.isMeta, associatedDomains.contains("webcredentials:\(host)") else { return nil }
+        let throughFacebook = platform == .facebookPages || platform == .instagram
+        let path = throughFacebook ? "facebook" : platform.rawValue
+        return Self(clientID: throughFacebook ? "1666411485007953" : "",
+                    redirect: "https://\(host)/oauth/callback/\(path)",
+                    brokerEndpoint: "https://\(host)",
+                    browserInstagramFacebookLogin: platform == .instagram ? true : nil)
+    }
+
+    func metaBrowserReady(for platform: SocialPlatform, associatedDomains: [String], allowMissingClientID: Bool = false) -> Bool {
         guard platform == .facebookPages || platform == .instagram || platform == .threads,
-              !clientID.isEmpty, clientID.utf8.allSatisfy({ (48...57).contains($0) }),
-              platform != .facebookPages || (!accountTarget.isEmpty && accountTarget.utf8.allSatisfy({ (48...57).contains($0) })),
+              allowMissingClientID || !clientID.isEmpty, clientID.utf8.allSatisfy({ (48...57).contains($0) }),
+              platform != .facebookPages || accountTarget.utf8.allSatisfy({ (48...57).contains($0) }),
               let url = callback(for: platform), let host = url.host?.lowercased(),
               url.port == nil, !url.path.isEmpty,
               associatedDomains.contains("webcredentials:\(host)"),

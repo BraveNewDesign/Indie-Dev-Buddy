@@ -14,6 +14,7 @@ struct ContentLibraryView: View {
     var onUnsavedChangesChange: (Bool) -> Void = { _ in }
     var initialCreateKind: ContentKind? = nil
     var onCreateRequestHandled: () -> Void = {}
+    var onOpenPerformance: (SocialPerformanceTarget) -> Void = { _ in }
     @AppStorage("selectedContentID") private var selectedID: String?
     @State private var error: String?
     @State private var editorHasUnsavedChanges = false
@@ -156,6 +157,22 @@ struct ContentLibraryView: View {
         Button("Open", systemImage: "arrow.right") { requestSelection(item.id) }
         Button("Copy Original Text", systemImage: "doc.on.doc") {
             Task { await copyOriginalText(item.id) }
+        }
+        let publishedDestinations = item.destinations.filter { destination in
+            destination.status == .published && destination.publishedURL?.scheme?.lowercased() == "https" &&
+            snapshot.socialAccountsByID[destination.accountId]?.providerIdentity != nil
+        }
+        if !publishedDestinations.isEmpty {
+            Menu("View Performance") {
+                ForEach(publishedDestinations) { destination in
+                    if let account = snapshot.socialAccountsByID[destination.accountId],
+                       let identity = account.providerIdentity, let url = destination.publishedURL {
+                        Button(account.displayName ?? account.handle ?? account.platform) {
+                            onOpenPerformance(SocialPerformanceTarget(identity: identity, url: url))
+                        }
+                    }
+                }
+            }
         }
         let publishedURLs = publishedLinks(for: item)
         if publishedURLs.count == 1, let link = publishedURLs.first {

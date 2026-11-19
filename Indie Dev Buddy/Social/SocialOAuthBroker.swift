@@ -40,6 +40,15 @@ actor SocialOAuthBroker: SessionBoundMetaOAuthExchange, CustomStringConvertible,
     nonisolated var debugDescription: String { description }
     nonisolated var customMirror: Mirror { Mirror(self, children: EmptyCollection<(label: String?, value: Any)>()) }
 
+    nonisolated struct Registration: Decodable, Sendable {
+        let client_id: String
+        let redirect_uri: String
+    }
+
+    func registration(for platform: SocialPlatform) async throws -> Registration {
+        try await post("registration", fields: ["platform": platform.rawValue], isRegistration: true)
+    }
+
     func prepare(platform: SocialPlatform, clientID: String, redirectURI: URL, state: String) async throws {
         guard platform == .facebookPages || platform == .instagram || platform == .threads,
               case .idle = attempt,
@@ -107,7 +116,7 @@ actor SocialOAuthBroker: SessionBoundMetaOAuthExchange, CustomStringConvertible,
     }
 
     private func post<Response: Decodable & Sendable>(
-        _ operation: String, fields: [String: String], isRefresh: Bool = false
+        _ operation: String, fields: [String: String], isRefresh: Bool = false, isRegistration: Bool = false
     ) async throws -> Response {
         do {
             try Task.checkCancellation()
@@ -130,13 +139,15 @@ actor SocialOAuthBroker: SessionBoundMetaOAuthExchange, CustomStringConvertible,
                 case 429: throw SocialError.rateLimited(retryAfter: response.value(forHTTPHeaderField: "Retry-After"))
                 default: throw SocialError.httpStatus(response.statusCode)
                 }
+            } else if isRegistration && !(200..<300).contains(response.statusCode) {
+                throw SocialError.httpStatus(response.statusCode)
             } else if !(200..<300).contains(response.statusCode) {
                 throw SocialError.authorizationFailed
             }
             return try JSONDecoder().decode(Response.self, from: data)
         } catch {
             try Task.checkCancellation()
-            if isRefresh { throw error as? SocialError ?? .transportFailure }
+            if isRefresh || isRegistration { throw error as? SocialError ?? .transportFailure }
             throw SocialError.authorizationFailed
         }
     }

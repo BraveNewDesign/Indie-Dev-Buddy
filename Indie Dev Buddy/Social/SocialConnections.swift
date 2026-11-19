@@ -440,6 +440,96 @@ actor SocialConnections {
         }
     }
 
+    /// An explicit, single-post read. Use the same stored account and redirect-rejecting
+    /// transport as the Meta adapters, and only query the documented metric set.
+    func postInsights(_ postID: String, for identity: ContentRecipientIdentity) async throws -> [String: Int] {
+        let id = try accountID(for: identity)
+        guard id.platform.isMeta, postID.range(of: #"^[0-9]+(?:_[0-9]+)?$"#, options: .regularExpression) != nil else {
+            throw SocialError.invalidInput
+        }
+        guard let credential = try await store.credential(for: id), credential.account.id == id else {
+            throw SocialError.authenticationRequired
+        }
+
+        let host: String
+        let version: String
+        let scope: String
+        let metrics: [String]
+        switch id.platform {
+        case .facebookPages:
+            host = "graph.facebook.com"
+            version = "v27.0"
+            scope = "read_insights"
+            metrics = ["post_media_view", "post_total_media_view_unique"]
+        case .instagram:
+            let instagramLogin = id.server.host == "graph.instagram.com"
+            host = instagramLogin ? "graph.instagram.com" : "graph.facebook.com"
+            version = "v27.0"
+            scope = instagramLogin ? "instagram_business_manage_insights" : "instagram_manage_insights"
+            metrics = ["views", "reach", "likes", "comments", "saved", "shares"]
+        case .threads:
+            host = "graph.threads.net"
+            version = "v1.0"
+            scope = "threads_manage_insights"
+            metrics = ["views", "likes", "replies", "reposts", "quotes", "shares"]
+        default:
+            throw SocialError.invalidInput
+        }
+        if credential.grantedScopes?.contains(scope) == false {
+            throw SocialError.permissionDeniedAt(scope)
+        }
+
+        var components = URLComponents()
+        components.scheme = "https"
+        components.host = host
+        components.path = "/\(version)/\(postID)/insights"
+        components.queryItems = [URLQueryItem(name: "metric", value: metrics.joined(separator: ","))]
+        guard let url = components.url else { throw SocialError.invalidConfiguration }
+        var request = URLRequest(url: url)
+        request.setValue("Bearer \(credential.accessToken)", forHTTPHeaderField: "Authorization")
+        let response = try await verificationTransport.send(request)
+        let payload = try? JSONDecoder().decode(PostInsightsResponse.self, from: response.body)
+        let code = payload?.error?.code
+        if response.statusCode == 429 || [4, 17, 32, 613].contains(code ?? -1) {
+            throw SocialError.rateLimited(retryAfter: response.header("Retry-After"))
+        }
+        if response.statusCode == 401 || [102, 190].contains(code ?? -1) { throw SocialError.authenticationRequired }
+        if response.statusCode == 403 || [10, 200].contains(code ?? -1) { throw SocialError.permissionDeniedAt(scope) }
+        guard (200..<300).contains(response.statusCode), let entries = payload?.data else {
+            throw SocialError.httpStatus(response.statusCode)
+        }
+        var result: [String: Int] = [:]
+        for entry in entries where metrics.contains(entry.name) {
+            if let value = entry.total_value?.value ?? entry.values?.last?.value, value >= 0 {
+                result[entry.name] = value
+            }
+        }
+        return result
+    }
+
+    private nonisolated struct PostInsightsResponse: Decodable {
+        struct Entry: Decodable {
+            struct Value: Decodable {
+                let value: Int?
+
+                init(from decoder: Decoder) throws {
+                    let fields = try decoder.container(keyedBy: CodingKeys.self)
+                    value = try? fields.decode(Int.self, forKey: .value)
+                }
+
+                private enum CodingKeys: String, CodingKey { case value }
+            }
+
+            let name: String
+            let values: [Value]?
+            let total_value: Value?
+        }
+
+        struct Failure: Decodable { let code: Int }
+        let data: [Entry]?
+        let error: Failure?
+    }
+
     func replies(to postID: String, for identity: ContentRecipientIdentity, cursor: String? = nil) async throws -> SocialPage<SocialPost> {
         let id = try accountID(for: identity)
         switch id.platform {
@@ -616,25 +706,63 @@ actor SocialConnections {
         instance: URL?,
         exchange: (any ConfidentialOAuthExchange)?,
         requestLinkedInActivity: Bool = false,
+        instagramFacebookLogin: Bool = false,
+        chooseFacebookPage: (@MainActor @Sendable ([SocialAccount]) async throws -> String)? = nil,
         expected: ContentRecipientIdentity? = nil,
         browser: @escaping OAuthBrowser
     ) async throws -> SocialAccount {
         switch platform {
         case .facebookPages:
             guard let exchange else { throw SocialError.invalidConfiguration }
-            let account = try await connectVerified(FacebookPagesAdapter(transport: verificationTransport), using: facebook, authorization: .init(clientID: clientID, redirectURI: redirectURI,
-                                                    pageID: accountTarget, browser: browser, exchange: exchange), expected: expected)
+            let adapter = FacebookPagesAdapter(transport: verificationTransport)
+            let scopes: Set<String> = ["pages_show_list", "pages_manage_posts", "pages_read_engagement",
+                                       "pages_manage_engagement", "pages_read_user_content", "read_insights"]
+            if accountTarget == nil, expected == nil, let chooseFacebookPage,
+               let sessionExchange = exchange as? any SessionBoundMetaOAuthExchange {
+                guard authorizingPlatforms.insert(.facebookPages).inserted else { throw SocialError.accountBusy }
+                defer { authorizingPlatforms.remove(.facebookPages) }
+                let token = try await facebookUserGrant(clientID: clientID, redirectURI: redirectURI,
+                                                        scopes: scopes, broker: sessionExchange, browser: browser)
+                let pages = try await adapter.discoverPages(token)
+                let pageID = try await chooseMetaAccount(pages, choose: chooseFacebookPage)
+                return try await importMetaToken(token, platform: .facebookPages, pageID: pageID)
+            }
+            let account = try await connectVerified(adapter, using: facebook,
+                authorization: .init(clientID: clientID, redirectURI: redirectURI, pageID: accountTarget,
+                                     scopes: scopes, browser: browser, exchange: exchange), expected: expected)
             await clearMetaCheckResult(for: account.id)
             return account
         case .threads:
             guard let exchange else { throw SocialError.invalidConfiguration }
             let account = try await connectVerified(ThreadsAdapter(transport: verificationTransport), using: threads, authorization: .init(clientID: clientID, redirectURI: redirectURI,
+                                                   scopes: ["threads_basic", "threads_content_publish", "threads_read_replies",
+                                                            "threads_manage_replies", "threads_delete", "threads_manage_insights"],
                                                    browser: browser, exchange: exchange), expected: expected)
             await clearMetaCheckResult(for: account.id)
             return account
         case .instagram:
             guard let exchange else { throw SocialError.invalidConfiguration }
+            if instagramFacebookLogin {
+                guard let broker = exchange as? any SessionBoundMetaOAuthExchange,
+                      let chooseFacebookPage else { throw SocialError.invalidConfiguration }
+                guard authorizingPlatforms.insert(.instagram).inserted else { throw SocialError.accountBusy }
+                defer { authorizingPlatforms.remove(.instagram) }
+                let scopes: Set<String> = ["pages_show_list", "pages_read_engagement", "instagram_basic",
+                                           "instagram_content_publish", "instagram_manage_comments", "instagram_manage_insights"]
+                let token = try await facebookUserGrant(clientID: clientID, redirectURI: redirectURI,
+                                                        scopes: scopes, broker: broker, browser: browser)
+                let instagramID: String
+                if let expected { instagramID = expected.remoteID }
+                else {
+                    let profiles = try await linkedInstagramProfiles(token)
+                    instagramID = try await chooseMetaAccount(profiles, choose: chooseFacebookPage)
+                }
+                return try await importMetaToken(token, platform: .instagram, instagramAccessMethod: .facebookLogin,
+                                                 instagramAccountID: instagramID, expected: expected)
+            }
             let account = try await connectVerified(InstagramAdapter(transport: verificationTransport), using: instagram, authorization: .init(clientID: clientID, redirectURI: redirectURI,
+                                                     scopes: ["instagram_business_basic", "instagram_business_content_publish",
+                                                              "instagram_business_manage_comments", "instagram_business_manage_insights"],
                                                      browser: browser, exchange: exchange), expected: expected)
             await clearMetaCheckResult(for: account.id)
             return account
@@ -700,6 +828,83 @@ actor SocialConnections {
         let credential = SocialCredential(account: account, accessToken: "temporary-keychain-diagnostic")
         try await store.save(credential)
         try await store.remove(account.id)
+    }
+
+    private func facebookUserGrant(clientID: String, redirectURI: URL, scopes: Set<String>,
+                                   broker: any SessionBoundMetaOAuthExchange, browser: @escaping OAuthBrowser) async throws -> OAuthToken {
+        // SocialKit validates the callback and state before the one-time grant goes to discovery.
+        do {
+            let adapter = FacebookPagesAdapter(transport: verificationTransport)
+            _ = try await adapter.connect(.init(clientID: clientID, redirectURI: redirectURI, scopes: scopes,
+                                               browser: browser, exchange: FacebookPageDiscoveryExchange(broker: broker)))
+            throw SocialError.invalidResponse
+        } catch let grant as FacebookPageDiscoveryGrant {
+            try Task.checkCancellation()
+            return grant.token
+        }
+    }
+
+    private func chooseMetaAccount(_ accounts: [SocialAccount],
+                                   choose: @MainActor @Sendable ([SocialAccount]) async throws -> String) async throws -> String {
+        guard let first = accounts.first else { throw SocialError.permissionDenied }
+        let selected = accounts.count == 1 ? first.remoteID : try await choose(accounts)
+        try Task.checkCancellation()
+        guard accounts.contains(where: { $0.remoteID == selected }) else { throw SocialError.invalidInput }
+        return selected
+    }
+
+    private func linkedInstagramProfiles(_ token: OAuthToken) async throws -> [SocialAccount] {
+        let server = URL(string: "https://graph.facebook.com")!
+        var profiles: [SocialAccount] = []
+        var ids = Set<String>()
+        var cursor: String?
+        var seenCursors = Set<String>()
+        for _ in 0..<50 {
+            try Task.checkCancellation()
+            var url = URLComponents(url: server, resolvingAgainstBaseURL: false)!
+            url.path = "/v27.0/me/accounts"
+            url.queryItems = [URLQueryItem(name: "fields", value: "tasks,instagram_business_account{id,username}"),
+                              URLQueryItem(name: "limit", value: "100")]
+            if let cursor { url.queryItems?.append(URLQueryItem(name: "after", value: cursor)) }
+            guard let endpoint = url.url else { throw SocialError.invalidConfiguration }
+            var request = URLRequest(url: endpoint)
+            request.setValue("Bearer \(token.accessToken)", forHTTPHeaderField: "Authorization")
+            let response = try await verificationTransport.send(request)
+            switch response.statusCode {
+            case 200: break
+            case 401: throw SocialError.authenticationRequired
+            case 403: throw SocialError.permissionDenied
+            case 429: throw SocialError.rateLimited(retryAfter: response.header("Retry-After"))
+            default: throw SocialError.httpStatus(response.statusCode)
+            }
+            let page = try JSONDecoder().decode(LinkedInstagramProfiles.self, from: response.body)
+            for entry in page.data where entry.tasks?.contains("CREATE_CONTENT") == true {
+                guard let account = entry.instagram_business_account, ids.insert(account.id).inserted else { continue }
+                profiles.append(SocialAccount(platform: .instagram, server: server, remoteID: account.id,
+                                              username: account.username ?? account.id, displayName: account.username))
+            }
+            guard page.paging?.next != nil else { return profiles }
+            guard let after = page.paging?.cursors?.after, !after.isEmpty, seenCursors.insert(after).inserted else {
+                throw SocialError.invalidResponse
+            }
+            cursor = after
+        }
+        throw SocialError.invalidResponse
+    }
+
+    private nonisolated struct LinkedInstagramProfiles: Decodable {
+        struct Page: Decodable {
+            struct Account: Decodable { let id: String; let username: String? }
+            let tasks: [String]?
+            let instagram_business_account: Account?
+        }
+        struct Paging: Decodable {
+            struct Cursors: Decodable { let after: String? }
+            let next: String?
+            let cursors: Cursors?
+        }
+        let data: [Page]
+        let paging: Paging?
     }
 
     private func accountID(for identity: ContentRecipientIdentity) throws -> SocialAccount.ID {
@@ -1021,4 +1226,21 @@ actor SocialConnections {
 
 struct ConnectionIdentityMismatch: LocalizedError {
     var errorDescription: String? { "The provider returned a different account. Sign in to the original account, or use Switch Account." }
+}
+
+private nonisolated struct FacebookPageDiscoveryGrant: Error {
+    let token: OAuthToken
+}
+
+private nonisolated struct FacebookPageDiscoveryExchange: SessionBoundMetaOAuthExchange {
+    let broker: any SessionBoundMetaOAuthExchange
+
+    func prepare(platform: SocialPlatform, clientID: String, redirectURI: URL, state: String) async throws {
+        try await broker.prepare(platform: platform, clientID: clientID, redirectURI: redirectURI, state: state)
+    }
+
+    func exchange(platform: SocialPlatform, code: String, redirectURI: URL) async throws -> OAuthToken {
+        let token = try await broker.exchange(platform: platform, code: code, redirectURI: redirectURI)
+        throw FacebookPageDiscoveryGrant(token: token)
+    }
 }

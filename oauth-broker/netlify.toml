@@ -1,0 +1,34 @@
+[build]
+  publish = "public"
+  functions = "netlify/functions"
+
+[[headers]]
+  for = "/.well-known/apple-app-site-association"
+  [headers.values]
+    Content-Type = "application/json"
+
+[[headers]]
+  for = "/oauth/callback/*"
+  [headers.values]
+    Cache-Control = "no-store"
+    Referrer-Policy = "no-referrer"
+    Content-Security-Policy = "default-src 'none'; frame-ancestors 'none'"
+    X-Robots-Tag = "noindex"
+
+[[redirects]]
+  from = "/oauth/callback/facebook"
+  to = "/meta-callback.html"
+  status = 200
+  force = true
+
+[[redirects]]
+  from = "/oauth/callback/instagram"
+  to = "/meta-callback.html"
+  status = 200
+  force = true
+
+[[redirects]]
+  from = "/oauth/callback/threads"
+  to = "/meta-callback.html"
+  status = 200
+  force = true

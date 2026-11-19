@@ -18,6 +18,13 @@ All seven providers have post-list and post-lookup routes. Account Activity chec
 
 The SDK uses Threads v1.0, Instagram Graph v27.0, LinkedIn Marketing version 202610, and X API v2 in the inspected adapters. Recheck versions, scopes, and response models when changing the package pin. See [connection setup](SOCIAL_CONNECTIONS.md) for supported login paths.
 
+### Content Inbox and Performance
+
+- **Inbox** reads one recent post page and samples the first comment page on up to eight posts per automatic-refresh profile, or four posts for manual-only profiles. It detects replies with provider-confirmed ownership and parent IDs when present. Needs Reply means the loaded sample contains no known response. Incomplete pages and missing authorship can produce Unknown. Threads and Instagram nested coverage remains limited by the pinned adapters.
+- **Performance** shows the SDK's available likes or favourites and the number of comments loaded by Inbox. The latter is a sample, never a provider-reported total. The format comparison uses medians for the available counts in the current profile and date selection. Format labels reflect available attachment metadata. Selecting a Facebook Page, Instagram, or Threads post exposes a separate one-post **Refresh Post Insights** action. It requests the documented views and related metrics for that provider using the existing credential and endpoint-specific insights grant. X and LinkedIn insights and reporting do not have a separate request path.
+- **Refresh** runs on entry and about every 15 minutes while the relevant Content view is active. X uses pay-per-use reads and LinkedIn access and limits vary. Both require selecting the individual profile and clicking Refresh. Bulk refresh excludes them. Requests are deduplicated across windows, throttled, and paused after a rate-limit response. Selecting a row or filter does not trigger an X or LinkedIn request.
+- **Local state** keeps fetched content and sent replies in the running app. Done markers persist on this Mac as hashes of account, post and comment identifiers. There is no closed-app polling or historical metric backfill.
+
 ## Upstream capabilities and implementation gaps
 
 ### Bluesky
@@ -32,7 +39,7 @@ Sources: [HTTP API reference](https://docs.bsky.app/docs/api/app-bsky-feed-get-p
 
 - **Inbox.** Use Page-owned published posts, the post's comments edge, and comment replies where visible. Validate Page roles/tasks and the endpoint's requirements for `pages_read_engagement`, `pages_read_user_content`, and `pages_manage_engagement`. The Page `feed` webhook can deliver comment and reaction changes after app installation and subscription. Meta documents `pages_manage_metadata` and `pages_show_list` for that setup. A reachable, verified webhook endpoint is additional work.
 - **Performance.** Page posts expose comments, reaction summaries and share information where returned. Query `/{page-post-id}/insights` with `read_insights` and the required Page access. Meta lists `post_media_view` and `post_total_media_view_unique`. Check the deployed API version and actual media type before offering views, clicks, or video breakdowns. Meta has retired legacy impression metrics. Page Insights also has eligibility, freshness and history constraints, including a documented minimum of 100 Page likes. Verify the behavior on small Pages.
-- **Gap.** Add an explicit post-insights adapter. A Page post, photo and video may have different object IDs. Match the ID to the endpoint before joining comments or metrics. Scope this provider to Pages.
+- **Gap.** The app has a single-post insights read. A Page post, photo and video may have different object IDs. Match the ID to the endpoint before joining comments or metrics. Scope this provider to Pages.
 
 Sources: [Page feed](https://developers.facebook.com/docs/graph-api/reference/page/feed/), [Page post](https://developers.facebook.com/docs/graph-api/reference/page-post/), [reactions](https://developers.facebook.com/docs/graph-api/reference/page-post/reactions/), [insights permissions](https://developers.facebook.com/docs/insights/get-started), [metrics and deprecations](https://developers.facebook.com/docs/graph-api/reference/insights/), [Page webhooks](https://developers.facebook.com/docs/graph-api/webhooks/getting-started/webhooks-for-pages/).
 
@@ -40,7 +47,7 @@ Sources: [Page feed](https://developers.facebook.com/docs/graph-api/reference/pa
 
 - **Inbox.** `/{thread-id}/replies` lists replies. `/{thread-id}/conversation` returns paginated top-level and nested replies in a flat list. Use returned parent/root IDs and `is_reply_owned_by_me` where available. Publishing a reply uses `reply_to_id`. Validate `threads_basic`, reply read/manage grants and publishing grants on the connected profile.
 - **Performance.** `/{thread-id}/insights` with `threads_manage_insights` gives metrics for owned posts, including views, likes, replies, reposts, quotes and shares. Meta documents empty insights for repost facades and exclusions for nested reply metrics. Views are a provider-defined count.
-- **Gap.** Add `/conversation` and insights support. Test whether replies sent directly in Threads are recognized before claiming reliable unanswered status.
+- **Gap.** Add `/conversation` to improve nested coverage. The app has a single-post insights read. Test whether replies sent directly in Threads are recognized before claiming reliable unanswered status.
 
 Sources: [Threads API and permissions](https://www.postman.com/meta/threads/overview), [conversation](https://www.postman.com/meta/threads/request/34203612-13ebe336-0176-4d2b-b208-c36646093139), [respond to replies](https://www.postman.com/meta/threads/request/34203612-7abb4419-a216-4e06-8027-f9f4fcf8bee9), [Threads insights](https://developers.facebook.com/docs/threads/insights/).
 
@@ -48,7 +55,7 @@ Sources: [Threads API and permissions](https://www.postman.com/meta/threads/over
 
 - **Inbox.** Scope the current Facebook Login flow to Business and Creator accounts linked to an authorized Facebook Page. List owned media and read `/{ig-media-id}/comments`. Read or create nested replies via the comment's replies edge with the appropriate grants, including `instagram_manage_comments` for the current login flow. Meta also documents comments and mentions webhook events. Story and live media behavior needs separate validation.
 - **Performance.** Media metadata can provide `like_count`, `comments_count`, and media classification. `/{ig-media-id}/insights` supports metrics such as views, reach, saves, and shares depending on media type. For Facebook Login, verify `instagram_basic`, `instagram_manage_insights`, and `pages_read_engagement`, plus any additional role-dependent permissions. The separate Instagram Login flow uses different scopes and host.
-- **Gap.** Add nested reply reads and media insights. Verify version-specific metric support for feed posts, carousels, and reels independently. Treat missing metrics as unavailable.
+- **Gap.** Add nested reply reads. The app has a single-post insights read. Verify version-specific metric support for feed posts, carousels, and reels independently. Treat missing metrics as unavailable.
 
 Sources: [Meta's Instagram API reference collection](https://www.postman.com/meta/instagram/documentation/6yqw8pt/instagram-api), [media insights and permissions](https://developers.facebook.com/docs/instagram-platform/insights/), [Instagram webhooks](https://developers.facebook.com/docs/graph-api/webhooks/getting-started/webhooks-for-instagram/).
 

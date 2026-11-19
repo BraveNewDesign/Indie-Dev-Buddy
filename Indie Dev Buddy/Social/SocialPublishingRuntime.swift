@@ -9,6 +9,7 @@ import SocialKit
 @MainActor @Observable
 final class SocialPublishingRuntime {
     let connections: SocialConnections
+    let engagement = SocialEngagementStore()
     private let coordinator: PublishingCoordinator?
     private(set) var metaCredentialStatus: [SocialAccount.ID: String] = [:]
     private(set) var connectionStatus: [SocialAccount.ID: SocialConnections.Recovery] = [:]

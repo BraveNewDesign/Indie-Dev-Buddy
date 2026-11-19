@@ -15,7 +15,17 @@ Use this page to connect an account, compare provider support, and understand sc
 
 ## Connect an account
 
+For Meta providers, use a developer app you manage. Start in Development mode, add your account as a role or tester where required, and use **Set Up My Meta App** in the connection form to find the permissions for each feature.
+
 In **Websites & Social Accounts → Social Accounts**, choose a provider, connect the intended remote account, then save the workspace account. The editor can prefill the account's display name, handle, and profile URL from SocialKit; these remain editable profile metadata. The verified provider identity (platform, server, and remote ID) is stored separately and is the recipient key for API delivery. It contains no credentials. A saved workspace avatar is used in account and composer previews. **View Account Activity** lists the posts, comments, and actions that connection can access; author and reply context is shown only when the provider returns it, and actions depend on the account's granted capabilities. **Unlink from This Workspace Account** removes the mapping when saved. Provider tokens are managed in the Mac’s Keychain. Unlinking a workspace record leaves the stored credential available to other workspace records using that account.
+
+## Inbox and Performance
+
+Open **Content → Inbox** for recent comments and replies on connected profiles. Use **Needs Reply** to find comments with no reply in the loaded sample. Use **Unknown** to review comments where the provider returned incomplete information. You can reply as the selected profile where supported, or mark a comment **Done** to clear it on this Mac.
+
+**Content → Performance** shows available post counts and a format comparison for a selected profile. From a published item’s menu, choose **View Performance** to find the corresponding post in the loaded sample. Select a Facebook Page, Instagram, or Threads post and click **Refresh Post Insights** for views and other available metrics. The connection needs the applicable permission: `read_insights`, `instagram_manage_insights`, or `threads_manage_insights`.
+
+Eligible profiles refresh automatically while Inbox or Performance is active. **X and LinkedIn require a manual refresh.** Select one of those profiles and click **Refresh Profile (Manual)**. X reads may consume API credits. Open **Refresh status** to see the last successful refresh or account issue.
 
 ## Schedule and delivery
 
@@ -61,7 +71,7 @@ Attach one image and choose **Publish Now** on Instagram or Threads. Indie Dev B
 
 ### Facebook Pages
 
-1. Open **Social Accounts**, add **Facebook Pages**, and choose **Meta access token**. In [Graph API Explorer](https://developers.facebook.com/tools/explorer/), select the Indie Dev Buddy app, choose **User Token**, and request `pages_show_list`. Add `pages_manage_posts` to publish text. Add `pages_read_engagement` for reading Page posts; add `pages_read_user_content` and `pages_manage_engagement` only for the comment actions you need. Generate a fresh token and approve access to the Page.
+1. Open **Social Accounts**, add **Facebook Pages**, and choose **Meta access token**. In [Graph API Explorer](https://developers.facebook.com/tools/explorer/), select your Meta developer app, choose **User Token**, and request `pages_show_list`. Add `pages_manage_posts` to publish text. Add `pages_read_engagement` for reading Page posts; add `pages_read_user_content` and `pages_manage_engagement` only for the comment actions you need. Generate a fresh token and approve access to the Page.
 2. Paste the **Facebook user token** and enter the Facebook **Page ID**. Choose **Verify and Save Token**. Indie Dev Buddy reads the authorized Pages, obtains the Page token for the selected ID, checks the Page identity, and saves the Page token and source user grant in Keychain. The Page must grant the user the `CREATE_CONTENT` task for publishing.
 
 ### Instagram: Facebook Login (Page token)
@@ -70,11 +80,10 @@ This is the route used by the current Indie Dev Buddy connection form. It accept
 
 1. In Meta for Developers, open **Use cases → Instagram API → Customize → API setup with Facebook login**. Click **Add required content permissions**. This adds the Facebook Login Instagram scopes to the app.
 2. Open **Permissions and features** for the Instagram API use case. If your Facebook Page role was granted through Meta Business Manager, click **Add** next to `ads_read` (preferred) or `ads_management`. If a permission is absent from Graph API Explorer, add it here first, then reload Explorer. Meta's [Page permission requirements](https://developers.facebook.com/documentation/instagram-platform/instagram-graph-api/reference/page) explain when an ads permission is needed for Business Manager roles.
-3. In [Graph API Explorer](https://developers.facebook.com/tools/explorer/), select the Indie Dev Buddy app and **User Token**. Request `pages_show_list`, `pages_read_engagement`, `instagram_basic`, and `instagram_content_publish`; add `business_management` if Meta's setup requires it. Add `instagram_manage_comments` only if you need comment actions. Generate a new token after changing permissions and approve access with the Facebook user who can manage the linked Page.
+3. In [Graph API Explorer](https://developers.facebook.com/tools/explorer/), select your Meta developer app and **User Token**. Request `pages_show_list`, `pages_read_engagement`, `instagram_basic`, and `instagram_content_publish`; add `business_management` if Meta's setup requires it. Add `instagram_manage_comments` only if you need comment actions. Generate a new token after changing permissions and approve access with the Facebook user who can manage the linked Page.
 4. To check the grants, select **GET** as the method and enter only `/me/permissions` in the path field. Do not type `GET` in the path. Confirm the required scopes show `granted`. To check the account/Page link, request `/me/accounts?fields=id,name,tasks,instagram_business_account{id}`. Confirm the returned Page has `CREATE_CONTENT` and that its `instagram_business_account.id` matches the Instagram professional account ID. The Facebook Page ID and Instagram account ID are different.
 5. In Indie Dev Buddy, add **Instagram**, choose **Meta access token → Facebook Login (Page token)**, enter the Instagram professional account ID, and paste the Facebook user token. Leave the optional permissions field blank; the app reads grants from Meta. Click **Verify and Save Token**. It retrieves the linked Page token itself; do not paste a Page token in the Facebook user token field.
 
-For example, the Brave New Design account `@bravenewdesignofficial` has Instagram account ID `17841469532626741`. Use the ID shown by the Page lookup for other accounts. A personal Instagram account cannot use this publishing route; use an Instagram Business or Creator account linked to a Facebook Page.
 
 Meta documents both [Facebook Login setup](https://developers.facebook.com/docs/instagram-platform/instagram-api-with-facebook-login/get-started/) and [the Unified Login setup](https://developers.facebook.com/documentation/instagram-platform/instagram-api-with-unified-login/). Keep the selected login method and token type aligned.
 
