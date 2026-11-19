@@ -1,0 +1,127 @@
+# GoReleaser config. Docs: https://goreleaser.com
+# yaml-language-server: $schema=https://goreleaser.com/static/schema.json
+# vim: set ts=2 sw=2 tw=0 fo=cnqoj
+
+version: 2
+
+before:
+  hooks:
+    - go mod tidy
+    - go generate ./...
+
+# The release runs on a macOS arm64 runner (see cut-release.yml) so the
+# `xurl chat` XChat client — which requires cgo to link the chat-xdk static
+# libraries — can be compiled into every platform chat-xdk supports:
+#
+#   darwin/arm64   native cgo build
+#   darwin/amd64   cgo cross-build with Apple clang (-arch x86_64)
+#   linux/amd64    cgo cross-build with `zig cc` against chat-xdk's musl
+#                  static lib, fully statically linked so the one binary
+#                  runs on both glibc and musl distros
+#
+# Platforms chat-xdk has no library for (windows/*, linux/arm64, linux/386)
+# are built with CGO_ENABLED=0 and ship the graceful `xurl chat` stub.
+builds:
+  - id: darwin-cgo
+    targets:
+      - darwin_arm64
+      - darwin_amd64
+    env:
+      - CGO_ENABLED=1
+    ldflags:
+      - -s -w
+      - -X github.com/xdevplatform/xurl/version.Version={{.Version}}
+      - -X github.com/xdevplatform/xurl/version.Commit={{.Commit}}
+      - -X github.com/xdevplatform/xurl/version.BuildDate={{.Date}}
+    hooks:
+      post:
+        # Ad-hoc sign so both darwin binaries carry a valid signature. The
+        # native arm64 build is already linker-signed, but the cross-built
+        # amd64 binary comes out unsigned. No Apple credentials involved;
+        # Gatekeeper quarantine is handled per install channel (the Homebrew
+        # cask strips it, and npm's programmatic download never sets it).
+        - cmd: codesign -s - --force {{ .Path }}
+
+  - id: linux-cgo
+    targets:
+      - linux_amd64
+    env:
+      - CGO_ENABLED=1
+      - CC=zig cc -target x86_64-linux-musl
+    # The musl tag selects chat-xdk's linux_amd64_musl static library.
+    flags:
+      - -tags=musl
+    ldflags:
+      - -s -w
+      - -X github.com/xdevplatform/xurl/version.Version={{.Version}}
+      - -X github.com/xdevplatform/xurl/version.Commit={{.Commit}}
+      - -X github.com/xdevplatform/xurl/version.BuildDate={{.Date}}
+      - -linkmode external
+      # Static link against musl so the binary has no runtime libc
+      # dependency; -lunwind provides the unwinder symbols the Rust-built
+      # chat-xdk library needs (zig bundles LLVM's libunwind).
+      - -extldflags "-static -lunwind"
+
+  - id: stub
+    targets:
+      - linux_arm64
+      - linux_386
+      - windows_amd64
+      - windows_arm64
+      - windows_386
+    env:
+      - CGO_ENABLED=0
+    ldflags:
+      - -s -w
+      - -X github.com/xdevplatform/xurl/version.Version={{.Version}}
+      - -X github.com/xdevplatform/xurl/version.Commit={{.Commit}}
+      - -X github.com/xdevplatform/xurl/version.BuildDate={{.Date}}
+
+archives:
+  - formats: [tar.gz]
+    # this name template makes the OS and Arch compatible with the results of `uname`.
+    name_template: >-
+      {{ .ProjectName }}_
+      {{- title .Os }}_
+      {{- if eq .Arch "amd64" }}x86_64
+      {{- else if eq .Arch "386" }}i386
+      {{- else }}{{ .Arch }}{{ end }}
+      {{- if .Arm }}v{{ .Arm }}{{ end }}
+    # use zip for windows archives
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+
+homebrew_casks:
+  - name: xurl
+    repository:
+      owner: xdevplatform
+      name: homebrew-tap
+      token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
+    homepage: "https://github.com/xdevplatform/xurl"
+    description: "Auth-enabled curl-like CLI for the X API"
+    # Homebrew 7.0 deprecated `postflight`. GoReleaser 2.18 still emits that
+    # stanza from hooks.post.install (goreleaser/goreleaser#6873). Until
+    # hooks.post.install_steps ships, emit postflight_steps via custom_block.
+    # {{ "{{staged_path}}" }} survives GoReleaser's template pass as Homebrew's
+    # install-time {{staged_path}} token.
+    custom_block: |
+      postflight_steps do
+        on_macos do
+          run "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "{{ "{{staged_path}}" }}/xurl"]
+        end
+      end
+
+release:
+  footer: >-
+
+    ---
+
+    Released by [GoReleaser](https://github.com/goreleaser/goreleaser).

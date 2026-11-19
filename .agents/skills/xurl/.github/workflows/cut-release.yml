@@ -1,0 +1,239 @@
+# Cut a release from main via workflow_dispatch.
+#
+# Steps:
+#   1. Resolve the next version (patch/minor/major, or an explicit version)
+#   2. Promote CHANGELOG.md "## Unreleased" → "## vX.Y.Z - <date>"
+#   3. Run tests
+#   4. Commit CHANGELOG on main, create annotated tag, push both
+#   5. Publish via GoReleaser (GitHub release + Homebrew) and npm
+#
+# The job runs on a macOS arm64 runner so GoReleaser can produce cgo builds
+# of `xurl chat` for every platform chat-xdk supports: darwin targets build
+# natively with Apple clang, and linux/amd64 cross-compiles with `zig cc`
+# against chat-xdk's musl static library (see .goreleaser.yaml).
+#
+# No pull request is opened. GITHUB_TOKEN cannot create PRs unless the repo
+# setting "Allow GitHub Actions to create and approve pull requests" is on,
+# and the PR path is unnecessary for a release cut.
+#
+# Requirements:
+#   - Repo secret RELEASE_GITHUB_TOKEN: a PAT (or gh OAuth token) for a user who
+#     can bypass the main ruleset (org/repo admin). GITHUB_TOKEN cannot bypass
+#     rulesets — there is no "GitHub Actions" bypass actor for it.
+#   - npm is published by dispatching the existing Release workflow (release.yml),
+#     which is the OIDC trusted publisher configured on npmjs.com.
+#
+# Why publish here instead of relying on the tag-triggered Release workflow?
+# Tag pushes authenticated with GITHUB_TOKEN do not start other workflows, so
+# this job runs the publish steps itself after tagging.
+#
+# Usage (GitHub UI):
+#   Actions → Cut Release → Run workflow
+#
+# Usage (CLI):
+#   gh workflow run "Cut Release" -f bump=patch
+#   gh workflow run "Cut Release" -f version=1.2.3
+#   gh workflow run "Cut Release" -f bump=patch -f dry_run=true
+#   gh workflow run "Cut Release" -f version=1.2.3 -f skip_changelog=true
+
+name: Cut Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: Semver bump when "version" is empty
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
+        default: patch
+      version:
+        description: Explicit version (e.g. 1.2.3). Overrides bump. Optional.
+        required: false
+        type: string
+        default: ""
+      skip_changelog:
+        description: Skip CHANGELOG edits (tag + publish current main only)
+        type: boolean
+        default: false
+      dry_run:
+        description: Resolve version / validate only; no commit, tag, or publish
+        type: boolean
+        default: false
+
+# Prevent two concurrent cuts from racing on tags / CHANGELOG.
+concurrency:
+  group: cut-release
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  actions: write # dispatch Release workflow for npm publish
+
+jobs:
+  cut:
+    name: Cut ${{ inputs.version || inputs.bump }}
+    # macOS arm64: darwin cgo builds need Apple clang, and zig cross-compiles
+    # the linux/amd64 cgo build. Stub platforms cross-compile from anywhere.
+    runs-on: macos-latest
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+          # Prefer RELEASE_GITHUB_TOKEN when set so pushes can bypass rulesets
+          # that block the default GITHUB_TOKEN. Falls back to GITHUB_TOKEN.
+          token: ${{ secrets.RELEASE_GITHUB_TOKEN || github.token }}
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.24"
+
+      # zig is the C cross-compiler for the linux/amd64 cgo build.
+      - name: Set up Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: "0.16.0"
+
+      - name: Resolve version and promote changelog
+        id: meta
+        run: |
+          set -euo pipefail
+          args=(--repo . --github-output "$GITHUB_OUTPUT" --bump "${{ inputs.bump }}")
+          if [ -n "${{ inputs.version }}" ]; then
+            args+=(--version "${{ inputs.version }}")
+          fi
+          if [ "${{ inputs.skip_changelog }}" = "true" ]; then
+            args+=(--skip-changelog)
+          fi
+          if [ "${{ inputs.dry_run }}" = "true" ]; then
+            args+=(--dry-run)
+          fi
+          python3 scripts/cut_release.py "${args[@]}"
+
+      - name: Run tests
+        run: go test ./...
+
+      - name: Dry-run summary
+        if: ${{ inputs.dry_run }}
+        run: |
+          {
+            echo "## Cut Release (dry-run)"
+            echo ""
+            echo "- version: \`${{ steps.meta.outputs.version }}\`"
+            echo "- tag: \`${{ steps.meta.outputs.tag }}\`"
+            echo "- changelog_changed: \`${{ steps.meta.outputs.changelog_changed }}\`"
+            echo ""
+            echo "No commit, tag, or publish was performed."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Configure git identity
+        if: ${{ !inputs.dry_run }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Commit changelog, tag, and push
+        if: ${{ !inputs.dry_run }}
+        run: |
+          set -euo pipefail
+          TAG="${{ steps.meta.outputs.tag }}"
+
+          if git rev-parse "$TAG" >/dev/null 2>&1; then
+            echo "::error::Tag ${TAG} already exists locally"
+            exit 1
+          fi
+          if git ls-remote --tags origin "refs/tags/${TAG}" | grep -q .; then
+            echo "::error::Tag ${TAG} already exists on origin"
+            exit 1
+          fi
+
+          # We checked out main at the start of the job (concurrency group prevents
+          # concurrent cuts). cut_release.py may have already rewritten CHANGELOG.md
+          # in the working tree — commit that directly; do not pull over the edit.
+          if [ "${{ steps.meta.outputs.changelog_changed }}" = "true" ]; then
+            if git diff --quiet -- CHANGELOG.md; then
+              echo "::error::Expected CHANGELOG.md changes but the working tree is clean"
+              exit 1
+            fi
+            git add CHANGELOG.md
+            git commit -m "chore(release): ${TAG}"
+          fi
+
+          git tag -a "$TAG" -m "${TAG}"
+
+          # Push main (if we committed) and the tag. This job owns publishing:
+          # GoReleaser runs below and npm is dispatched to the Release workflow.
+          # The Release workflow has no tag-push trigger, so this tag push does
+          # not spawn a second, racing GoReleaser run.
+          if ! git push origin HEAD:main "refs/tags/${TAG}"; then
+            {
+              echo "## Cut Release: push rejected"
+              echo ""
+              echo "Could not push to \`main\` / \`${TAG}\`. The workflow token cannot"
+              echo "bypass branch rules. Set repo secret \`RELEASE_GITHUB_TOKEN\` to a"
+              echo "PAT for an org/repo admin (who is on the ruleset bypass list), then re-run."
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "::error::Push to main/${TAG} rejected. Ensure RELEASE_GITHUB_TOKEN is set to an admin PAT that can bypass the main ruleset."
+            # Drop the local tag so a re-run is clean if the remote rejected it.
+            git tag -d "$TAG" || true
+            exit 1
+          fi
+
+          echo "Pushed main and ${TAG} at $(git rev-parse HEAD)"
+
+      - name: Run GoReleaser
+        if: ${{ !inputs.dry_run }}
+        uses: goreleaser/goreleaser-action@v6
+        with:
+          version: "~> v2"
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.RELEASE_GITHUB_TOKEN || secrets.GITHUB_TOKEN }}
+          HOMEBREW_TAP_GITHUB_TOKEN: ${{ secrets.HOMEBREW_TAP_GITHUB_TOKEN }}
+
+      # npm OIDC trusted publishing is bound to release.yml on npmjs.com.
+      # Publishing from this workflow file fails with ENEEDAUTH; dispatch instead.
+      - name: Publish npm via Release workflow
+        if: ${{ !inputs.dry_run }}
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_GITHUB_TOKEN || github.token }}
+        run: |
+          set -euo pipefail
+          VERSION="${{ steps.meta.outputs.version }}"
+          BEFORE=$(gh run list --workflow=Release --event=workflow_dispatch --limit 1 \
+            --json databaseId --jq '.[0].databaseId // empty')
+          gh workflow run Release --field version="$VERSION"
+
+          RUN_ID=""
+          for _ in $(seq 1 60); do
+            CANDIDATE=$(gh run list --workflow=Release --event=workflow_dispatch --limit 1 \
+              --json databaseId --jq '.[0].databaseId // empty')
+            if [ -n "$CANDIDATE" ] && [ "$CANDIDATE" != "$BEFORE" ]; then
+              RUN_ID="$CANDIDATE"
+              break
+            fi
+            sleep 2
+          done
+          if [ -z "$RUN_ID" ]; then
+            echo "::error::Timed out waiting for Release workflow_dispatch run"
+            exit 1
+          fi
+          echo "Watching Release run ${RUN_ID} for npm ${VERSION}…"
+          gh run watch "$RUN_ID" --exit-status
+
+      - name: Release summary
+        if: ${{ !inputs.dry_run }}
+        run: |
+          {
+            echo "## Cut Release complete"
+            echo ""
+            echo "- version: \`${{ steps.meta.outputs.version }}\`"
+            echo "- tag: \`${{ steps.meta.outputs.tag }}\`"
+            echo "- release: https://github.com/${{ github.repository }}/releases/tag/${{ steps.meta.outputs.tag }}"
+            echo "- npm: \`@xdevplatform/xurl@${{ steps.meta.outputs.version }}\`"
+          } >> "$GITHUB_STEP_SUMMARY"

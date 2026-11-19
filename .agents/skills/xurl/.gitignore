@@ -1,0 +1,11 @@
+xurl
+.xurl_test
+.DS_Store
+__pycache__/
+*.py[cod]
+
+# Added by goreleaser init:
+dist/
+
+# Zig cache that setup-zig restores into the checkout; GoReleaser refuses a dirty tree.
+.zig-cache/

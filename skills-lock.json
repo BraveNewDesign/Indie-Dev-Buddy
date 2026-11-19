@@ -1,0 +1,54 @@
+{
+  "version": 2,
+  "skills": {
+    "api-integration": {
+      "source": "meta/agentic-tools",
+      "commit": "6e519b185e1731427a7ebf681014a323f7d24231",
+      "sourceType": "github",
+      "skillPath": "plugins/devtools/skills/api-integration/SKILL.md",
+      "computedHash": "03970161e8b2dfc6e4bc67f53ca53abcca8f6a2bc367dc04f2446d9349bd8732"
+    },
+    "app-review-prep": {
+      "source": "meta/agentic-tools",
+      "commit": "6e519b185e1731427a7ebf681014a323f7d24231",
+      "sourceType": "github",
+      "skillPath": "plugins/devtools/skills/app-review-prep/SKILL.md",
+      "computedHash": "53df629d0f7ef34eebca47658acd01856aea58c388f78f1f0c7dc1b9ae574adf"
+    },
+    "atproto": {
+      "source": "maragudk/fabrik",
+      "commit": "2ed0f13f89160156a29dbda0a91ec9bc325d3ea4",
+      "sourceType": "github",
+      "skillPath": "skills/atproto/SKILL.md",
+      "computedHash": "e486c9990d88885c532493ae0cf074291b201ef085ec74352ce08b05087c7363"
+    },
+    "search-docs": {
+      "source": "meta/agentic-tools",
+      "commit": "6e519b185e1731427a7ebf681014a323f7d24231",
+      "sourceType": "github",
+      "skillPath": "plugins/devtools/skills/search-docs/SKILL.md",
+      "computedHash": "24ec61690e10b262558d3b17caceff1e10c838905a3829cf74ddd81e16949c06"
+    },
+    "webhook-setup": {
+      "source": "meta/agentic-tools",
+      "commit": "6e519b185e1731427a7ebf681014a323f7d24231",
+      "sourceType": "github",
+      "skillPath": "plugins/devtools/skills/webhook-setup/SKILL.md",
+      "computedHash": "fce06f7dfd5803271ce4fc97eb0d93dc901bf9e270f93eaee9445dae15a9934e"
+    },
+    "x": {
+      "source": "docs.x.com",
+      "sourceUrl": "https://docs.x.com",
+      "sourceType": "well-known",
+      "computedHash": "99a19687a2b9d86570ac4a94619e53a9c44ca00912a39301e328ae025b109b76",
+      "wellKnownDigest": "sha256:dba90ac549e3d1b7b81fe8407d9ef34140052c18d784bf30dbf1d3462246a1a5"
+    },
+    "xurl": {
+      "source": "xdevplatform/xurl",
+      "commit": "707f076ab7df7f264803b42a2d3f9fc0e802f25c",
+      "sourceType": "github",
+      "skillPath": "SKILL.md",
+      "computedHash": "833a0d98617da8b82d1c5ae55504fba723ed0797863057874047b13f5d1dd384"
+    }
+  }
+}

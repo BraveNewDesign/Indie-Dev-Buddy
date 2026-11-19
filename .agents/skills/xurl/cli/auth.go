@@ -1,0 +1,724 @@
+package cli
+
+import (
+	"bufio"
+	"fmt"
+	"io"
+	"os"
+	"strings"
+
+	"github.com/charmbracelet/lipgloss"
+	"github.com/spf13/cobra"
+
+	"github.com/xdevplatform/xurl/auth"
+	"github.com/xdevplatform/xurl/config"
+	"github.com/xdevplatform/xurl/store"
+)
+
+// Headless-login styles (kept minimal; plain terminal output, no alt screen, so
+// the URL stays easy to select and the code easy to paste).
+var (
+	headlessStepStyle = lipgloss.NewStyle().Bold(true)
+	headlessURLStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("14")).Underline(true)
+	headlessArrow     = lipgloss.NewStyle().Foreground(lipgloss.Color("10")).Bold(true)
+)
+
+// CreateAuthCommand creates the auth command and its subcommands
+func CreateAuthCommand(a *auth.Auth) *cobra.Command {
+	var authCmd = &cobra.Command{
+		Use:   "auth",
+		Short: "Authentication management",
+	}
+
+	authCmd.AddCommand(createAuthAppOnlyCmd(a))
+	authCmd.AddCommand(createAuthOAuth2Cmd(a))
+	authCmd.AddCommand(createAuthOAuth1Cmd(a))
+	authCmd.AddCommand(createAuthStatusCmd())
+	authCmd.AddCommand(createAuthClearCmd(a))
+	authCmd.AddCommand(createAppCmd(a))
+	authCmd.AddCommand(createDefaultCmd(a))
+
+	return authCmd
+}
+
+// ─── auth app-only ──────────────────────────────────────────────────
+
+func createAuthAppOnlyCmd(a *auth.Auth) *cobra.Command {
+	var bearerToken string
+
+	cmd := &cobra.Command{
+		Use:     "app-only [TOKEN]",
+		Aliases: []string{"app", "bearer"},
+		Short:   "Configure app-only (Bearer Token) authentication",
+		Long: `Store the app-only Bearer Token (from the X developer portal) for the active app.
+
+This is X's "OAuth 2.0 App-Only" auth, selected at request time with --auth app.
+It is distinct from OAuth2 user-context tokens (obtained via 'xurl auth oauth2') --
+both are sent as "Authorization: Bearer", which is why this command is named for
+the auth mode (app-only) rather than the token scheme (bearer).
+
+Examples:
+  xurl auth app-only AAAA...                # token as an argument
+  xurl auth app-only --app prod AAAA...     # for a specific registered app
+  cat token.txt | xurl auth app-only -      # read the token from stdin (keeps it out of shell history)`,
+		Args: cobra.MaximumNArgs(1),
+		Run: func(cmd *cobra.Command, args []string) {
+			token := bearerToken
+			if len(args) == 1 {
+				token = args[0]
+			}
+			if token == "-" {
+				data, err := io.ReadAll(os.Stdin)
+				if err != nil {
+					fmt.Fprintln(os.Stderr, "Error reading token from stdin:", err)
+					os.Exit(1)
+				}
+				token = strings.TrimSpace(string(data))
+			}
+			if token == "" {
+				fmt.Fprintln(os.Stderr, "Error: provide the Bearer Token as an argument, via --bearer-token, or '-' to read from stdin.")
+				os.Exit(1)
+			}
+			if err := a.TokenStore.SaveBearerTokenForApp(a.AppName(), token); err != nil {
+				fmt.Fprintln(os.Stderr, "Error saving bearer token:", err)
+				os.Exit(1)
+			}
+			fmt.Printf("\033[32mApp-only authentication configured!\033[0m\n")
+		},
+	}
+
+	// Retained (no longer required) so existing `auth app --bearer-token ...`
+	// invocations keep working; passing the token as an argument is preferred.
+	cmd.Flags().StringVar(&bearerToken, "bearer-token", "", "Bearer token (alternative to passing it as an argument)")
+
+	return cmd
+}
+
+// ─── auth oauth2 ────────────────────────────────────────────────────
+
+func createAuthOAuth2Cmd(a *auth.Auth) *cobra.Command {
+	var headless bool
+	cmd := &cobra.Command{
+		Use:   "oauth2 [USERNAME]",
+		Short: "Configure OAuth2 authentication",
+		Long: `Configure OAuth2 (user-context) authentication.
+
+By default this opens a browser and listens on the app's redirect URI
+(localhost) for the callback. On a remote/headless machine where that callback
+is unreachable, use --headless: xurl prints the authorization URL, you open it
+on any device, and paste the resulting redirect URL (or code) back in.`,
+		Args: cobra.MaximumNArgs(1),
+		Run: func(cmd *cobra.Command, args []string) {
+			username := ""
+			if len(args) > 0 {
+				username = args[0]
+			}
+
+			// Warn when --app is not specified and the active/default app has
+			// no client credentials but another registered app does. Tokens
+			// saved to a credential-less app cannot be refreshed, causing
+			// cryptic 401 errors on all subsequent API calls.
+			if warn, targetName, credentialed := oauth2NoAppCredentialWarning(a.TokenStore, a.AppName()); warn {
+				fmt.Fprintf(os.Stderr, "\033[33m⚠️  No --app specified. The OAuth2 token will be saved to the %q app,\n", targetName)
+				fmt.Fprintf(os.Stderr, "    which has no client credentials stored. API calls will fail with 401 errors.\n\n")
+				fmt.Fprintf(os.Stderr, "    App(s) with credentials available:\n")
+				for _, name := range credentialed {
+					app := a.TokenStore.GetApp(name)
+					fmt.Fprintf(os.Stderr, "      --app %s  [client_id: %s…]\n", name, truncate(app.ClientID, 8))
+				}
+				fmt.Fprintf(os.Stderr, "\n    Run instead:  xurl auth oauth2 --app %s\n\n", credentialed[0])
+			}
+
+			var err error
+			if headless {
+				err = runHeadlessLogin(a, username)
+			} else {
+				_, err = a.OAuth2Flow(username)
+			}
+			if err != nil {
+				fmt.Fprintln(os.Stderr, "OAuth2 authentication failed:", err)
+				os.Exit(1)
+			}
+			fmt.Printf("\033[32mOAuth2 authentication successful!\033[0m\n")
+		},
+	}
+
+	cmd.Flags().BoolVar(&headless, "headless", false, "Authenticate without a local browser/callback: print the URL and paste the code back (for remote/headless machines)")
+
+	return cmd
+}
+
+// runHeadlessLogin drives the headless OAuth2 flow: print the authorize URL,
+// read the pasted redirect URL/code from stdin, and complete the exchange. The
+// auth package owns the protocol; this function owns the (styled) presentation.
+func runHeadlessLogin(a *auth.Auth, username string) error {
+	hl, err := a.StartHeadlessLogin(username)
+	if err != nil {
+		return err
+	}
+
+	out := os.Stderr
+	renderHeadlessInstructions(out, hl.AuthURL(), hl.RedirectURI(), isTerminal(out))
+
+	line, rerr := bufio.NewReader(os.Stdin).ReadString('\n')
+	if rerr != nil && strings.TrimSpace(line) == "" {
+		return fmt.Errorf("failed to read pasted code: %w", rerr)
+	}
+
+	fmt.Fprintln(out)
+	fmt.Fprintln(out, subtleStyle.Render("Exchanging code for a token…"))
+	_, err = hl.Complete(line)
+	return err
+}
+
+// renderHeadlessInstructions prints the step-by-step headless prompt. When styled
+// is false (output is piped/not a TTY) it emits plain text so logs stay clean.
+func renderHeadlessInstructions(out io.Writer, authURL, redirectURI string, styled bool) {
+	if !styled {
+		fmt.Fprintln(out, "Headless OAuth2 login -- no browser is needed on this machine.")
+		fmt.Fprintln(out)
+		fmt.Fprintln(out, "1. Open this URL in a browser on any device:")
+		fmt.Fprintln(out, "   "+authURL)
+		fmt.Fprintln(out)
+		fmt.Fprintln(out, "2. Authorize the app. Your browser is redirected to "+redirectURI+"?state=...&code=...")
+		fmt.Fprintln(out, "   (the page may fail to load on a headless host -- the code is still in the address bar)")
+		fmt.Fprintln(out)
+		fmt.Fprint(out, "3. Paste the full redirected URL (or just the code) here: ")
+		return
+	}
+
+	fmt.Fprintln(out, titleStyle.Render("Headless OAuth2 login"))
+	fmt.Fprintln(out, subtleStyle.Render("No browser needed here — copy a link out, paste a code back."))
+	fmt.Fprintln(out)
+	fmt.Fprintln(out, headlessStepStyle.Render("1.")+" Open this URL in a browser on any device:")
+	fmt.Fprintln(out, "   "+headlessURLStyle.Render(authURL))
+	fmt.Fprintln(out)
+	fmt.Fprintln(out, headlessStepStyle.Render("2.")+" Authorize the app. Your browser is redirected to:")
+	fmt.Fprintln(out, "   "+subtleStyle.Render(redirectURI+"?state=…&code=…"))
+	fmt.Fprintln(out, "   "+subtleStyle.Render("(the page may show a connection error on a headless host — the code is still in the address bar)"))
+	fmt.Fprintln(out)
+	fmt.Fprintln(out, headlessStepStyle.Render("3.")+" Paste the full redirected URL (or just the code) below:")
+	fmt.Fprint(out, "   "+headlessArrow.Render("›")+" ")
+}
+
+// ─── auth oauth1 ────────────────────────────────────────────────────
+
+func createAuthOAuth1Cmd(a *auth.Auth) *cobra.Command {
+	var consumerKey, consumerSecret, accessToken, tokenSecret string
+
+	cmd := &cobra.Command{
+		Use:   "oauth1",
+		Short: "Configure OAuth1 authentication",
+		Run: func(cmd *cobra.Command, args []string) {
+			err := a.TokenStore.SaveOAuth1TokensForApp(a.AppName(), accessToken, tokenSecret, consumerKey, consumerSecret)
+			if err != nil {
+				fmt.Fprintln(os.Stderr, "Error saving OAuth1 tokens:", err)
+				os.Exit(1)
+			}
+			fmt.Printf("\033[32mOAuth1 credentials saved successfully!\033[0m\n")
+		},
+	}
+
+	cmd.Flags().StringVar(&consumerKey, "consumer-key", "", "Consumer key for OAuth1")
+	cmd.Flags().StringVar(&consumerSecret, "consumer-secret", "", "Consumer secret for OAuth1")
+	cmd.Flags().StringVar(&accessToken, "access-token", "", "Access token for OAuth1")
+	cmd.Flags().StringVar(&tokenSecret, "token-secret", "", "Token secret for OAuth1")
+
+	cmd.MarkFlagRequired("consumer-key")
+	cmd.MarkFlagRequired("consumer-secret")
+	cmd.MarkFlagRequired("access-token")
+	cmd.MarkFlagRequired("token-secret")
+
+	return cmd
+}
+
+// ─── auth status ────────────────────────────────────────────────────
+
+func createAuthStatusCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "status",
+		Short: "Show authentication status",
+		Run: func(cmd *cobra.Command, args []string) {
+			ts := store.NewTokenStore()
+
+			apps := ts.ListApps()
+			defaultApp := ts.GetDefaultApp()
+
+			if len(apps) == 0 {
+				fmt.Println("No apps registered. Use 'xurl auth apps add' to register one.")
+				return
+			}
+
+			for i, name := range apps {
+				app := ts.GetApp(name)
+
+				// Header line
+				marker := " "
+				if name == defaultApp {
+					marker = "▸"
+				}
+				clientHint := "(no credentials)"
+				if app.ClientID != "" {
+					clientHint = fmt.Sprintf("client_id: %s…", truncate(app.ClientID, 8))
+				}
+				fmt.Printf("%s %s  [%s]\n", marker, name, clientHint)
+
+				redirectURI, fromEnv, source := config.ResolveRedirectURI(name)
+				if fromEnv {
+					fmt.Printf("      redirect_uri: %s  [effective via %s]\n", redirectURI, source)
+					if app.RedirectURI != "" {
+						fmt.Printf("      stored_redirect_uri: %s\n", app.RedirectURI)
+					}
+				} else {
+					fmt.Printf("      redirect_uri: %s  [%s]\n", redirectURI, source)
+				}
+
+				// OAuth2 users
+				usernames := ts.GetOAuth2UsernamesForApp(name)
+				if len(usernames) > 0 {
+					for _, u := range usernames {
+						if u == app.DefaultUser {
+							fmt.Printf("    ▸ oauth2: %s\n", displayOAuth2Username(u))
+						} else {
+							fmt.Printf("      oauth2: %s\n", displayOAuth2Username(u))
+						}
+					}
+				} else {
+					fmt.Println("      oauth2: (none)")
+				}
+
+				// OAuth1
+				if app.OAuth1Token != nil {
+					fmt.Println("      oauth1: ✓")
+				} else {
+					fmt.Println("      oauth1: –")
+				}
+
+				// Bearer
+				if app.BearerToken != nil {
+					fmt.Println("      bearer: ✓")
+				} else {
+					fmt.Println("      bearer: –")
+				}
+
+				if i < len(apps)-1 {
+					fmt.Println()
+				}
+			}
+		},
+	}
+
+	return cmd
+}
+
+// ─── auth clear ─────────────────────────────────────────────────────
+
+func createAuthClearCmd(a *auth.Auth) *cobra.Command {
+	var all, oauth1, bearer, appOnly bool
+	var oauth2Username string
+
+	cmd := &cobra.Command{
+		Use:   "clear",
+		Short: "Clear authentication tokens",
+		Run: func(cmd *cobra.Command, args []string) {
+			if all {
+				err := a.TokenStore.ClearAllForApp(a.AppName())
+				if err != nil {
+					fmt.Fprintln(os.Stderr, "Error clearing all tokens:", err)
+					os.Exit(1)
+				}
+				fmt.Println("All authentication cleared!")
+			} else if oauth1 {
+				err := a.TokenStore.ClearOAuth1TokensForApp(a.AppName())
+				if err != nil {
+					fmt.Fprintln(os.Stderr, "Error clearing OAuth1 tokens:", err)
+					os.Exit(1)
+				}
+				fmt.Println("OAuth1 tokens cleared!")
+			} else if oauth2Username != "" {
+				err := a.TokenStore.ClearOAuth2TokenForApp(a.AppName(), oauth2Username)
+				if err != nil {
+					fmt.Fprintln(os.Stderr, "Error clearing OAuth2 token:", err)
+					os.Exit(1)
+				}
+				fmt.Println("OAuth2 token cleared for", oauth2Username+"!")
+			} else if bearer || appOnly {
+				err := a.TokenStore.ClearBearerTokenForApp(a.AppName())
+				if err != nil {
+					fmt.Fprintln(os.Stderr, "Error clearing app-only token:", err)
+					os.Exit(1)
+				}
+				fmt.Println("App-only (bearer) token cleared!")
+			} else {
+				fmt.Fprintln(os.Stderr, "No authentication cleared! Use --all to clear all authentication.")
+				os.Exit(1)
+			}
+		},
+	}
+
+	cmd.Flags().BoolVar(&all, "all", false, "Clear all authentication")
+	cmd.Flags().BoolVar(&oauth1, "oauth1", false, "Clear OAuth1 tokens")
+	cmd.Flags().StringVar(&oauth2Username, "oauth2-username", "", "Clear OAuth2 token for username")
+	cmd.Flags().BoolVar(&appOnly, "app-only", false, "Clear the app-only (bearer) token")
+	cmd.Flags().BoolVar(&bearer, "bearer", false, "Clear the app-only (bearer) token")
+	_ = cmd.Flags().MarkHidden("bearer") // back-compat alias for --app-only
+
+	return cmd
+}
+
+// ─── auth apps  (add / remove / list) ───────────────────────────────
+
+func createAppCmd(a *auth.Auth) *cobra.Command {
+	appCmd := &cobra.Command{
+		Use:   "apps",
+		Short: "Manage registered X API apps",
+	}
+
+	appCmd.AddCommand(createAppAddCmd(a))
+	appCmd.AddCommand(createAppUpdateCmd(a))
+	appCmd.AddCommand(createAppRemoveCmd(a))
+	appCmd.AddCommand(createAppListCmd())
+	appCmd.AddCommand(createAppRedirectURICmd(a))
+
+	return appCmd
+}
+
+func createAppAddCmd(a *auth.Auth) *cobra.Command {
+	var clientID, clientSecret, redirectURI string
+
+	cmd := &cobra.Command{
+		Use:   "add NAME",
+		Short: "Register a new X API app",
+		Long: `Register a new X API app with a client ID and secret.
+
+Examples:
+  xurl auth apps add my-app --client-id abc --client-secret xyz
+  xurl auth apps add my-app --client-id abc --client-secret xyz --redirect-uri http://localhost:8080/callback`,
+		Args: cobra.ExactArgs(1),
+		Run: func(cmd *cobra.Command, args []string) {
+			name := args[0]
+			err := a.TokenStore.AddApp(name, clientID, clientSecret)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "\033[31mError: %v\033[0m\n", err)
+				os.Exit(1)
+			}
+			if redirectURI != "" {
+				if err := a.TokenStore.SetAppRedirectURI(name, redirectURI); err != nil {
+					fmt.Fprintf(os.Stderr, "\033[31mError: %v\033[0m\n", err)
+					os.Exit(1)
+				}
+			}
+			fmt.Printf("\033[32mApp %q registered!\033[0m\n", name)
+			if len(a.TokenStore.ListApps()) == 1 {
+				fmt.Printf("  (set as default app)\n")
+			}
+		},
+	}
+
+	cmd.Flags().StringVar(&clientID, "client-id", "", "OAuth2 client ID")
+	cmd.Flags().StringVar(&clientSecret, "client-secret", "", "OAuth2 client secret")
+	cmd.Flags().StringVar(&redirectURI, "redirect-uri", "", "Stored OAuth2 redirect URI for this app")
+	cmd.MarkFlagRequired("client-id")
+	cmd.MarkFlagRequired("client-secret")
+
+	return cmd
+}
+
+func createAppUpdateCmd(a *auth.Auth) *cobra.Command {
+	var clientID, clientSecret, redirectURI string
+
+	cmd := &cobra.Command{
+		Use:   "update NAME",
+		Short: "Update credentials for an existing app",
+		Long: `Update the client ID and/or secret for an existing registered app.
+
+Examples:
+  xurl auth apps update default --client-id abc --client-secret xyz
+  xurl auth apps update my-app --client-id newid
+  xurl auth apps update my-app --redirect-uri http://localhost:8080/callback`,
+		Args: cobra.ExactArgs(1),
+		Run: func(cmd *cobra.Command, args []string) {
+			name := args[0]
+			if clientID == "" && clientSecret == "" && redirectURI == "" {
+				fmt.Fprintln(os.Stderr, "Nothing to update. Provide --client-id, --client-secret, and/or --redirect-uri.")
+				os.Exit(1)
+			}
+			if err := a.TokenStore.UpdateApp(name, clientID, clientSecret); err != nil {
+				fmt.Fprintf(os.Stderr, "\033[31mError: %v\033[0m\n", err)
+				os.Exit(1)
+			}
+			if redirectURI != "" {
+				if err := a.TokenStore.SetAppRedirectURI(name, redirectURI); err != nil {
+					fmt.Fprintf(os.Stderr, "\033[31mError: %v\033[0m\n", err)
+					os.Exit(1)
+				}
+			}
+			fmt.Printf("\033[32mApp %q updated.\033[0m\n", name)
+		},
+	}
+
+	cmd.Flags().StringVar(&clientID, "client-id", "", "OAuth2 client ID")
+	cmd.Flags().StringVar(&clientSecret, "client-secret", "", "OAuth2 client secret")
+	cmd.Flags().StringVar(&redirectURI, "redirect-uri", "", "Stored OAuth2 redirect URI for this app")
+
+	return cmd
+}
+
+func createAppRemoveCmd(a *auth.Auth) *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "remove NAME",
+		Short: "Remove a registered app and all its tokens",
+		Args:  cobra.ExactArgs(1),
+		Run: func(cmd *cobra.Command, args []string) {
+			name := args[0]
+			err := a.TokenStore.RemoveApp(name)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "\033[31mError: %v\033[0m\n", err)
+				os.Exit(1)
+			}
+			fmt.Printf("\033[32mApp %q removed.\033[0m\n", name)
+		},
+	}
+	return cmd
+}
+
+func createAppListCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "list",
+		Short: "List registered apps",
+		Run: func(cmd *cobra.Command, args []string) {
+			ts := store.NewTokenStore()
+			apps := ts.ListApps()
+			defaultApp := ts.GetDefaultApp()
+
+			if len(apps) == 0 {
+				fmt.Println("No apps registered. Use 'xurl auth apps add' to register one.")
+				return
+			}
+
+			for _, name := range apps {
+				app := ts.GetApp(name)
+				marker := "  "
+				if name == defaultApp {
+					marker = "▸ "
+				}
+				clientHint := ""
+				if app.ClientID != "" {
+					clientHint = fmt.Sprintf(" (client_id: %s…)", truncate(app.ClientID, 8))
+				}
+				redirectURI, fromEnv, source := config.ResolveRedirectURI(name)
+				redirectHint := fmt.Sprintf(" redirect_uri: %s [%s]", redirectURI, source)
+				if fromEnv && app.RedirectURI != "" {
+					redirectHint = fmt.Sprintf(" redirect_uri: %s [%s, stored: %s]", redirectURI, source, app.RedirectURI)
+				}
+				fmt.Printf("%s%s%s%s\n", marker, name, clientHint, redirectHint)
+			}
+		},
+	}
+	return cmd
+}
+
+func createAppRedirectURICmd(a *auth.Auth) *cobra.Command {
+	redirectCmd := &cobra.Command{
+		Use:   "redirect-uri",
+		Short: "Get or set the stored OAuth2 redirect URI for an app",
+	}
+
+	redirectCmd.AddCommand(createAppRedirectURIGetCmd(a))
+	redirectCmd.AddCommand(createAppRedirectURISetCmd(a))
+
+	return redirectCmd
+}
+
+func createAppRedirectURIGetCmd(a *auth.Auth) *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "get [NAME]",
+		Short: "Show the effective and stored redirect URI for an app",
+		Args:  cobra.MaximumNArgs(1),
+		Run: func(cmd *cobra.Command, args []string) {
+			ts := a.TokenStore
+			appName := resolveAppNameArg(ts, args)
+			if appName == "" {
+				fmt.Fprintln(os.Stderr, "No apps registered. Use 'xurl auth apps add' to register one.")
+				os.Exit(1)
+			}
+			app := ts.GetApp(appName)
+			if app == nil {
+				fmt.Fprintf(os.Stderr, "\033[31mError: app %q not found\033[0m\n", appName)
+				os.Exit(1)
+			}
+
+			effective, _, source := config.ResolveRedirectURI(appName)
+			stored := app.RedirectURI
+			if stored == "" {
+				stored = "(not set)"
+			}
+
+			fmt.Printf("app: %s\n", appName)
+			fmt.Printf("effective_redirect_uri: %s\n", effective)
+			fmt.Printf("effective_source: %s\n", source)
+			fmt.Printf("stored_redirect_uri: %s\n", stored)
+		},
+	}
+
+	return cmd
+}
+
+func createAppRedirectURISetCmd(a *auth.Auth) *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "set NAME URI",
+		Short: "Set the stored OAuth2 redirect URI for an app",
+		Args:  cobra.ExactArgs(2),
+		Run: func(cmd *cobra.Command, args []string) {
+			name := args[0]
+			redirectURI := args[1]
+			if err := a.TokenStore.SetAppRedirectURI(name, redirectURI); err != nil {
+				fmt.Fprintf(os.Stderr, "\033[31mError: %v\033[0m\n", err)
+				os.Exit(1)
+			}
+			fmt.Printf("\033[32mRedirect URI set for app %q.\033[0m\n", name)
+		},
+	}
+
+	return cmd
+}
+
+// ─── auth default ───────────────────────────────────────────────────
+
+func createDefaultCmd(a *auth.Auth) *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "default [APP_NAME [USERNAME]]",
+		Short: "Set default app and/or user (interactive or by argument)",
+		Long: `Set the default app and/or OAuth2 user.
+
+Without arguments: launches an interactive picker (Bubble Tea).
+With one argument:  sets the default app.
+With two arguments: sets the default app and default OAuth2 user.
+
+Examples:
+  xurl auth default                     # interactive picker
+  xurl auth default my-app              # set default app
+  xurl auth default my-app alice        # set default app + user`,
+		Args: cobra.MaximumNArgs(2),
+		Run: func(cmd *cobra.Command, args []string) {
+			ts := a.TokenStore
+
+			if len(args) >= 1 {
+				// Non-interactive: set default app by name
+				appName := args[0]
+				if err := ts.SetDefaultApp(appName); err != nil {
+					fmt.Fprintf(os.Stderr, "\033[31mError: %v\033[0m\n", err)
+					os.Exit(1)
+				}
+				fmt.Printf("\033[32mDefault app set to %q\033[0m\n", appName)
+
+				if len(args) == 2 {
+					userName := args[1]
+					if err := ts.SetDefaultUser(appName, userName); err != nil {
+						fmt.Fprintf(os.Stderr, "\033[31mError: %v\033[0m\n", err)
+						os.Exit(1)
+					}
+					fmt.Printf("\033[32mDefault user set to %q\033[0m\n", userName)
+				}
+				return
+			}
+
+			// Interactive: pick app
+			apps := ts.ListApps()
+			if len(apps) == 0 {
+				fmt.Println("No apps registered. Use 'xurl auth apps add' to register one.")
+				return
+			}
+
+			appChoice, err := RunPicker("Select default app", apps)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "\033[31mError: %v\033[0m\n", err)
+				os.Exit(1)
+			}
+			if appChoice == "" {
+				return // user cancelled
+			}
+
+			if err := ts.SetDefaultApp(appChoice); err != nil {
+				fmt.Fprintf(os.Stderr, "\033[31mError: %v\033[0m\n", err)
+				os.Exit(1)
+			}
+			fmt.Printf("\033[32mDefault app set to %q\033[0m\n", appChoice)
+
+			// Pick a default user within the app
+			users := ts.GetOAuth2UsernamesForApp(appChoice)
+			if len(users) > 0 {
+				userChoice, err := RunPicker("Select default OAuth2 user", users)
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "\033[31mError: %v\033[0m\n", err)
+					os.Exit(1)
+				}
+				if userChoice != "" {
+					if err := ts.SetDefaultUser(appChoice, userChoice); err != nil {
+						fmt.Fprintf(os.Stderr, "\033[31mError: %v\033[0m\n", err)
+						os.Exit(1)
+					}
+					fmt.Printf("\033[32mDefault user set to %q\033[0m\n", userChoice)
+				}
+			}
+		},
+	}
+	return cmd
+}
+
+// ─── helpers ────────────────────────────────────────────────────────
+
+// oauth2NoAppCredentialWarning reports whether to warn that an OAuth2 login
+// without --app will target an app that has no stored client credentials,
+// while at least one other registered app does.
+//
+// GetApp maps by exact name and does not resolve the empty override to the
+// default app, so callers must use GetDefaultApp (not GetApp("")).
+func oauth2NoAppCredentialWarning(ts *store.TokenStore, appOverride string) (warn bool, targetName string, credentialed []string) {
+	if appOverride != "" {
+		return false, "", nil
+	}
+
+	targetName = ts.GetDefaultApp()
+	if targetName == "" {
+		// ResolveApp would auto-create this name when saving the token.
+		targetName = "default"
+	}
+
+	target := ts.GetApp(targetName)
+	if target != nil && target.ClientID != "" {
+		return false, targetName, nil
+	}
+
+	for _, name := range ts.ListApps() {
+		app := ts.GetApp(name)
+		if app != nil && app.ClientID != "" {
+			credentialed = append(credentialed, name)
+		}
+	}
+	if len(credentialed) == 0 {
+		return false, targetName, nil
+	}
+	return true, targetName, credentialed
+}
+
+func truncate(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
+	}
+	return s[:maxLen]
+}
+
+func displayOAuth2Username(username string) string {
+	if username == "" {
+		return "(unknown user)"
+	}
+	return username
+}
+
+func resolveAppNameArg(ts *store.TokenStore, args []string) string {
+	if len(args) > 0 {
+		return args[0]
+	}
+	return ts.GetDefaultApp()
+}
