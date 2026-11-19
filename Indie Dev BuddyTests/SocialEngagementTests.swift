@@ -17,6 +17,44 @@ struct SocialEngagementTests {
         }
     }
 
+    @MainActor @Test func unknownReplyStatusCanBeTriagedWithoutInferringMissingReplies() throws {
+        let suite = "social-engagement-tests-\(UUID())"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let store = SocialEngagementStore(defaults: defaults)
+        let identity = ContentRecipientIdentity(platform: "threads", server: try #require(URL(string: "https://graph.threads.net")), remoteID: "123")
+        let key = SocialEngagementStore.CommentKey(profile: identity, postID: "post", commentID: "comment")
+        let comment = SocialPost(id: "comment", text: "Example", authorID: "456")
+        let sample = SocialEngagementStore.Thread(comments: [comment], incomplete: false, checkedAt: .now)
+
+        #expect(store.replyStatus(for: key, in: sample) == .unknown)
+        store.toggleNeedsReply(key)
+        #expect(SocialEngagementStore(defaults: defaults).replyStatus(for: key, in: sample) == .needsReply)
+
+        let reply = SocialPost(id: "reply", text: "Confirmed", authorID: identity.remoteID, parentID: comment.id)
+        let withReply = SocialEngagementStore.Thread(comments: [comment, reply], incomplete: true, checkedAt: .now)
+        #expect(store.replyStatus(for: key, in: withReply) == .replied)
+        store.toggleDone(key)
+        #expect(store.replyStatus(for: key, in: withReply) == .done)
+        store.toggleDone(key)
+        #expect(store.replyStatus(for: key, in: withReply) == .replied)
+    }
+
+    @Test(arguments: [SocialPlatform.x, .linkedIn])
+    func backgroundConnectionCheckUsesOnlyLocalCredentials(platform: SocialPlatform) async throws {
+        let account = SocialAccount(platform: platform, server: try #require(URL(string: "https://example.com")), remoteID: "123", username: "studio")
+        let identity = SocialOAuthRegistration.identity(for: account)
+        let credentials = MemoryCredentialStore()
+        let transport = InsightsTransport()
+        let connections = SocialConnections(credentialStore: credentials, metaTransport: transport)
+        #expect(await connections.recover(identity, force: true) == .missingCredential)
+        await credentials.save(SocialCredential(account: account, accessToken: "fixture"))
+        #expect(await connections.recover(identity, force: true) == .ready)
+        await credentials.save(SocialCredential(account: account, accessToken: "fixture", expiresAt: .distantPast))
+        #expect(await connections.recover(identity, force: true) == .authorizationRequired)
+        #expect(await transport.paths.isEmpty)
+    }
+
     @Test func threadsInsightsKeepZeroAndOmitUnavailableCounts() async throws {
         let account = SocialAccount(platform: .threads, server: try #require(URL(string: "https://graph.threads.net")), remoteID: "123", username: "studio")
         let credentials = MemoryCredentialStore()

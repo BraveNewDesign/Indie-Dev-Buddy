@@ -58,6 +58,38 @@ struct SocialOAuthBrokerTests {
         #expect(await fixture.requests.count == 2)
     }
 
+    @Test func facebookTokenPickerSavesOnlyChosenPageAndCanBeCancelled() async throws {
+        let credentials = MemoryCredentialStore()
+        let connections = SocialConnections(credentialStore: credentials, metaTransport: FacebookDiscoveryFixture())
+        let token = OAuthToken(accessToken: "fixture-access")
+        await #expect(throws: CancellationError.self) {
+            try await connections.importMetaToken(token, platform: .facebookPages) { _ in
+                throw CancellationError()
+            }
+        }
+        #expect(await credentials.accounts().isEmpty)
+
+        let account = try await connections.importMetaToken(token, platform: .facebookPages) { pages in
+            #expect(pages.map(\.remoteID) == ["101", "102"])
+            return "102"
+        }
+        #expect(account.remoteID == "102")
+        #expect(await credentials.accounts().map(\.remoteID) == ["102"])
+    }
+
+    @Test func instagramTokenImportDiscoversSingleEligibleProfile() async throws {
+        let credentials = MemoryCredentialStore()
+        let connections = SocialConnections(credentialStore: credentials, metaTransport: InstagramFacebookDiscoveryFixture())
+        let account = try await connections.importMetaToken(
+            OAuthToken(accessToken: "fixture-access"), platform: .instagram, instagramAccessMethod: .facebookLogin
+        ) { _ in
+            Issue.record("A single linked Instagram account should connect automatically")
+            return "201"
+        }
+        #expect(account.remoteID == "201")
+        #expect(await credentials.credential(for: account.id)?.facebookPageSourceGrant != nil)
+    }
+
     @Test func instagramFacebookLoginDiscoversLinkedProfileAndSavesPageGrant() async throws {
         let fixture = BrokerFixture()
         let endpoint = try #require(URL(string: "https://broker.example"))

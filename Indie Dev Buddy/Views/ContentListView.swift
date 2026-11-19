@@ -255,7 +255,7 @@ private extension ContentRecord {
     }
 }
 
-private extension SocialAccountRecord {
+extension SocialAccountRecord {
     var contentFilterTitle: String {
         if let name = handle ?? displayName { return "\(platform) · \(name)" }
         return platform

@@ -151,6 +151,15 @@ actor SocialConnections {
 
     func recover(_ identity: ContentRecipientIdentity, force: Bool = false, manual: Bool = false) async -> Recovery {
         guard let id = try? accountID(for: identity) else { return .configurationRequired }
+        if !manual && (id.platform == .x || id.platform == .linkedIn) {
+            // Background connection health for manual-only platforms comes from local credentials.
+            do {
+                guard let credential = try await store.credential(for: id) else { return .missingCredential }
+                return credential.expiresAt.map { $0 <= .now } == true ? .authorizationRequired : .ready
+            } catch {
+                return .keychainUnavailable
+            }
+        }
         if let task = recoveryTasks[id] { return await task.value }
         if let retryAt = recoveryRetryAt[id], retryAt > .now { return .rateLimited(until: retryAt) }
         let task = Task { await runRecovery(for: id, force: force, manual: manual) }
@@ -626,24 +635,39 @@ actor SocialConnections {
         pageID: String? = nil,
         instagramAccessMethod: InstagramAccessMethod = .instagramLogin,
         instagramAccountID: String? = nil,
-        expected: ContentRecipientIdentity? = nil
+        expected: ContentRecipientIdentity? = nil,
+        chooseAccount: (@MainActor @Sendable ([SocialAccount]) async throws -> String)? = nil
     ) async throws -> SocialAccount {
         let credential: SocialCredential
         switch platform {
         case .facebookPages:
-            guard let pageID, !pageID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            let adapter = FacebookPagesAdapter(transport: verificationTransport)
+            let selectedID: String
+            if let supplied = expected?.remoteID ?? pageID?.trimmingCharacters(in: .whitespacesAndNewlines), !supplied.isEmpty {
+                selectedID = supplied
+            } else if let chooseAccount {
+                selectedID = try await chooseMetaAccount(adapter.discoverPages(token), choose: chooseAccount)
+            } else {
                 throw SocialError.invalidInput
             }
-            credential = try await FacebookPagesAdapter(transport: verificationTransport).developmentCredential(token, pageID: pageID)
+            credential = try await adapter.developmentCredential(token, pageID: selectedID)
         case .threads:
             credential = try await ThreadsAdapter(transport: verificationTransport).developmentCredential(token)
         case .instagram:
+            var selectedID = instagramAccountID
+            if instagramAccessMethod == .facebookLogin {
+                selectedID = expected?.remoteID ?? selectedID?.trimmingCharacters(in: .whitespacesAndNewlines)
+                if selectedID?.isEmpty != false, let chooseAccount {
+                    selectedID = try await chooseMetaAccount(linkedInstagramProfiles(token), choose: chooseAccount)
+                }
+            }
             credential = try await InstagramAdapter(transport: verificationTransport).developmentCredential(
-                token, accessMethod: instagramAccessMethod, instagramAccountID: instagramAccountID
+                token, accessMethod: instagramAccessMethod, instagramAccountID: selectedID
             )
         default:
             throw SocialError.invalidInput
         }
+        try Task.checkCancellation()
         try validateConnection(credential.account, expected: expected)
         let account: SocialAccount
         switch platform {

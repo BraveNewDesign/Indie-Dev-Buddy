@@ -140,6 +140,12 @@ struct ContentLibraryView: View {
         }
     }
 
+    private func openPerformance(for destination: ContentDestination) {
+        guard let identity = snapshot.socialAccountsByID[destination.accountId]?.providerIdentity,
+              let url = destination.publishedURL else { return }
+        onOpenPerformance(SocialPerformanceTarget(identity: identity, url: url))
+    }
+
     private func move(_ id: String, to stage: ContentStage) {
         Task {
             do {
@@ -162,14 +168,13 @@ struct ContentLibraryView: View {
             destination.status == .published && destination.publishedURL?.scheme?.lowercased() == "https" &&
             snapshot.socialAccountsByID[destination.accountId]?.providerIdentity != nil
         }
-        if !publishedDestinations.isEmpty {
-            Menu("View Performance") {
+        if publishedDestinations.count == 1, let destination = publishedDestinations.first {
+            Button("View Performance", systemImage: "chart.bar.xaxis") { openPerformance(for: destination) }
+        } else if !publishedDestinations.isEmpty {
+            Menu("View Performance", systemImage: "chart.bar.xaxis") {
                 ForEach(publishedDestinations) { destination in
-                    if let account = snapshot.socialAccountsByID[destination.accountId],
-                       let identity = account.providerIdentity, let url = destination.publishedURL {
-                        Button(account.displayName ?? account.handle ?? account.platform) {
-                            onOpenPerformance(SocialPerformanceTarget(identity: identity, url: url))
-                        }
+                    if let account = snapshot.socialAccountsByID[destination.accountId] {
+                        Button(account.contentFilterTitle) { openPerformance(for: destination) }
                     }
                 }
             }

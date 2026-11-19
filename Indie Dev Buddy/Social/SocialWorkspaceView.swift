@@ -13,9 +13,14 @@ struct SocialWorkspaceView: View {
     let inbox: Bool
     let target: SocialPerformanceTarget?
     let openContent: (String) -> Void
+    let openAccounts: () -> Void
 
     private enum InboxFilter: String, CaseIterable {
-        case needsReply = "Needs Reply", all = "All", replied = "Replied", done = "Done", unknown = "Unknown"
+        case all = "All Comments", needsReply = "Needs Reply", replied = "Replied", done = "Done", unknown = "Unknown"
+
+        func includes(_ status: SocialEngagementStore.ReplyStatus) -> Bool {
+            self == .all || rawValue == status.rawValue
+        }
     }
 
     private nonisolated struct PostRow: Identifiable, Sendable {
@@ -32,6 +37,7 @@ struct SocialWorkspaceView: View {
 
         var views: Int? { insights?.counts["views"] ?? insights?.counts["post_media_view"] }
 
+        var viewsForSort: Int { views ?? -1 }
         var published: Date { post.createdAt ?? .distantPast }
         var likeCountForSort: Int { post.likeCount ?? -1 }
         var commentCountForSort: Int { thread?.comments.count ?? -1 }
@@ -51,7 +57,7 @@ struct SocialWorkspaceView: View {
         let id: SocialEngagementStore.CommentKey
         let post: PostRow
         let comment: SocialPost
-        let status: String
+        let status: SocialEngagementStore.ReplyStatus
 
         var author: String { comment.authorName ?? comment.authorHandle ?? "Unknown author" }
     }
@@ -60,7 +66,9 @@ struct SocialWorkspaceView: View {
     @State private var provider: String?
     @State private var appID: String?
     @State private var waitingForTarget: SocialPerformanceTarget?
-    @State private var filter = InboxFilter.needsReply
+    @State private var filter = InboxFilter.all
+    @State private var detailWidth: CGFloat = 700
+    @State private var comparingFormats = false
     @State private var format: String?
     @State private var days = 30
     @State private var postSelection: PostRow.ID?
@@ -112,22 +120,32 @@ struct SocialWorkspaceView: View {
             guard let thread = row.thread else { return [] }
             return thread.comments.filter { !store.owns($0, on: row.id.identity) }.map { comment in
                 let key = SocialEngagementStore.CommentKey(profile: row.id.identity, postID: row.id.post, commentID: comment.id)
-                return CommentRow(id: key, post: row, comment: comment, status: store.replyStatus(for: key, comment: comment, in: thread))
+                return CommentRow(id: key, post: row, comment: comment, status: store.replyStatus(for: key, in: thread))
             }
-        }.sorted { ($0.comment.createdAt ?? .distantPast) > ($1.comment.createdAt ?? .distantPast) }
+        }.sorted {
+            let left = $0.comment.createdAt ?? .distantPast
+            let right = $1.comment.createdAt ?? .distantPast
+            return left == right ? $0.comment.id < $1.comment.id : left > right
+        }
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            controls.padding()
-            Divider()
             if accounts.isEmpty {
-                ContentUnavailableView("No Connected Profiles", systemImage: "person.crop.circle.badge.plus",
-                                       description: Text("Connect an enabled profile in Social Accounts."))
-            } else if inbox {
-                inboxBody
+                ContentUnavailableView {
+                    Label("No Connected Profiles", systemImage: "person.crop.circle.badge.plus")
+                } description: {
+                    Text("Connect an enabled profile to load social activity.")
+                } actions: {
+                    Button("Open Social Accounts", action: openAccounts)
+                }
             } else {
-                performanceBody
+                controls.padding(12)
+                Divider()
+                Group {
+                    if inbox { inboxBody } else { performanceBody }
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
         .navigationTitle(inbox ? "Inbox" : "Performance")
@@ -135,15 +153,22 @@ struct SocialWorkspaceView: View {
             guard !inbox, let target else { return }
             provider = nil
             selectedProfile = target.identity
+            appID = nil
+            format = nil
             days = 0
+            comparingFormats = false
             waitingForTarget = target
             selectTargetIfLoaded()
         }
         .onChange(of: posts.map(\.id)) { selectTargetIfLoaded() }
+        .onChange(of: matchingAccounts.compactMap(\.providerIdentity)) { _, profiles in
+            if let selectedProfile, !profiles.contains(selectedProfile) { self.selectedProfile = nil }
+        }
+        .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { detailWidth = $0 }
         .task(id: automaticRefreshID) {
             guard scenePhase == .active else { return }
             while !Task.isCancelled {
-                for identity in identities where !SocialEngagementStore.manualOnly(identity) {
+                for identity in automaticRefreshID.identities {
                     await store.refresh(identity, inbox: inbox, manual: false, using: runtime.connections)
                 }
                 do { try await Task.sleep(for: .seconds(60)) } catch { return }
@@ -158,165 +183,261 @@ struct SocialWorkspaceView: View {
     }
 
     private var automaticRefreshID: RefreshID {
-        RefreshID(identities: identities, active: scenePhase == .active, inbox: inbox)
+        RefreshID(identities: accounts.compactMap(\.providerIdentity).filter { !SocialEngagementStore.manualOnly($0) },
+                  active: scenePhase == .active, inbox: inbox)
     }
 
     private var controls: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack {
-                Picker("Provider", selection: $provider) {
-                    Text("All Providers").tag(nil as String?)
-                    ForEach(providers, id: \.self) { Text($0).tag(Optional($0)) }
+        VStack(alignment: .leading, spacing: 8) {
+            TimelineView(.periodic(from: .now, by: 5)) { context in
+                ViewThatFits(in: .horizontal) {
+                    HStack { profilePicker; Spacer(minLength: 8); refreshButton(at: context.date) }
+                    VStack(alignment: .leading) { profilePicker; refreshButton(at: context.date) }
                 }
-                .onChange(of: provider) {
-                    if selectedProfile.map(identities.contains) == false { selectedProfile = nil }
-                }
-                Picker("Profile", selection: $selectedProfile) {
-                    Text("All Profiles").tag(nil as ContentRecipientIdentity?)
-                    ForEach(matchingAccounts) { account in
-                        Text(profileName(account)).tag(account.providerIdentity)
-                    }
-                }
-                Spacer()
-                refreshButton
-            }
-            HStack {
-                if !snapshot.apps.isEmpty {
-                    Picker("App", selection: $appID) {
-                        Text("All Apps").tag(nil as String?)
-                        ForEach(snapshot.apps) { Text($0.name).tag(Optional($0.id)) }
-                    }
-                }
-                if inbox {
-                    Picker("Status", selection: $filter) {
-                        ForEach(InboxFilter.allCases, id: \.self) { Text($0.rawValue) }
-                    }
-                    Text("Needs Reply means no response was found in the loaded comments.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                } else {
-                    Picker("Format", selection: $format) {
-                        Text("All Formats").tag(nil as String?)
-                        ForEach(["Image", "Video", "Multiple attachments", "Other media", "Unknown"], id: \.self) {
-                            Text($0).tag(Optional($0))
+                if let selectedProfile, identities.contains(selectedProfile) {
+                    refreshStatus(selectedProfile, at: context.date)
+                } else if !identities.isEmpty {
+                    DisclosureGroup("Profile Refresh Status") {
+                        ForEach(matchingAccounts) { account in
+                            if let identity = account.providerIdentity {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(profileName(account)).font(.caption.weight(.semibold))
+                                    refreshStatus(identity, at: context.date)
+                                }
+                                .padding(.top, 4)
+                            }
                         }
                     }
-                    Picker("Date", selection: $days) {
-                        Text("Last 7 Days").tag(7)
-                        Text("Last 30 Days").tag(30)
-                        Text("All Loaded Posts").tag(0)
-                    }
+                    .font(.caption)
                 }
-                Spacer()
-                if identities.contains(where: store.refreshing.contains) { ProgressView().controlSize(.small) }
             }
-            if selectedProfile == nil && identities.contains(where: SocialEngagementStore.manualOnly) {
-                Text("Select X or LinkedIn in Profile to refresh it separately.")
-                    .font(.caption).foregroundStyle(.secondary)
-            }
-            if !identities.isEmpty {
-                DisclosureGroup("Refresh status") {
-                    ForEach(matchingAccounts.filter { $0.providerIdentity.map(identities.contains) == true }) { account in
-                        if let identity = account.providerIdentity {
-                            Text("\(profileName(account)) · \(refreshStatus(identity))")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-                    }
-                }
+            ViewThatFits(in: .horizontal) {
+                HStack { activityFilters; Spacer(minLength: 0) }
+                VStack(alignment: .leading) { activityFilters }
             }
         }
     }
 
-    private var refreshButton: some View {
-        let selected = selectedProfile.flatMap { identities.contains($0) ? $0 : nil }
-        let eligible = selected.map { [$0] } ?? identities.filter { !SocialEngagementStore.manualOnly($0) }
-        let targets = eligible
-        let manualOnly = selected.map(SocialEngagementStore.manualOnly) ?? false
-        return Button(manualOnly ? "Refresh Profile (Manual)" : "Refresh", systemImage: "arrow.clockwise") {
-            let refreshInbox = inbox
-            Task {
-                for identity in targets {
-                    await store.refresh(identity, inbox: refreshInbox, manual: true, using: runtime.connections)
+    @ViewBuilder
+    private var activityFilters: some View {
+        filterMenu
+        if inbox {
+            Picker("Status", selection: $filter) {
+                ForEach(InboxFilter.allCases, id: \.self) { Text($0.rawValue) }
+            }
+            .fixedSize()
+        } else {
+            Picker("Published", selection: $days) {
+                Text("Last 7 Days").tag(7)
+                Text("Last 30 Days").tag(30)
+                Text("All Loaded Posts").tag(0)
+            }
+            .labelsHidden()
+            .accessibilityLabel("Publication date filter")
+            .fixedSize()
+            if selectedProfile != nil {
+                Toggle("Compare Formats", isOn: $comparingFormats)
+                    .toggleStyle(.button)
+                    .fixedSize()
+            }
+        }
+    }
+
+    private var profilePicker: some View {
+        Picker("Profile", selection: $selectedProfile) {
+            Text("All Profiles").tag(nil as ContentRecipientIdentity?)
+            ForEach(matchingAccounts) { account in
+                Text(profileName(account)).tag(account.providerIdentity)
+            }
+        }
+    }
+
+    private var filterMenu: some View {
+        let active = provider != nil || appID != nil || (!inbox && format != nil)
+        return Menu(active ? "Filters Applied" : "Filters", systemImage: "line.3.horizontal.decrease") {
+            Picker("Provider", selection: $provider) {
+                Text("All Providers").tag(nil as String?)
+                ForEach(providers, id: \.self) { Text($0).tag(Optional($0)) }
+            }
+            if !snapshot.apps.isEmpty {
+                Picker("App", selection: $appID) {
+                    Text("All Apps").tag(nil as String?)
+                    ForEach(snapshot.apps) { Text($0.name).tag(Optional($0.id)) }
+                }
+            }
+            if !inbox {
+                Picker("Format", selection: $format) {
+                    Text("All Formats").tag(nil as String?)
+                    ForEach(["Image", "Video", "Multiple attachments", "Other media", "Unknown"], id: \.self) {
+                        Text($0).tag(Optional($0))
+                    }
+                }
+            }
+            if active {
+                Divider()
+                Button("Reset Filters") {
+                    provider = nil
+                    appID = nil
+                    format = nil
                 }
             }
         }
-        .disabled(targets.isEmpty || targets.allSatisfy(store.refreshing.contains))
-        .help(manualOnly ? "Requests may use API credits or count toward provider limits."
-              : "Refresh eligible profiles. Select a manual-only profile to refresh it separately.")
+        .fixedSize()
+    }
+
+    private func refreshButton(at date: Date) -> some View {
+        let selected = selectedProfile.flatMap { identities.contains($0) ? $0 : nil }
+        let eligible = selected.map { [$0] } ?? identities.filter { !SocialEngagementStore.manualOnly($0) }
+        let targets = eligible.filter { store.canRefresh($0, at: date) }
+        let manualOnly = selected.map(SocialEngagementStore.manualOnly) ?? false
+        return HStack(spacing: 8) {
+            if identities.contains(where: store.refreshing.contains) {
+                ProgressView().controlSize(.small)
+                    .accessibilityLabel("Refreshing social activity")
+            }
+            Button(selected == nil ? "Refresh Eligible Profiles" : "Refresh Profile", systemImage: "arrow.clockwise") {
+                let refreshInbox = inbox
+                Task {
+                    for identity in targets {
+                        await store.refresh(identity, inbox: refreshInbox, manual: true, using: runtime.connections)
+                    }
+                }
+            }
+            .disabled(targets.isEmpty)
+            .help(manualOnly ? "Reads may use API credits or count toward provider limits."
+                  : "X and LinkedIn refresh individually.")
+        }
+        .fixedSize()
     }
 
     private var inboxBody: some View {
         let rows = comments
-        let selected = rows.first { $0.id == commentSelection }
-        let displayed = rows.filter { $0.status == filter.rawValue || filter == .all || $0.id == commentSelection }
-        return HSplitView {
-            VStack(spacing: 0) {
-                List(displayed, selection: $commentSelection) { row in
-                    VStack(alignment: .leading, spacing: 4) {
-                        HStack {
-                            Text(row.author).font(.headline)
-                            Spacer()
-                            Text(row.status).font(.caption).foregroundStyle(.secondary)
-                        }
-                        Text(row.comment.readableText).lineLimit(2)
-                        Text(profileName(row.post.account)).font(.caption).foregroundStyle(.secondary)
-                    }
-                    .padding(.vertical, 4)
-                    .tag(row.id)
+        let displayed = rows.filter { filter.includes($0.status) || $0.id == commentSelection }
+        let selected = displayed.first { $0.id == commentSelection }
+        return Group {
+            if displayed.isEmpty {
+                activityPlaceholder(filtered: !rows.isEmpty)
+            } else if detailWidth >= 640 {
+                HSplitView {
+                    commentList(displayed).frame(minWidth: 220, idealWidth: 260)
+                    conversationPane(selected).frame(minWidth: 340, maxWidth: .infinity)
                 }
-                if displayed.isEmpty {
-                    Text(rows.isEmpty ? "No comments loaded for these profiles. Check Refresh status for account coverage."
-                         : "No comments match this status.")
-                        .font(.caption).foregroundStyle(.secondary).padding()
-                }
-            }
-            .frame(minWidth: 260)
-            if let selected {
-                ScrollView { commentDetail(selected).padding() }
-                    .frame(minWidth: 290, maxWidth: .infinity)
             } else {
-                ContentUnavailableView("Select a Comment", systemImage: "bubble.left.and.bubble.right")
-                    .frame(minWidth: 290, maxWidth: .infinity)
+                VSplitView {
+                    commentList(displayed).frame(minHeight: 100, idealHeight: 150, maxHeight: 240)
+                    conversationPane(selected).frame(minHeight: 180, maxHeight: .infinity)
+                }
             }
         }
-        .onChange(of: filter) { commentSelection = nil }
+        .onChange(of: filter) {
+            if let selected, !filter.includes(selected.status) { commentSelection = nil }
+        }
     }
 
-    private func commentDetail(_ row: CommentRow) -> some View {
-        VStack(alignment: .leading, spacing: 14) {
-            postHeader(row.post)
-            Divider()
-            Text(row.author).font(.headline)
-            Text(row.comment.readableText).textSelection(.enabled)
-            if let date = row.comment.createdAt { Text(date.formatted()).foregroundStyle(.secondary) }
-            ForEach(row.post.thread?.comments.filter { $0.parentID == row.comment.id } ?? []) { reply in
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(reply.authorName ?? reply.authorHandle ?? "Reply").font(.headline)
-                    Text(reply.readableText).textSelection(.enabled)
+    private func commentList(_ rows: [CommentRow]) -> some View {
+        List(rows, selection: $commentSelection) { row in
+            VStack(alignment: .leading, spacing: 4) {
+                Text(row.author).font(.headline)
+                Text(row.comment.readableText).lineLimit(2)
+                Label(row.status.rawValue, systemImage: row.status.symbol)
+                    .font(.caption.weight(.medium))
+                Text(profileName(row.post.account))
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            .padding(.vertical, 5)
+            .tag(row.id)
+        }
+        .accessibilityLabel("Comments")
+    }
+
+    @ViewBuilder
+    private func conversationPane(_ row: CommentRow?) -> some View {
+        if let row {
+            VStack(spacing: 0) {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 12) {
+                        postHeader(row.post, heading: "Original Post")
+                        Divider()
+                        HStack {
+                            Text("Conversation").font(.headline)
+                                .accessibilityAddTraits(.isHeader)
+                            Spacer()
+                            Label(row.status.rawValue, systemImage: row.status.symbol).font(.caption)
+                        }
+                        Text(row.post.thread?.incomplete == true
+                             ? "More comments are available on the provider. This view shows the first page."
+                             : "This sample may omit nested or older replies. Open the post for the full thread.")
+                            .font(.caption).foregroundStyle(.secondary)
+                        conversationMessage(row.comment)
+                        ForEach(row.post.thread?.comments.filter { $0.parentID == row.comment.id } ?? []) { reply in
+                            conversationMessage(reply).padding(.leading, 16)
+                        }
+                        if let sent = store.sent[row.id],
+                           row.post.thread?.comments.contains(where: { $0.id == sent.id }) != true {
+                            conversationMessage(sent, fallback: "Sent reply").padding(.leading, 16)
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(12)
                 }
-                .padding(.leading, 16)
+                replyComposer(row)
             }
-            if let sent = store.sent[row.id],
-               row.post.thread?.comments.contains(where: { $0.id == sent.id }) != true {
-                Text("Sent reply").font(.headline)
-                Text(sent.readableText).textSelection(.enabled)
+        } else {
+            ContentUnavailableView("Select a Comment", systemImage: "bubble.left.and.bubble.right",
+                                   description: Text("Review the original post and loaded replies here."))
+        }
+    }
+
+    private func conversationMessage(_ post: SocialPost, fallback: String = "Unknown author") -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(post.authorName ?? post.authorHandle ?? fallback).font(.headline)
+            Text(post.readableText).textSelection(.enabled)
+            if let date = post.createdAt {
+                Text(date.formatted(date: .abbreviated, time: .shortened))
+                    .font(.caption).foregroundStyle(.secondary)
             }
-            Button(row.status == "Done" ? "Reopen" : "Mark Done") { store.toggleDone(row.id) }
-            if store.profiles[row.id.profile]?.capabilities.contains(.reply) == true {
-                TextField("Reply as \(profileName(row.post.account))",
-                          text: Binding(get: { drafts[row.id, default: ""] }, set: { drafts[row.id] = $0 }),
-                          axis: .vertical)
-                    .lineLimit(3...8)
-                Button("Send Reply") { send(row) }
-                    .disabled(store.sending.contains(row.id) || drafts[row.id, default: ""].trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+        }
+    }
+
+    private func replyComposer(_ row: CommentRow) -> some View {
+        let profile = profileName(row.post.account)
+        let canReply = store.profiles[row.id.profile]?.capabilities.contains(.reply) == true
+        return VStack(alignment: .leading, spacing: 8) {
+            Divider()
+            if canReply {
+                TextField("Reply as \(profile)", text: Binding(
+                    get: { drafts[row.id, default: ""] }, set: { drafts[row.id] = $0 }
+                ), axis: .vertical)
+                .lineLimit(2...4)
+                .accessibilityIdentifier("social-reply")
+            } else {
+                Text("Reply access is unavailable for this profile. You can open the post on the provider.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            HStack {
+                Menu("Triage") {
+                    if row.status == .unknown || row.status == .needsReply {
+                        Button(row.status == .needsReply ? "Clear Needs Reply" : "Flag Needs Reply", systemImage: "flag") {
+                            store.toggleNeedsReply(row.id)
+                        }
+                    }
+                    Button(row.status == .done ? "Reopen" : "Mark Done", systemImage: "checkmark.circle") {
+                        store.toggleDone(row.id)
+                    }
+                }
+                Spacer()
+                if canReply {
+                    Button("Send Reply") { send(row) }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(store.sending.contains(row.id) || drafts[row.id, default: ""].trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                }
             }
             if sendError == row.id {
                 Text("The provider did not confirm the reply. Check the post before trying again.")
-                    .foregroundStyle(.secondary)
+                    .font(.caption).foregroundStyle(.secondary)
             }
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding([.horizontal, .bottom], 12)
     }
 
     private var performanceBody: some View {
@@ -324,72 +445,145 @@ struct SocialWorkspaceView: View {
             (format == nil || row.format == format) &&
             (days == 0 || row.post.createdAt.map { Date.now.timeIntervalSince($0) <= Double(days) * 86_400 } == true)
         }
-        return VSplitView {
-            VStack(alignment: .leading, spacing: 0) {
-                Table(rows.sorted(using: postSort), selection: $postSelection, sortOrder: $postSort) {
-                    TableColumn("Post", value: \.title) { Text($0.title).lineLimit(1) }
-                    TableColumn("Profile") { Text(profileName($0.account)) }
-                    TableColumn("Format", value: \.format)
-                    TableColumn("Published", value: \.published) { row in
-                        Text(row.post.createdAt?.formatted(date: .abbreviated, time: .omitted) ?? "—")
+        return Group {
+            if rows.isEmpty && waitingForTarget == nil {
+                activityPlaceholder(filtered: !posts.isEmpty)
+            } else {
+                VSplitView {
+                    performanceTable(rows)
+                        .frame(minHeight: 150, idealHeight: 280)
+                    ScrollView {
+                        performanceDetail(rows)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(12)
                     }
-                    TableColumn("Likes / Favourites", value: \.likeCountForSort) { Text($0.post.likeCount?.formatted() ?? "—") }
-                    TableColumn("Views") { Text($0.views?.formatted() ?? "—") }
-                    TableColumn("Loaded Comments", value: \.commentCountForSort) { Text($0.thread?.comments.count.formatted() ?? "—") }
+                    .frame(minHeight: 130, idealHeight: 320, maxHeight: .infinity)
                 }
-                Text("A dash means unavailable. View counts use the provider’s definition. Loaded comments are a sample from Inbox.")
-                    .font(.caption).foregroundStyle(.secondary).padding(8)
             }
-            .frame(minHeight: 170)
-            ScrollView {
-                VStack(alignment: .leading, spacing: 12) {
-                    if let selected = rows.first(where: { $0.id == postSelection }) {
-                        postHeader(selected)
-                        insightsDetail(selected)
-                        if let thread = selected.thread {
-                            ForEach(thread.comments) { comment in
-                                Text(comment.readableText).textSelection(.enabled)
-                            }
+        }
+    }
+
+    private func performanceTable(_ rows: [PostRow]) -> some View {
+        VStack(spacing: 0) {
+            Table(rows.sorted(using: postSort), selection: $postSelection, sortOrder: $postSort) {
+                TableColumn("Post", value: \.title) { row in
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(row.title).lineLimit(1)
+                        if selectedProfile == nil {
+                            Text(profileName(row.account)).font(.caption).foregroundStyle(.secondary).lineLimit(1)
                         }
-                    } else if let waitingForTarget, selectedProfile == waitingForTarget.identity {
-                        Text("This post hasn’t been found in the loaded sample. Refresh this profile to check recent posts.")
-                            .foregroundStyle(.secondary)
-                        Link("Open Published Post", destination: waitingForTarget.url)
-                    } else if selectedProfile != nil {
-                        Text("Likes / Favourites by Format").font(.headline)
-                        ForEach(Dictionary(grouping: rows, by: \.format).keys.sorted(), id: \.self) { kind in
-                            formatSummary(kind, rows: rows.filter { $0.format == kind })
-                        }
-                    } else {
-                        Text("Select a post for details or choose one profile to compare formats.")
-                            .foregroundStyle(.secondary)
                     }
                 }
+                .width(min: 150, ideal: 270)
+                TableColumn("Format", value: \.format).width(min: 70, ideal: 95)
+                TableColumn("Published", value: \.published) { row in
+                    Text(row.post.createdAt?.formatted(date: .abbreviated, time: .omitted) ?? "—")
+                }
+                .width(min: 82, ideal: 104)
+                TableColumn("Likes", value: \.likeCountForSort) { row in
+                    metricCell(row.post.likeCount, missing: "Unavailable")
+                }
+                .width(min: 46, ideal: 54)
+                TableColumn("Views", value: \.viewsForSort) { row in
+                    metricCell(row.views, missing: insightsState(row))
+                }
+                .width(min: 48, ideal: 60)
+                TableColumn("Sampled", value: \.commentCountForSort) { row in
+                    metricCell(row.thread?.comments.count, missing: "No comment sample loaded")
+                }
+                .width(min: 62, ideal: 69)
+            }
+            .accessibilityLabel("Post performance")
+            .onChange(of: postSelection) { if postSelection != nil { comparingFormats = false } }
+            Text("Likes include favourites where applicable. Sampled counts are loaded comments and replies. Hover over a dash for its status.")
+                .font(.caption).foregroundStyle(.secondary)
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .padding()
+                .padding(8)
+        }
+    }
+
+    private func metricCell(_ count: Int?, missing: String) -> some View {
+        Text(count?.formatted() ?? "—")
+            .monospacedDigit()
+            .accessibilityLabel(count?.formatted() ?? missing)
+            .help(count?.formatted() ?? missing)
+    }
+
+    private func insightsState(_ row: PostRow) -> String {
+        guard SocialPlatform(rawValue: row.id.identity.platform)?.isMeta == true else { return "Unavailable" }
+        if store.profiles[row.id.identity]?.insightIssues[row.id.post] != nil { return "Unavailable after refresh" }
+        return row.insights == nil ? "Insights not yet fetched" : "Unavailable for this post"
+    }
+
+    @ViewBuilder
+    private func performanceDetail(_ rows: [PostRow]) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            if comparingFormats, selectedProfile != nil {
+                formatComparison(rows)
+            } else if let selected = rows.first(where: { $0.id == postSelection }) {
+                postHeader(selected, heading: "Published Post")
+                insightsDetail(selected)
+                Divider()
+                Text("Loaded Conversation").font(.headline).accessibilityAddTraits(.isHeader)
+                if let thread = selected.thread {
+                    Text("\(thread.comments.count.formatted()) loaded · Checked \(thread.checkedAt.formatted(date: .abbreviated, time: .shortened)). Open the post for the full conversation.")
+                        .font(.caption).foregroundStyle(.secondary)
+                    ForEach(thread.comments) { comment in
+                        conversationMessage(comment)
+                            .padding(.leading, comment.parentID != nil && comment.parentID != selected.id.post ? 12 : 0)
+                    }
+                } else {
+                    Text("No sample loaded. Open Inbox and refresh this profile to check for comments.")
+                        .foregroundStyle(.secondary)
+                }
+            } else if let waitingForTarget, selectedProfile == waitingForTarget.identity {
+                Text("This post is outside the loaded sample. Refresh this profile to check recent posts.")
+                    .foregroundStyle(.secondary)
+                Link("Open Published Post", destination: waitingForTarget.url)
+            } else if selectedProfile != nil {
+                formatComparison(rows)
+            } else {
+                Text("Select a post for results, or choose a profile to compare formats.").foregroundStyle(.secondary)
             }
-            .frame(minHeight: 110)
         }
     }
 
     @ViewBuilder
     private func insightsDetail(_ row: PostRow) -> some View {
+        let profile = store.profiles[row.id.identity]
+        LabeledContent("Likes / Favourites", value: row.post.likeCount?.formatted() ?? "Unavailable")
+        if let date = profile?.postsCheckedAt {
+            let staleAfter: TimeInterval = SocialEngagementStore.manualOnly(row.id.identity) ? 86_400 : 900
+            let cached = profile?.postsIssue != nil || Date.now.timeIntervalSince(date) > staleAfter
+            Text("\(cached ? "Cached post counts" : "Post counts checked") · \(date.formatted(date: .abbreviated, time: .shortened))")
+                .font(.caption).foregroundStyle(.secondary)
+        }
         if SocialPlatform(rawValue: row.id.identity.platform)?.isMeta == true {
-            let identity = row.id.identity
-            Button("Refresh Post Insights", systemImage: "chart.bar.xaxis") {
-                Task { await store.refreshInsights(row.post.id, for: identity, using: runtime.connections) }
+            Divider()
+            TimelineView(.periodic(from: .now, by: 5)) { context in
+                let identity = row.id.identity
+                VStack(alignment: .leading, spacing: 4) {
+                    Button("Refresh Post Insights", systemImage: "chart.bar.xaxis") {
+                        Task { await store.refreshInsights(row.post.id, for: identity, using: runtime.connections) }
+                    }
+                    .disabled(!store.canRefresh(identity, at: context.date))
+                    .help("Fetch insights for this post only. Meta permissions and limits apply.")
+                    if let retry = store.retryAt(for: identity), retry > context.date {
+                        Text("Insights refresh available after \(retry.formatted(date: .omitted, time: .standard))")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                }
             }
-            .disabled(store.refreshing.contains(identity))
-            .help("Fetch insights for this post only. Meta permissions and limits apply.")
-            if let issue = store.profiles[identity]?.insightIssues[row.post.id] {
-                Text(issue).foregroundStyle(.secondary)
+            let issue = profile?.insightIssues[row.id.post]
+            if let issue {
+                Label(issue, systemImage: "exclamationmark.circle").foregroundStyle(.secondary)
             }
             if let insights = row.insights {
                 let labels = [
-                    "views": "Views", "reach": "Reach", "likes": "Likes", "comments": "Comments",
-                    "saved": "Saves", "shares": "Shares", "replies": "Replies",
-                    "reposts": "Reposts", "quotes": "Quotes", "post_media_view": "Media Views",
-                    "post_total_media_view_unique": "Unique Media Viewers"
+                    "views": "Views", "reach": "Reach", "likes": "Likes",
+                    "comments": "Provider Comment Total", "saved": "Saves", "shares": "Shares",
+                    "replies": "Provider Reply Total", "reposts": "Reposts", "quotes": "Quotes",
+                    "post_media_view": "Media Views", "post_total_media_view_unique": "Unique Media Viewers"
                 ]
                 if insights.counts.isEmpty {
                     Text("The provider returned no insights for this post.").foregroundStyle(.secondary)
@@ -399,33 +593,79 @@ struct SocialWorkspaceView: View {
                         LabeledContent(label, value: count.formatted())
                     }
                 }
-                Text("Insights checked \(insights.checkedAt.formatted())")
+                let cached = issue != nil || Date.now.timeIntervalSince(insights.checkedAt) > 86_400
+                Text("\(cached ? "Cached insights" : "Insights checked") · \(insights.checkedAt.formatted(date: .abbreviated, time: .shortened))")
                     .font(.caption).foregroundStyle(.secondary)
+            } else if issue == nil {
+                Text("Insights not yet fetched.").font(.caption).foregroundStyle(.secondary)
             }
         }
     }
 
-    private func formatSummary(_ kind: String, rows: [PostRow]) -> some View {
-        let counts = rows.compactMap(\.post.likeCount).sorted()
-        let median: Double? = counts.isEmpty ? nil :
-            (Double(counts[(counts.count - 1) / 2]) + Double(counts[counts.count / 2])) / 2
-        return Text("\(kind) · \(rows.count) posts · Median \(median?.formatted() ?? "—") (\(counts.count) measured)")
+    private func formatComparison(_ rows: [PostRow]) -> some View {
+        let grouped = Dictionary(grouping: rows, by: \.format)
+        return VStack(alignment: .leading, spacing: 8) {
+            Text("Likes / Favourites by Format").font(.headline).accessibilityAddTraits(.isHeader)
+            Text("Median of available counts for the filtered posts. Formats use the provider’s attachment metadata.")
+                .font(.caption).foregroundStyle(.secondary)
+            ForEach(grouped.keys.sorted(), id: \.self) { kind in
+                if let posts = grouped[kind] {
+                    let counts = posts.compactMap(\.post.likeCount).sorted()
+                    let median: Double? = counts.isEmpty ? nil :
+                        (Double(counts[(counts.count - 1) / 2]) + Double(counts[counts.count / 2])) / 2
+                    LabeledContent(kind, value: "\(median?.formatted() ?? "Unavailable") · \(counts.count) of \(posts.count) measured")
+                }
+            }
+        }
     }
 
-    private func postHeader(_ row: PostRow) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text(profileName(row.account)).font(.headline)
+    private func postHeader(_ row: PostRow, heading: String) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(heading).font(.headline).accessibilityAddTraits(.isHeader)
+            Text(profileName(row.account)).font(.subheadline).foregroundStyle(.secondary)
             Text(row.title).textSelection(.enabled)
-            HStack {
-                if let url = row.post.url, url.scheme == "https", url.host != nil {
-                    Link("Open on \(providerTitle(row.id.identity))", destination: url)
-                    if let record = linkedContent(row) {
-                        Button("Open Content") { openContent(record.id) }
-                    }
+            ViewThatFits(in: .horizontal) {
+                HStack { postLinks(row) }
+                VStack(alignment: .leading) { postLinks(row) }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func postLinks(_ row: PostRow) -> some View {
+        if let url = row.post.url, url.scheme == "https", url.host != nil {
+            Link("Open on \(providerTitle(row.id.identity))", destination: url)
+        }
+        if let record = linkedContent(row) {
+            Button("Open Workspace Post") { openContent(record.id) }
+        }
+    }
+
+    private func activityPlaceholder(filtered: Bool) -> some View {
+        let loading = identities.contains(where: store.refreshing.contains)
+        let manual = selectedProfile.map(SocialEngagementStore.manualOnly) == true
+        let selected = selectedProfile.flatMap { store.profiles[$0] }
+        let issue = inbox ? selected?.inboxIssue : selected?.postsIssue
+        let noAccess = inbox && selected?.inboxCheckedAt != nil && selected?.capabilities.contains(.readReplies) == false
+        return Group {
+            if loading && !filtered {
+                ProgressView(inbox ? "Loading Comments…" : "Loading Posts…")
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if noAccess || issue != nil {
+                ContentUnavailableView {
+                    Label(noAccess ? "Comment Access Unavailable" : "Refresh Unavailable", systemImage: "exclamationmark.circle")
+                } description: {
+                    Text(issue ?? "This profile’s current permissions don’t allow comment reads.")
+                } actions: {
+                    Button("Open Social Accounts", action: openAccounts)
                 }
-                if let date = store.profiles[row.id.identity]?.postsCheckedAt {
-                    Text("Updated \(date.formatted())").font(.caption).foregroundStyle(.secondary)
-                }
+            } else if filtered {
+                ContentUnavailableView(inbox ? "No Matching Comments" : "No Matching Posts", systemImage: "line.3.horizontal.decrease",
+                                       description: Text("Adjust the filters to include more results."))
+            } else {
+                ContentUnavailableView(inbox ? "No Comments Loaded" : "No Posts Loaded", systemImage: inbox ? "tray" : "chart.bar.xaxis",
+                                       description: Text(manual ? "Choose Refresh Profile to load activity. Reads may use API credits or count toward limits."
+                                                                 : "Check profile refresh status or choose a profile."))
             }
         }
     }
@@ -445,15 +685,29 @@ struct SocialWorkspaceView: View {
         self.waitingForTarget = nil
     }
 
-    private func refreshStatus(_ identity: ContentRecipientIdentity) -> String {
+    private func refreshStatus(_ identity: ContentRecipientIdentity, at now: Date) -> some View {
         let profile = store.profiles[identity]
-        let policy = SocialEngagementStore.manualOnly(identity) ? "Manual refresh" : "Automatic while open"
-        if let issue = profile?.issue { return "\(policy) · \(issue)" }
-        if inbox, let profile, !profile.capabilities.contains(.readReplies), profile.postsCheckedAt != nil {
-            return "\(policy) · Comment access unavailable"
-        }
+        let manual = SocialEngagementStore.manualOnly(identity)
+        let policy = manual ? "Manual refresh · Provider limits or credits may apply" : "Automatic while open"
+        let issue = inbox ? profile?.inboxIssue : profile?.postsIssue
         let date = inbox ? profile?.inboxCheckedAt : profile?.postsCheckedAt
-        return "\(policy) · \(date?.formatted() ?? "Waiting for refresh")"
+        return VStack(alignment: .leading, spacing: 2) {
+            Text(policy).fontWeight(.medium)
+            if inbox, profile?.postsCheckedAt != nil, profile?.capabilities.contains(.readReplies) == false {
+                Text("Comment access unavailable")
+            } else if let date {
+                Text("Last successful update \(date.formatted(date: .abbreviated, time: .shortened))")
+            } else {
+                Text("Waiting for first update")
+            }
+            if let issue { Label(issue, systemImage: "exclamationmark.circle") }
+            if let retry = store.retryAt(for: identity), retry > now {
+                Text("Refresh available after \(retry.formatted(date: .omitted, time: .standard))")
+            }
+        }
+        .font(.caption)
+        .foregroundStyle(.secondary)
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private func profileName(_ account: SocialAccountRecord) -> String {

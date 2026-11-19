@@ -12,6 +12,19 @@ final class SocialEngagementStore {
         let checkedAt: Date
     }
 
+    enum ReplyStatus: String, CaseIterable {
+        case needsReply = "Needs Reply", replied = "Replied", done = "Done", unknown = "Unknown"
+
+        var symbol: String {
+            switch self {
+            case .needsReply: "flag"
+            case .replied: "arrowshape.turn.up.left"
+            case .done: "checkmark.circle"
+            case .unknown: "questionmark.circle"
+            }
+        }
+    }
+
     nonisolated struct Insights: Sendable {
         let counts: [String: Int]
         let checkedAt: Date
@@ -25,7 +38,8 @@ final class SocialEngagementStore {
         var capabilities: Set<SocialCapability> = []
         var postsCheckedAt: Date?
         var inboxCheckedAt: Date?
-        var issue: String?
+        var postsIssue: String?
+        var inboxIssue: String?
     }
 
     struct CommentKey: Hashable, Encodable {
@@ -38,8 +52,22 @@ final class SocialEngagementStore {
     private(set) var refreshing: Set<ContentRecipientIdentity> = []
     private(set) var sending: Set<CommentKey> = []
     private(set) var sent: [CommentKey: SocialPost] = [:]
-    private var done: Set<String> = Set(UserDefaults.standard.stringArray(forKey: "social.inbox.done") ?? [])
+    private let defaults: UserDefaults
+    private var done: Set<String>
+    private var flagged: Set<String>
     private var nextRefresh: [ContentRecipientIdentity: Date] = [:]
+
+    init(defaults: UserDefaults = .standard) {
+        self.defaults = defaults
+        done = Set(defaults.stringArray(forKey: "social.inbox.done") ?? [])
+        flagged = Set(defaults.stringArray(forKey: "social.inbox.needsReply") ?? [])
+    }
+
+    func canRefresh(_ identity: ContentRecipientIdentity, at date: Date) -> Bool {
+        !refreshing.contains(identity) && nextRefresh[identity, default: .distantPast] <= date
+    }
+
+    func retryAt(for identity: ContentRecipientIdentity) -> Date? { nextRefresh[identity] }
 
     static func manualOnly(_ identity: ContentRecipientIdentity) -> Bool {
         switch SocialPlatform(rawValue: identity.platform) {
@@ -51,7 +79,13 @@ final class SocialEngagementStore {
     func toggleDone(_ key: CommentKey) {
         guard let digest = doneIdentifier(key) else { return }
         if !done.insert(digest).inserted { done.remove(digest) }
-        UserDefaults.standard.set(done.sorted(), forKey: "social.inbox.done")
+        defaults.set(done.sorted(), forKey: "social.inbox.done")
+    }
+
+    func toggleNeedsReply(_ key: CommentKey) {
+        guard let digest = doneIdentifier(key) else { return }
+        if !flagged.insert(digest).inserted { flagged.remove(digest) }
+        defaults.set(flagged.sorted(), forKey: "social.inbox.needsReply")
     }
 
     func refresh(_ identity: ContentRecipientIdentity, inbox: Bool, manual: Bool, using connections: SocialConnections) async {
@@ -63,7 +97,6 @@ final class SocialEngagementStore {
               refreshing.insert(identity).inserted else { return }
         defer { refreshing.remove(identity) }
         if manual { nextRefresh[identity] = .now.addingTimeInterval(15) }
-        profiles[identity, default: Profile()].issue = nil
 
         do {
             let capabilities = try await connections.capabilities(for: identity)
@@ -74,47 +107,61 @@ final class SocialEngagementStore {
             var ids = Set<String>()
             profile.posts = posts.items.filter { $0.parentID == nil && ids.insert($0.id).inserted }
             profile.postsCheckedAt = .now
+            profile.postsIssue = nil
             profile.threads = profile.threads.filter { ids.contains($0.key) }
             profile.insights = profile.insights.filter { ids.contains($0.key) }
             profile.insightIssues = profile.insightIssues.filter { ids.contains($0.key) }
             profiles[identity] = profile
 
             guard inbox, capabilities.contains(.readReplies) else {
-                if inbox { profiles[identity]?.inboxCheckedAt = .now }
+                if inbox {
+                    profiles[identity]?.threads = [:]
+                    profiles[identity]?.inboxCheckedAt = .now
+                    profiles[identity]?.inboxIssue = nil
+                }
                 return
             }
 
             // One recent-post page and a bounded number of comment reads. X may charge per read.
+            var threads: [String: Thread] = [:]
             for post in profile.posts.prefix(Self.manualOnly(identity) ? 4 : 8) {
                 try Task.checkCancellation()
                 let page = try await connections.replies(to: post.id, for: identity)
                 try Task.checkCancellation()
                 var commentIDs = Set<String>()
-                profiles[identity]?.threads[post.id] = Thread(
+                threads[post.id] = Thread(
                     comments: page.items.filter { commentIDs.insert($0.id).inserted },
                     incomplete: page.nextCursor != nil,
                     checkedAt: .now
                 )
             }
+            profiles[identity]?.threads = threads
             profiles[identity]?.inboxCheckedAt = .now
+            profiles[identity]?.inboxIssue = nil
         } catch {
             guard !Task.isCancelled else { return }
-            if let error = error as? SocialError {
-                switch error {
-                case .rateLimited(let retryAfter):
-                    let delay = max(900, retryAfter.flatMap(TimeInterval.init) ?? 0)
-                    nextRefresh[identity] = .now.addingTimeInterval(delay)
-                    profiles[identity, default: Profile()].issue = "Rate limited. Try again after \(nextRefresh[identity, default: .now].formatted())."
-                    return
-                case .billingRequired:
-                    nextRefresh[identity] = .now.addingTimeInterval(900)
-                    profiles[identity, default: Profile()].issue = "This provider requires API credits or an eligible plan."
-                    return
-                default: break
-                }
+            let issue: String
+            let delay: TimeInterval
+            switch error as? SocialError {
+            case .rateLimited(let retryAfter):
+                delay = max(900, retryAfter.flatMap(TimeInterval.init) ?? 0)
+                issue = "The provider rate limited this profile."
+            case .billingRequired:
+                delay = 900
+                issue = "This provider requires API credits or an eligible plan."
+            case .permissionDenied, .permissionDeniedAt, .httpStatus(403):
+                delay = 120
+                issue = "The provider denied access. Check profile permissions in Social Accounts."
+            case .authenticationRequired, .authorizationFailed, .httpStatus(401):
+                delay = 120
+                issue = "The provider requires authorization. Check the connection in Social Accounts."
+            default:
+                delay = 120
+                issue = "Refresh failed. Check the connection in Social Accounts."
             }
-            nextRefresh[identity] = .now.addingTimeInterval(120)
-            profiles[identity, default: Profile()].issue = "Refresh failed. Check this profile’s connection and permissions in Social Accounts."
+            nextRefresh[identity] = .now.addingTimeInterval(delay)
+            let keyPath = inbox ? \Profile.inboxIssue : \Profile.postsIssue
+            profiles[identity, default: Profile()][keyPath: keyPath] = issue
         }
     }
 
@@ -153,16 +200,19 @@ final class SocialEngagementStore {
               sending.insert(key).inserted else { throw SocialError.unsupported(.reply) }
         defer { sending.remove(key) }
         sent[key] = try await connections.reply(text, to: key.commentID, for: key.profile)
+        if let digest = doneIdentifier(key), flagged.remove(digest) != nil {
+            defaults.set(flagged.sorted(), forKey: "social.inbox.needsReply")
+        }
     }
 
-    func replyStatus(for key: CommentKey, comment: SocialPost, in thread: Thread) -> String {
-        if doneIdentifier(key).map(done.contains) == true { return "Done" }
-        if sent[key] != nil || thread.comments.contains(where: { $0.parentID == comment.id && owns($0, on: key.profile) }) {
-            return "Replied"
+    func replyStatus(for key: CommentKey, in thread: Thread) -> ReplyStatus {
+        let digest = doneIdentifier(key)
+        if digest.map(done.contains) == true { return .done }
+        if sent[key] != nil || thread.comments.contains(where: { $0.parentID == key.commentID && owns($0, on: key.profile) }) {
+            return .replied
         }
-        if thread.incomplete || comment.authorID == nil && comment.isOwnedByAccount == nil { return "Unknown" }
-        // The current adapters do not guarantee nested-reply coverage or full conversation history.
-        return "Needs Reply"
+        // Every current adapter can omit nested, paginated, or older replies.
+        return digest.map(flagged.contains) == true ? .needsReply : .unknown
     }
 
     private func doneIdentifier(_ key: CommentKey) -> String? {

@@ -37,57 +37,64 @@ struct SocialOAuthConnectionSheet: View {
     private var isMetaPlatform: Bool { [.facebookPages, .instagram, .threads].contains(platform) }
 
     var body: some View {
-        Form {
-            if let recovery, recovery.needsAuthorization {
-                Label(recovery.message, systemImage: "exclamationmark.circle")
-                    .foregroundStyle(.secondary)
-                if isMetaPlatform && metaMethod == .accessToken {
-                    Text("Paste a current token for this same account. Indie Dev Buddy verifies it before updating Keychain.")
-                        .font(.caption).foregroundStyle(.secondary)
+        VStack(alignment: .leading, spacing: 0) {
+            Text(expected == nil ? "Connect \(platform.workspaceTitle)" : "Reconnect \(platform.workspaceTitle)")
+                .font(.title2.bold())
+                .accessibilityAddTraits(.isHeader)
+                .padding(20)
+            Divider()
+            Form {
+                if let recovery, recovery.needsAuthorization {
+                    Label(recovery.message, systemImage: "exclamationmark.circle")
+                        .foregroundStyle(.secondary)
+                    if isMetaPlatform && metaMethod == .accessToken {
+                        Text("Paste a current token for this same account. Indie Dev Buddy verifies it before updating Keychain.")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
                 }
-            }
-            if isMetaPlatform {
-                Section("Connection method") {
-                    if associatedDomains.contains(where: { $0.hasPrefix("webcredentials:") }) {
-                        Picker("Connect using", selection: $metaMethod) {
-                            Text("Meta access token").tag(MetaConnectionMethod.accessToken)
-                            Text("Browser sign-in").tag(MetaConnectionMethod.oauth)
+                if isMetaPlatform {
+                    Section("Connection method") {
+                        if associatedDomains.contains(where: { $0.hasPrefix("webcredentials:") }) {
+                            Picker("Connect using", selection: $metaMethod) {
+                                Text("Meta access token").tag(MetaConnectionMethod.accessToken)
+                                Text("Browser sign-in").tag(MetaConnectionMethod.oauth)
+                            }
+                            .pickerStyle(.segmented)
+                            .disabled(connectionTask != nil)
+                        } else {
+                            Label("Token import is available in this build", systemImage: "key")
+                            Text("Browser sign-in requires a build signed for the HTTPS callback domain.")
+                                .font(.caption).foregroundStyle(.secondary)
                         }
-                        .pickerStyle(.segmented)
-                        .disabled(connectionTask != nil)
-                    } else {
-                        Text("Browser sign-in is unavailable in this build. It requires an associated HTTPS callback domain.")
-                            .font(.caption).foregroundStyle(.secondary)
                     }
-                    Text(metaMethod == .accessToken
-                         ? "Local connection. No exchange service is needed."
-                         : "Browser sign-in requires a trusted exchange service and a registered callback.")
-                        .font(.caption).foregroundStyle(.secondary)
-                }
-                if metaMethod == .accessToken {
-                    metaAccessTokenSection
+                    if metaMethod == .accessToken {
+                        metaAccessTokenSection
+                    } else {
+                        if usingHostedMetaPreset {
+                            hostedMetaSection
+                        } else {
+                            providerRegistrationSection
+                            if platform.requiresBroker { exchangeServiceSection }
+                        }
+                        if !metaBrowserReady && connectionTask == nil {
+                            Text("Browser sign-in is unavailable until the registration, associated callback, and exchange service are configured.")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                    }
                 } else {
-                    if usingHostedMetaPreset {
-                        hostedMetaSection
-                    } else {
-                        providerRegistrationSection
-                        if platform.requiresBroker { exchangeServiceSection }
-                    }
-                    if !metaBrowserReady && connectionTask == nil {
-                        Text("Browser sign-in is unavailable until the registration, associated callback, and exchange service are configured.")
-                            .font(.caption).foregroundStyle(.secondary)
-                    }
+                    providerRegistrationSection
+                    if platform.requiresBroker { exchangeServiceSection }
                 }
-            } else {
-                providerRegistrationSection
-                if platform.requiresBroker { exchangeServiceSection }
+                if let message {
+                    Text(message)
+                        .foregroundStyle(.red)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .textSelection(.enabled)
+                }
             }
-            if let message {
-                Text(message)
-                    .foregroundStyle(.red)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .textSelection(.enabled)
-            }
+            .formStyle(.grouped)
+            .disabled(connectionTask != nil)
+            Divider()
             HStack {
                 Button("Cancel") { dismiss() }.keyboardShortcut(.cancelAction)
                 if platform == .mastodon {
@@ -106,10 +113,11 @@ struct SocialOAuthConnectionSheet: View {
                 }
                     .buttonStyle(.borderedProminent)
                     .disabled(!canConnect)
+                    .keyboardShortcut(.defaultAction)
             }
+            .padding(16)
         }
-        .padding(20)
-        .frame(width: 560)
+        .frame(width: 560, height: isMetaPlatform ? 510 : 420)
         .onAppear {
             registration = .load(platform, identity: expected)
             if platform == .facebookPages, expected == nil { registration.accountTarget = "" }
@@ -157,7 +165,11 @@ struct SocialOAuthConnectionSheet: View {
             VStack(alignment: .leading, spacing: 12) {
                 Text(platform == .instagram ? "Choose an Instagram Account" : "Choose a Facebook Page").font(.headline)
                 List(facebookPages, id: \.remoteID, selection: $selectedPageID) { page in
-                    Text(page.displayName ?? page.username).tag(page.remoteID)
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(page.displayName ?? page.username)
+                        Text("Account ID \(page.remoteID)").font(.caption).foregroundStyle(.secondary)
+                    }
+                    .tag(page.remoteID)
                 }
                 HStack {
                     Button("Cancel") { finishPageSelection(nil) }.keyboardShortcut(.cancelAction)
@@ -301,56 +313,66 @@ struct SocialOAuthConnectionSheet: View {
         }
     }
 
+    @ViewBuilder
     private var metaAccessTokenSection: some View {
-        Section("Meta access token") {
-            Text("Use a token from a Meta developer app you manage. The setup guide lists the permissions for publishing, Inbox, and Performance.")
-                .font(.caption).foregroundStyle(.secondary)
+        Section("Access Token") {
             if platform == .instagram {
-                Picker("Instagram access method", selection: $instagramAccessMethod) {
-                    Text("Facebook Login (Page token)").tag(InstagramAccessMethod.facebookLogin)
+                Picker("Instagram login", selection: $instagramAccessMethod) {
+                    Text("Facebook Login").tag(InstagramAccessMethod.facebookLogin)
                     Text("Instagram Login").tag(InstagramAccessMethod.instagramLogin)
                 }
-                .disabled(connectionTask != nil)
-                if instagramAccessMethod == .facebookLogin {
-                    TextField("Instagram professional account ID", text: $instagramAccountID)
-                        .textContentType(.username)
-                }
+                .disabled(expected != nil)
             }
-            SecureField(accessTokenLabel, text: $accessToken)
-                .textContentType(.password)
-            if platform == .facebookPages {
-                TextField("Facebook Page ID", text: $registration.accountTarget)
+            SecureField(accessTokenLabel, text: $accessToken).textContentType(.password)
+            if let expected {
+                LabeledContent("Linked account ID", value: expected.remoteID)
             }
-            TextField("Verified permissions (optional, comma-separated)", text: $reportedScopes)
-            if platform != .facebookPages && !(platform == .instagram && instagramAccessMethod == .facebookLogin) {
-                Toggle("Meta issued this as a long-lived token", isOn: $tokenIsLongLived)
-                Text("Enable this only for a confirmed long-lived token. Indie Dev Buddy waits at least 24 hours after import before trying to renew it.")
-                    .font(.caption).foregroundStyle(.secondary)
-            }
-            Toggle("I know when this token expires", isOn: $tokenHasExpiration)
-            if tokenHasExpiration {
-                DatePicker(tokenExpirationLabel,
-                           selection: $tokenExpiration)
-            } else {
-                Text(platform == .facebookPages || platform == .instagram && instagramAccessMethod == .facebookLogin
-                     ? "User grant expiry is unknown." : "Token expiry is unknown.")
-                    .font(.caption).foregroundStyle(.secondary)
-            }
-            Text(platform == .facebookPages
-                 ? "Use a long-lived Facebook user token if possible. Indie Dev Buddy stores the Page token and the broader user grant in this Mac’s Keychain. It uses the user grant to recover the selected Page token while the grant remains valid. The Page token has its own lifetime."
-                 : platform == .instagram && instagramAccessMethod == .facebookLogin
-                    ? "Use a Facebook user access token from Graph API Explorer. Indie Dev Buddy checks the granted permissions, finds the linked Facebook Page by Instagram account ID, and stores the Page token plus source grant in this Mac’s Keychain. Leave permissions blank; Indie Dev Buddy reads them from Meta."
-                    : "Use a long-lived user token from Meta. Indie Dev Buddy verifies the token with Meta, stores it in this Mac’s Keychain, and publishes directly from this Mac. Leave permissions blank if you are unsure.")
+            Text(tokenImportHelp)
                 .font(.caption).foregroundStyle(.secondary)
             Button("Set Up My Meta App") { showingMetaAccessHelp = true }
-                .font(.caption)
+        }
+        Section {
+            DisclosureGroup("Advanced Token Settings") {
+                if expected == nil && platform == .facebookPages {
+                    TextField("Facebook Page ID (optional)", text: $registration.accountTarget)
+                }
+                if expected == nil && platform == .instagram && instagramAccessMethod == .facebookLogin {
+                    TextField("Instagram account ID (optional)", text: $instagramAccountID)
+                }
+                if platform != .facebookPages && !(platform == .instagram && instagramAccessMethod == .facebookLogin) {
+                    TextField("Verified permissions", text: $reportedScopes, prompt: Text("Optional, separated by commas"))
+                    Toggle("Meta issued a long-lived token", isOn: $tokenIsLongLived)
+                }
+                Toggle("Specify expiration", isOn: $tokenHasExpiration)
+                if tokenHasExpiration {
+                    DatePicker(tokenExpirationLabel, selection: $tokenExpiration)
+                }
+            }
+        }
+    }
+
+    private var tokenImportHelp: String {
+        switch platform {
+        case .facebookPages:
+            return expected == nil
+                ? "Paste a Facebook user token from Graph API Explorer. Continue to select an authorized Page."
+                : "Paste a fresh Facebook user token with access to the linked Page."
+        case .instagram where instagramAccessMethod == .facebookLogin:
+            return expected == nil
+                ? "Paste a Facebook user token from Graph API Explorer. Continue to choose a professional Instagram account linked to an authorized Page."
+                : "Paste a fresh Facebook user token with access to the Page linked to this Instagram account."
+        case .instagram:
+            return "Use an Instagram user access token for your professional account."
+        default:
+            return "Use a Threads user access token for the profile you want to connect."
         }
     }
 
     private var accessTokenLabel: String {
         if platform == .instagram && instagramAccessMethod == .facebookLogin { return "Facebook user access token" }
         if platform == .instagram { return "Instagram user access token" }
-        return "User access token"
+        if platform == .facebookPages { return "Facebook user access token" }
+        return "Threads user access token"
     }
 
     private var tokenExpirationLabel: String {
@@ -361,7 +383,9 @@ struct SocialOAuthConnectionSheet: View {
     private var actionTitle: String {
         if canFinishConnection != nil { return "Done" }
         guard connectionTask == nil else { return "Connecting…" }
-        if isMetaPlatform && metaMethod == .accessToken { return "Verify and Save Token" }
+        if isMetaPlatform && metaMethod == .accessToken {
+            return usesTokenAccountPicker ? "Continue" : "Verify and Save Token"
+        }
         if platform == .facebookPages { return "Continue with Facebook" }
         if platform == .instagram, registration.browserInstagramFacebookLogin == true { return "Continue with Facebook" }
         if isMetaPlatform { return "Continue with \(platform.workspaceTitle)" }
@@ -373,11 +397,15 @@ struct SocialOAuthConnectionSheet: View {
         guard connectionTask == nil else { return false }
         if isMetaPlatform && metaMethod == .accessToken {
             return !accessToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                && (platform != .facebookPages || !registration.accountTarget.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                && (platform != .instagram || instagramAccessMethod != .facebookLogin
-                    || !instagramAccountID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
         }
         return !isMetaPlatform || metaBrowserReady
+    }
+
+    private var usesTokenAccountPicker: Bool {
+        guard expected == nil else { return false }
+        if platform == .facebookPages { return registration.accountTarget.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+        return platform == .instagram && instagramAccessMethod == .facebookLogin &&
+            instagramAccountID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     private var savedBrokerCredential: String? {
@@ -599,7 +627,8 @@ struct SocialOAuthConnectionSheet: View {
                     instagramAccessMethod: instagramAccessMethod,
                     instagramAccountID: platform == .instagram && instagramAccessMethod == .facebookLogin
                         ? instagramAccountID.trimmingCharacters(in: .whitespacesAndNewlines) : nil,
-                    expected: expected
+                    expected: expected,
+                    chooseAccount: { accounts in try await choosePage(accounts) }
                 )
                 try Task.checkCancellation()
                 var settings = registration

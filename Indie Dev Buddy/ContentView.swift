@@ -477,21 +477,32 @@ struct ContentView: View {
                     sidebarHeader("Products")
                 }
                 Section {
+                    socialSidebarRow(.inbox, symbol: "tray")
+                    socialSidebarRow(.performance, symbol: "chart.bar.xaxis")
+                    sidebarRow("Social Accounts", symbol: "at", destination: ManagementSection.socialAccounts.rawValue)
+                } header: {
+                    sidebarHeader("Social")
+                }
+                Section {
                     HStack(spacing: 0) {
                         Button {
-                            requestRootAction(section == "Marketing Content" ? .showContentList : .section("Marketing Content"))
+                            if contentDestination == .inbox || contentDestination == .performance {
+                                requestRootAction(.contentDestination(.posted))
+                            } else {
+                                requestRootAction(section == "Marketing Content" ? .showContentList : .section("Marketing Content"))
+                            }
                         } label: {
                             Label {
                                 Text("Content")
                             } icon: {
-                                SidebarIcon(symbol: "megaphone", isSelected: section == "Marketing Content")
+                                SidebarIcon(symbol: "megaphone", isSelected: section == "Marketing Content" && !isViewingSocialContent)
                             }
                             .frame(maxWidth: .infinity, minHeight: 28, alignment: .leading)
                             .contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)
                         .accessibilityIdentifier("workspace-sidebar-Content")
-                        .accessibilityAddTraits(section == "Marketing Content" && !isContentExpanded ? .isSelected : [])
+                        .accessibilityAddTraits(section == "Marketing Content" && !isViewingSocialContent && !isContentExpanded ? .isSelected : [])
                         .badge(snapshot.content.count)
                         Button {
                             isContentExpanded.toggle()
@@ -506,7 +517,7 @@ struct ContentView: View {
                         .accessibilityLabel(isContentExpanded ? "Collapse Content destinations" : "Expand Content destinations")
                     }
                     if isContentExpanded {
-                        ForEach(ContentDestinationView.allCases) { destination in
+                        ForEach(ContentDestinationView.allCases.filter { $0 != .inbox && $0 != .performance }) { destination in
                             Button {
                                 requestRootAction(.contentDestination(destination))
                             } label: {
@@ -534,7 +545,6 @@ struct ContentView: View {
                 }
                 Section {
                     sidebarRow("Identities", symbol: "person.crop.circle", destination: ManagementSection.identities.rawValue)
-                    sidebarRow("Social Accounts", symbol: "at", destination: ManagementSection.socialAccounts.rawValue)
                 } header: {
                     sidebarHeader("Accounts")
                 }
@@ -627,6 +637,25 @@ struct ContentView: View {
         }
     }
 
+    private func socialSidebarRow(_ destination: ContentDestinationView, symbol: String) -> some View {
+        let selected = isContentDestinationSelected(destination)
+        return Button {
+            requestRootAction(.contentDestination(destination))
+        } label: {
+            Label {
+                Text(destination.rawValue)
+            } icon: {
+                SidebarIcon(symbol: symbol, isSelected: selected)
+            }
+            .frame(maxWidth: .infinity, minHeight: 28, alignment: .leading)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityIdentifier("workspace-content-\(destination.rawValue)")
+        .accessibilityAddTraits(selected ? .isSelected : [])
+        .listRowBackground(RoundedRectangle(cornerRadius: 8).fill(.quaternary).padding(.horizontal, 10).opacity(selected ? 1 : 0))
+    }
+
     private func sidebarHeader(_ title: String) -> some View {
         Text(title)
             .font(.caption.weight(.semibold))
@@ -657,6 +686,8 @@ struct ContentView: View {
                 if contentDestination == .inbox || contentDestination == .performance {
                     SocialWorkspaceView(snapshot: snapshot, inbox: contentDestination == .inbox, target: socialPerformanceTarget) { id in
                         requestRootAction(.content(id))
+                    } openAccounts: {
+                        requestRootAction(.section(ManagementSection.socialAccounts.rawValue))
                     }
                     .id(store.rootURL)
                 } else {
@@ -852,6 +883,10 @@ struct ContentView: View {
             selectedAppID = nil
             managementCreateRequest = kind
         }
+    }
+
+    private var isViewingSocialContent: Bool {
+        section == "Marketing Content" && (contentDestination == .inbox || contentDestination == .performance)
     }
 
     private var contentDestination: ContentDestinationView {

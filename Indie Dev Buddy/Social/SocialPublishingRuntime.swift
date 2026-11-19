@@ -190,10 +190,14 @@ final class SocialPublishingRuntime {
         if manual {
             lastManualCheck[id] = .now
         }
+        let localOnly = !manual && SocialEngagementStore.manualOnly(identity)
+        if result == .ready && localOnly, let current = connectionStatus[id], !current.isAvailable,
+           current != .keychainUnavailable { return current }
         if result != .ready || manual || connectionStatus[id] != .renewed {
             connectionStatus[id] = result
         }
-        if result.isAvailable, force || lastAvailable[id] == nil {
+        if result.isAvailable, manual || !SocialEngagementStore.manualOnly(identity),
+           force || lastAvailable[id] == nil {
             let now = Date()
             lastAvailable[id] = now
             UserDefaults.standard.set(now, forKey: availabilityKey(identity))
@@ -204,6 +208,10 @@ final class SocialPublishingRuntime {
     func lastAvailable(for identity: ContentRecipientIdentity) -> Date? {
         guard let id = connectionID(for: identity) else { return nil }
         return lastAvailable[id] ?? UserDefaults.standard.object(forKey: availabilityKey(identity)) as? Date
+    }
+
+    func recovery(for identity: ContentRecipientIdentity) -> SocialConnections.Recovery? {
+        connectionID(for: identity).flatMap { connectionStatus[$0] }
     }
 
     private func connectionID(for identity: ContentRecipientIdentity) -> SocialAccount.ID? {

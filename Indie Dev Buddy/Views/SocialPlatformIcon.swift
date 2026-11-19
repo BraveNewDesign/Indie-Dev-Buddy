@@ -12,7 +12,7 @@ struct SocialPlatformIcon: View {
 
         return switch normalized {
         case "bluesky": "social-bluesky"
-        case "facebook": "social-facebook"
+        case "facebook", "facebookpages": "social-facebook"
         case "github": "social-github"
         case "instagram": "social-instagram"
         case "linkedin": "social-linkedin"

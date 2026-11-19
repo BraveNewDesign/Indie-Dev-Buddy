@@ -18,6 +18,7 @@ struct SocialAccountActivityView: View {
     @State private var replyTarget: SocialPost?
     @State private var replyText = ""
     @State private var deleteTarget: SocialPost?
+    @State private var didLoad = false
     @State private var loading = false
     @State private var writing = false
     @State private var message: String?
@@ -36,7 +37,7 @@ struct SocialAccountActivityView: View {
                     }
                 }
                 Spacer()
-                Button("Refresh", systemImage: "arrow.clockwise") { Task { await reload() } }
+                Button(SocialEngagementStore.manualOnly(identity) ? "Refresh Profile" : "Refresh", systemImage: "arrow.clockwise") { Task { await reload() } }
                     .disabled(loading || writing)
                 Button("Done") { dismiss() }.keyboardShortcut(.cancelAction)
             }
@@ -55,8 +56,13 @@ struct SocialAccountActivityView: View {
                 }
                 if posts.isEmpty && !loading { Text("No posts returned.").foregroundStyle(.secondary) }
             } else if !loading {
-                ContentUnavailableView("Posts Unavailable", systemImage: "text.bubble",
-                                       description: Text("This connection doesn’t provide access to list posts."))
+                if !didLoad && SocialEngagementStore.manualOnly(identity) {
+                    ContentUnavailableView("Manual Refresh", systemImage: "arrow.clockwise",
+                                           description: Text("Choose Refresh Profile to load recent posts. Reads may count toward provider limits or use API credits."))
+                } else {
+                    ContentUnavailableView("Posts Unavailable", systemImage: "text.bubble",
+                                           description: Text("This connection doesn’t provide access to list posts."))
+                }
             }
             if loading { ProgressView().controlSize(.small) }
             if !activity.isEmpty {
@@ -94,7 +100,7 @@ struct SocialAccountActivityView: View {
                             _ = try await runtime.connections.reply(text, to: target.id, for: identity)
                             self.replyTarget = nil
                             replyText = ""
-                            if account.platform != .instagram, let selectedPostQueryID {
+                            if account.platform != .instagram, !SocialEngagementStore.manualOnly(identity), let selectedPostQueryID {
                                 await loadReplies(to: selectedPostQueryID, reset: true)
                             }
                         }
@@ -108,7 +114,7 @@ struct SocialAccountActivityView: View {
         .frame(width: 650, height: 550)
         .task {
             activity = loadActivity()
-            await reload()
+            if !SocialEngagementStore.manualOnly(identity) { await reload() }
         }
         .confirmationDialog("Delete this reply from the provider?", isPresented: Binding(
             get: { deleteTarget != nil }, set: { if !$0 { deleteTarget = nil } }
@@ -128,7 +134,8 @@ struct SocialAccountActivityView: View {
             HStack {
                 if capabilities.contains(.readReplies) {
                     let noun = (account.platform == .facebookPages || account.platform == .instagram || account.platform == .linkedIn) ? "Comments" : "Replies"
-                    Button(selectedPostID == post.id ? "Hide \(noun)" : "View \(noun)") {
+                    Button(selectedPostID == post.id ? "Hide \(noun)" :
+                           (SocialEngagementStore.manualOnly(identity) ? "Load \(noun)" : "View \(noun)")) {
                         if selectedPostID == post.id {
                             selectedPostID = nil
                             selectedPostQueryID = nil
@@ -231,6 +238,7 @@ struct SocialAccountActivityView: View {
         guard !loading else { return }
         loading = true
         defer { loading = false }
+        didLoad = true
         message = nil
         do {
             capabilities = try await runtime.connections.capabilities(for: identity)

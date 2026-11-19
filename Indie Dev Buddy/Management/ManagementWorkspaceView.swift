@@ -45,6 +45,7 @@ enum ManagementSection: String {
 /// Reusable management surface for local workspace records. The host owns refresh/reload;
 /// this view writes records explicitly when the user presses Save.
 struct ManagementWorkspaceView: View {
+    @Environment(SocialPublishingRuntime.self) private var socialRuntime
     let section: ManagementSection
     let snapshot: WorkspaceSnapshot
     let snapshotGeneration: Int
@@ -64,6 +65,8 @@ struct ManagementWorkspaceView: View {
     @State private var selectedID: String?
     @State private var opensAppStore = false
     @State private var reconnectAccountID: String?
+    @State private var savedAccountIDs: Set<SocialAccount.ID>?
+    @State private var availableWidth: CGFloat = 650
     @State private var ownerFilterID = "all"
     @State private var accountConnectionFilter = "all"
     @State private var creating = false
@@ -111,14 +114,37 @@ struct ManagementWorkspaceView: View {
                 } else {
                     appList.navigationTitle("Apps")
                 }
+            } else if section == .socialAccounts && availableWidth < 580 {
+                if selectedID != nil || creating {
+                    detailContent
+                        .toolbar {
+                            ToolbarItem(placement: .navigation) {
+                                Button("All Social Accounts", systemImage: "chevron.left") {
+                                    requestNavigation(.selection(nil))
+                                }
+                            }
+                        }
+                } else {
+                    recordList.navigationTitle(section.rawValue)
+                }
             } else {
                 HSplitView {
-                    // Keep the record list from collapsing when the selected detail has a larger minimum size.
-                    recordList.frame(width: 360)
+                    if section == .socialAccounts {
+                        recordList.frame(minWidth: 220, idealWidth: 280, maxWidth: 330)
+                    } else {
+                        recordList.frame(width: 360)
+                    }
                     detailContent
                         .frame(minWidth: 300, maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                 }
                 .navigationTitle(section.rawValue)
+            }
+        }
+        .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { availableWidth = $0 }
+        .task(id: snapshotGeneration) {
+            guard section == .socialAccounts else { return }
+            if let accounts = try? await socialRuntime.connections.accounts(), !Task.isCancelled {
+                savedAccountIDs = Set(accounts.map(\.id))
             }
         }
         .toolbar {
@@ -272,27 +298,9 @@ struct ManagementWorkspaceView: View {
 
         return VStack(spacing: 0) {
             if section == .websites || section == .socialAccounts {
-                HStack(spacing: 8) {
-                    Picker("Filter by owner", selection: Binding(get: { ownerFilterID }, set: requestOwnerFilter)) {
-                        Text("All owners").tag("all")
-                        ForEach(ownerChoices) { owner in
-                            Text("\(owner.title) · \(owner.detail)").tag(owner.id)
-                        }
-                        Text("Unassigned / missing").tag("unassigned")
-                    }
-                    .pickerStyle(.menu)
-                    .labelsHidden()
-                    .accessibilityLabel("Filter by owner")
-                    if section == .socialAccounts {
-                        Picker("Filter by API connection", selection: $accountConnectionFilter) {
-                            Text("All connections").tag("all")
-                            Text("API linked").tag("linked")
-                            Text("Manual only").tag("manual")
-                        }
-                        .pickerStyle(.menu)
-                        .labelsHidden()
-                        .accessibilityLabel("Filter by API connection")
-                    }
+                ViewThatFits(in: .horizontal) {
+                    HStack(spacing: 8) { recordFilters }
+                    VStack(alignment: .leading, spacing: 8) { recordFilters }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.horizontal)
@@ -319,13 +327,11 @@ struct ManagementWorkspaceView: View {
                             if !row.subtitle.isEmpty {
                                 Text(row.subtitle).font(.subheadline).foregroundStyle(.secondary)
                             }
+                            if section == .socialAccounts, let account = snapshot.socialAccountsByID[row.id] {
+                                accountHealth(account)
+                            }
                         }
                         Spacer(minLength: 8)
-                        if section == .socialAccounts, let account = snapshot.socialAccountsByID[row.id], account.providerIdentity != nil {
-                            Image(systemName: "link.circle.fill")
-                                .font(.caption).foregroundStyle(.secondary)
-                                .accessibilityLabel("API identity linked")
-                        }
                         if isPinned {
                             Image(systemName: "pin.fill").font(.caption).foregroundStyle(.secondary)
                                 .accessibilityLabel("Pinned")
@@ -344,6 +350,59 @@ struct ManagementWorkspaceView: View {
             }
 
         }
+    }
+
+    @ViewBuilder
+    private var recordFilters: some View {
+        Picker("Filter by owner", selection: Binding(get: { ownerFilterID }, set: requestOwnerFilter)) {
+            Text("All owners").tag("all")
+            ForEach(ownerChoices) { owner in
+                Text("\(owner.title) · \(owner.detail)").tag(owner.id)
+            }
+            Text("Unassigned / missing").tag("unassigned")
+        }
+        .pickerStyle(.menu)
+        .labelsHidden()
+        .accessibilityLabel("Filter by owner")
+        if section == .socialAccounts {
+            Picker("Filter by API connection", selection: $accountConnectionFilter) {
+                Text("All connections").tag("all")
+                Text("API linked").tag("linked")
+                Text("Manual only").tag("manual")
+            }
+            .pickerStyle(.menu)
+            .labelsHidden()
+            .accessibilityLabel("Filter by API connection")
+            .fixedSize()
+        }
+    }
+
+    private func accountHealth(_ account: SocialAccountRecord) -> some View {
+        let status: (title: String, symbol: String)
+        if !account.enabled {
+            status = ("Disabled", "pause.circle")
+        } else if let identity = account.providerIdentity {
+            let saved = SocialPlatform(rawValue: identity.platform).flatMap { platform in
+                savedAccountIDs?.contains(.init(platform: platform, server: identity.server, remoteID: identity.remoteID))
+            }
+            switch socialRuntime.recovery(for: identity) ?? (saved == false ? .missingCredential : nil) {
+            case .ready, .renewed:
+                status = SocialEngagementStore.manualOnly(identity)
+                    ? ("Saved · Manual refresh", "link")
+                    : ("Connection available", "checkmark.circle")
+            case .missingCredential, .authorizationRequired, .permissionsRequired, .configurationRequired:
+                status = ("Authorization needed", "exclamationmark.circle")
+            case .keychainUnavailable, .retryLater, .rateLimited:
+                status = ("Check connection", "exclamationmark.circle")
+            case nil:
+                status = ("API linked", "link")
+            }
+        } else {
+            status = ("Manual posting", "hand.tap")
+        }
+        return Label(status.title, systemImage: status.symbol)
+            .font(.caption)
+            .foregroundStyle(.secondary)
     }
 
     private var pinnedSocialAccountIDs: Set<String> {
@@ -456,7 +515,8 @@ struct ManagementWorkspaceView: View {
                     ? (accountName ?? "Unconfigured account")
                     : [record.platform, accountName].compactMap { $0 }.joined(separator: " · ")
                 let handleLabel = handle.flatMap { $0.isEmpty ? nil : ($0.hasPrefix("@") ? $0 : "@\($0)") }
-                let detail = [handleLabel, record.owner.map(ownerName)].compactMap { $0 }.joined(separator: " · ")
+                let provider = SocialPlatform.workspacePlatform(record.platform)?.workspaceTitle ?? record.platform
+                let detail = [provider, handleLabel, record.owner.map(ownerName)].compactMap { $0 }.joined(separator: " · ")
                 return ManagementRow(id: record.id, title: account.isEmpty ? "Unconfigured account" : account, subtitle: detail.isEmpty ? "Owner not set" : detail, symbol: "at", socialPlatform: record.platform)
             }
         }
@@ -1730,6 +1790,7 @@ private struct SocialAccountRecordEditor: View {
     private enum ConnectionFollowUp { case authorize, switchAccount, activity }
     @State private var connectionFollowUp: ConnectionFollowUp?
     @State private var savedConnections: [SocialAccount] = []
+    @State private var loadedSavedConnections = false
     @State private var expectedConnection: ContentRecipientIdentity?
     @State private var checkingConnection = false
     @State private var showingBlueskyConnect = false
@@ -1915,12 +1976,15 @@ private struct SocialAccountRecordEditor: View {
                             .disabled(checkingConnection)
                         }
                     } else {
-                        Button("Manage Connection…") {
-                            showingConnectionManager = true
-                            Task { await repairConnection() }
+                        VStack(alignment: .trailing, spacing: 6) {
+                            if connectionRecovery?.needsAuthorization == true {
+                                Button("Authorize Again…") { presentConnection(for: apiPlatform) }
+                                    .buttonStyle(.borderedProminent)
+                            }
+                            Button("Manage Connection…") { showingConnectionManager = true }
+                                .buttonStyle(.bordered)
+                                .accessibilityHint("View capabilities and manage authorization")
                         }
-                            .buttonStyle(.bordered)
-                            .accessibilityHint("View capabilities and manage authorization")
                     }
                 }
                 if let status = connectedAccount.flatMap({ socialPublishingRuntime.metaCredentialStatus[$0.id] }) {
@@ -1954,21 +2018,39 @@ private struct SocialAccountRecordEditor: View {
                         .font(.subheadline).foregroundStyle(.secondary)
                 }
                 Spacer()
-                if providerIdentity != nil {
-                    Label(connectedAccount == nil ? "Unavailable" : "Connected", systemImage: connectedAccount == nil ? "exclamationmark.circle" : "checkmark.circle.fill")
-                        .font(.caption.weight(.medium)).foregroundStyle(connectedAccount == nil ? .orange : .green)
+                if let providerIdentity {
+                    connectionBadge(for: providerIdentity)
                 }
             }
             .padding(.vertical, 2)
         }
     }
 
+    private func connectionBadge(for identity: ContentRecipientIdentity) -> some View {
+        let status: (title: String, symbol: String)
+        if connectionNeedsAttention {
+            status = ("Needs attention", "exclamationmark.circle")
+        } else if connectedAccount == nil {
+            status = ("API linked", "link")
+        } else if SocialEngagementStore.manualOnly(identity) {
+            status = ("Saved connection", "link")
+        } else {
+            status = ("Connected", "checkmark.circle")
+        }
+        return Label(status.title, systemImage: status.symbol)
+            .font(.caption.weight(.medium))
+            .foregroundStyle(.secondary)
+    }
+
     private var selectedOwnerName: String? { owners.first(where: { $0.id == ownerID })?.title }
     private var connectionTitle: String {
         if checkingConnection { return "Checking saved connection…" }
-        if connectedAccount != nil && connectionNeedsAttention { return "Connection needs attention" }
+        if connectionNeedsAttention { return "Connection needs attention" }
         if providerIdentity != nil && connectedAccount == nil { return "Connection unavailable on this Mac" }
-        if connectedAccount != nil { return "Connected as @\(connectedAccount?.username ?? "account")" }
+        if let connectedAccount {
+            let saved = providerIdentity.map(SocialEngagementStore.manualOnly) == true
+            return saved ? "Saved connection for @\(connectedAccount.username)" : "Connected as @\(connectedAccount.username)"
+        }
         return "API connection is optional"
     }
     private var connectionSummary: String {
@@ -2013,7 +2095,10 @@ private struct SocialAccountRecordEditor: View {
     }
 
     private var connectionRecovery: SocialConnections.Recovery? {
-        connectionID.flatMap { socialPublishingRuntime.connectionStatus[$0] }
+        guard let connectionID else { return nil }
+        if let recovery = socialPublishingRuntime.connectionStatus[connectionID] { return recovery }
+        return loadedSavedConnections && !savedConnections.contains(where: { $0.id == connectionID })
+            ? .missingCredential : nil
     }
 
     private var connectionLastAvailable: Date? {
@@ -2036,7 +2121,9 @@ private struct SocialAccountRecordEditor: View {
     }
 
     private func refreshSavedConnections() async {
-        savedConnections = (try? await socialPublishingRuntime.connections.accounts()) ?? []
+        guard let accounts = try? await socialPublishingRuntime.connections.accounts(), !Task.isCancelled else { return }
+        savedConnections = accounts
+        loadedSavedConnections = true
     }
 
     private func reuseSavedConnection(_ account: SocialAccount) async {
@@ -2044,7 +2131,7 @@ private struct SocialAccountRecordEditor: View {
         checkingConnection = true
         defer { checkingConnection = false }
         let identity = SocialOAuthRegistration.identity(for: account)
-        let result = await socialPublishingRuntime.checkConnection(identity)
+        let result = await socialPublishingRuntime.checkConnection(identity, manual: true)
         guard !Task.isCancelled, providerIdentity == nil, apiPlatform == account.platform else { return }
         if result.isAvailable {
             connectionMessage = nil
@@ -2090,7 +2177,7 @@ private struct SocialAccountRecordEditor: View {
         guard let record, connectionRequest == record.id, let apiPlatform else { return }
         connectionRequest = nil
         if providerIdentity == nil { presentConnection(for: apiPlatform) }
-        else { showingConnectionManager = true; Task { await repairConnection() } }
+        else { showingConnectionManager = true }
     }
 
     private func presentConnection(for platform: SocialPlatform, switching: Bool = false) {
@@ -2105,12 +2192,17 @@ private struct SocialAccountRecordEditor: View {
         providerIdentity = ContentRecipientIdentity(platform: account.platform.rawValue,
                                                      server: account.server,
                                                      remoteID: account.remoteID)
-        handle = account.username
-        if let name = account.displayName, !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            displayName = name
-        }
-        if let profileURL = account.profileURL, profileURL.scheme?.lowercased() == "https", profileURL.host != nil {
-            self.profileURL = profileURL.absoluteString
+        // Connecting an existing record saves its link independently of any edits to profile metadata.
+        if baselineRecord == nil && record == nil {
+            if handle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { handle = account.username }
+            if displayName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+               let name = account.displayName, !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                displayName = name
+            }
+            if profileURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+               let url = account.profileURL, url.scheme?.lowercased() == "https", url.host != nil {
+                profileURL = url.absoluteString
+            }
         }
         Task { await persistConnectionLink() }
     }
