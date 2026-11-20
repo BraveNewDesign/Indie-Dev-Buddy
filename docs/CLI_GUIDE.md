@@ -75,6 +75,24 @@ indiedevbuddy rename-workspace --workspace "$workspace" --name "Studio Workspace
 
 Setup commands include `create-workspace PATH`, `register-workspace PATH`, and `forget-workspace PATH`. Forgetting a workspace removes its app registration, not its files.
 
+## Manage workspace agent guidance
+
+In the app, select **Agent Guidance…** in the workspace switcher. Review workspace instructions, skill packages, and shipped references. **Additional Instructions** writes a marked section in the workspace's `AGENTS.md` after you approve the preview. If that file was customized outside the app, the preview shows your existing text with the new section appended. The current built-in instructions are available separately for comparison.
+
+`guidance` is read-only and returns each file's current text, status, path, and revision where available. It includes proposed replacement text for missing or recognized outdated built-ins. Review it before running `guidance-update --path RELATIVE_PATH --revision HASH`, using `new` when the file is missing. Customized files are preserved. New workspaces receive shipped guidance, and opening older workspaces adds missing built-ins when possible. Refreshing the view reads the workspace without installing guidance.
+
+Preview additional instructions by omitting `--apply`. Review the returned `before` and `after` fields, then repeat the command with the same revision and body and add `--apply yes`. An empty body clears the additional section. Use `--revision new` if `AGENTS.md` is missing.
+
+```sh
+indiedevbuddy guidance --workspace "$workspace"
+indiedevbuddy guidance-instructions --workspace "$workspace" --revision "$revision" --body-file instructions.md
+indiedevbuddy guidance-import --workspace "$workspace" --source ./studio-style
+indiedevbuddy guidance-archive --workspace "$workspace" --skill studio-style --revision "$skill_revision"
+indiedevbuddy guidance-restore --workspace "$workspace" --skill studio-style --revision "$archived_revision"
+```
+
+Import copies a local folder with `SKILL.md` and its supporting files into `.agents/skills`. Archive moves a whole skill folder into `.indie-dev-buddy/archived-skills` so it stays disabled across reopen. Restore moves it back without overwriting any active folder with the same name. Review any custom instructions that refer to an archived skill. Review a skill's source and contents before relying on it.
+
 ## Output and safety
 
 Commands return JSON on stdout. Errors return JSON on stderr and a nonzero exit status; validation issues return status 2. Updates use revision checks, validate model data, and create backups. Stale revisions are conflicts: read the latest record and decide whether to reapply your change.

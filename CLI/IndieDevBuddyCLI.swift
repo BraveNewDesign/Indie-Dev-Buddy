@@ -27,6 +27,12 @@ struct IndieDevBuddyCLI {
       indiedevbuddy remove --workspace PATH --path RELATIVE_PATH --confirm yes
       indiedevbuddy trash --workspace PATH --path RELATIVE_PATH --confirm yes
       indiedevbuddy validate --workspace PATH
+      indiedevbuddy guidance --workspace PATH
+      indiedevbuddy guidance-instructions --workspace PATH --revision HASH|new --body-file FILE [--apply yes]
+      indiedevbuddy guidance-update --workspace PATH --path RELATIVE_PATH --revision HASH|new
+      indiedevbuddy guidance-import --workspace PATH --source SKILL_FOLDER
+      indiedevbuddy guidance-archive --workspace PATH --skill FOLDER --revision HASH
+      indiedevbuddy guidance-restore --workspace PATH --skill FOLDER --revision HASH
 
     Use workspaces to get a registered path or pass an existing workspace folder.
     Use read to obtain the record and body revisions before updating. save-record
@@ -40,6 +46,9 @@ struct IndieDevBuddyCLI {
     deletes a managed item and requires --confirm yes; marker files are protected.
     Use the app's Asset Library to change managed assets and screenshot sets.
     validate checks workspace records and Asset Library references.
+    guidance shows installed, customized, missing, archived, and updatable guidance.
+    guidance-instructions previews changes unless --apply yes is supplied.
+    Review replacement text and revisions from guidance before updating built-ins.
     create-workspace creates the standard workspace structure and registers it.
     update edits the title and/or original body; related destination state can be
     changed with save-record using the full record JSON from read.
@@ -109,7 +118,11 @@ struct IndieDevBuddyCLI {
         case "rename": (requiredPositionals, allowed) = (0, ["workspace", "path", "name"])
         case "remove": (requiredPositionals, allowed) = (0, ["workspace", "path", "confirm"])
         case "trash": (requiredPositionals, allowed) = (0, ["workspace", "path", "confirm"])
-        case "validate": (requiredPositionals, allowed) = (0, ["workspace"])
+        case "validate", "guidance": (requiredPositionals, allowed) = (0, ["workspace"])
+        case "guidance-instructions": (requiredPositionals, allowed) = (0, ["workspace", "revision", "body-file", "apply"])
+        case "guidance-update": (requiredPositionals, allowed) = (0, ["workspace", "path", "revision"])
+        case "guidance-import": (requiredPositionals, allowed) = (0, ["workspace", "source"])
+        case "guidance-archive", "guidance-restore": (requiredPositionals, allowed) = (0, ["workspace", "skill", "revision"])
         default: throw WorkspaceCommandError("Unknown command \(command). Run indiedevbuddy --help.")
         }
         let positionals = Array(arguments.dropFirst().prefix(requiredPositionals))
@@ -216,6 +229,37 @@ struct IndieDevBuddyCLI {
             let path = try options.require("path")
             try await store.trashManagedItem(relativePath: path)
             try writeJSON(["trashed": true, "path": path])
+        case "guidance":
+            let inventory = try await store.agentGuidance()
+            try writeJSON(JSONSerialization.jsonObject(with: JSONEncoder().encode(inventory)))
+        case "guidance-instructions":
+            let providedRevision = try options.require("revision")
+            let revision = providedRevision == "new" ? nil : providedRevision
+            let text = try readBody(options.require("body-file"))
+            if let apply = options["apply"] {
+                guard apply == "yes" else { throw WorkspaceCommandError("--apply requires yes.") }
+                let saved = try await store.saveAdditionalInstructions(text, expectedRevision: revision)
+                var response: [String: Any] = ["path": WorkspaceGuidance.instructionsPath]
+                response["revision"] = saved
+                try writeJSON(response)
+            } else {
+                let change = try await store.previewAdditionalInstructions(text, expectedRevision: revision)
+                try writeJSON(JSONSerialization.jsonObject(with: JSONEncoder().encode(change)))
+            }
+        case "guidance-update":
+            let path = try options.require("path")
+            let providedRevision = try options.require("revision")
+            let revision = try await store.updateAgentGuidance(path: path, expectedRevision: providedRevision == "new" ? nil : providedRevision)
+            try writeJSON(["path": path, "revision": revision])
+        case "guidance-import":
+            let source = URL(fileURLWithPath: try options.require("source"), isDirectory: true)
+            let path = try await store.importGuidanceSkill(from: source)
+            try writeJSON(["path": path])
+        case "guidance-archive", "guidance-restore":
+            let skill = try options.require("skill")
+            let archived = command == "guidance-archive"
+            try await store.setGuidanceSkillArchived(skill, archived: archived, expectedRevision: options.require("revision"))
+            try writeJSON(["skillFolder": skill, "archived": archived])
         case "validate":
             let issues = try await store.validateWorkspace()
             try writeJSON(["valid": issues.isEmpty, "issues": issuesJSON(issues)])

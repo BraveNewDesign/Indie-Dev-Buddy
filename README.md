@@ -69,7 +69,7 @@ Workspace records are ordinary files in the folder you choose. Social account cr
 
 Indie Dev Buddy also includes `indiedevbuddy`, a command-line tool for people, scripts, and AI agents. It returns structured JSON and can inspect and manage workspace records, drafts, files, and workspaces. Revision checks and validation help catch stale edits and missing asset references. The CLI manages workspace data; connecting accounts, scheduling, and publishing happen in the app.
 
-Each workspace includes agent guidance, data-format references, examples, and a marketing content skill. Agents can use their existing terminal tools—there's no MCP server to set up.
+Each workspace includes agent guidance, data-format references, examples, and a marketing content skill. Open **Agent Guidance…** from the workspace switcher to review the files, save additional instructions, and import, archive, or restore skills. Agents can use their existing terminal tools—there's no MCP server to set up.
 
 - [Command-line guide](docs/CLI_GUIDE.md)
 - [App and CLI capability matrix](docs/CLI_CAPABILITY_MATRIX.md)

@@ -179,7 +179,7 @@ enum ContentDestinationView: String, CaseIterable, Identifiable {
             defer { isOpening = false }
             do {
                 _ = try await store.renameWorkspace(to: name)
-                let loaded = try await store.load()
+                let loaded = try await store.refresh()
                 guard self.store === store else { return }
                 snapshot = loaded
                 snapshotGeneration &+= 1
@@ -192,7 +192,7 @@ enum ContentDestinationView: String, CaseIterable, Identifiable {
         guard let store else { return }
         Task {
             do {
-                let loaded = try await store.load()
+                let loaded = try await store.refresh()
                 guard self.store === store else { return }
                 snapshot = loaded
                 snapshotGeneration &+= 1
@@ -204,7 +204,7 @@ enum ContentDestinationView: String, CaseIterable, Identifiable {
     func reload() async {
         guard let store else { return }
         do {
-            let loaded = try await store.load()
+            let loaded = try await store.refresh()
             guard self.store === store else { return }
             snapshot = loaded
             snapshotGeneration &+= 1
@@ -239,6 +239,7 @@ struct ContentView: View {
     @FocusState private var searchFocused: Bool
     @State private var showingWorkspaceOptions = false
     @State private var showingRenameWorkspace = false
+    @State private var showingAgentGuidance = false
     @State private var workspaceNameDraft = ""
 
     private enum RootAction {
@@ -288,6 +289,9 @@ struct ContentView: View {
                         .disabled(session.isOpening || savingBeforeSwitch)
                 }
                 .id(store.rootURL)
+                .sheet(isPresented: $showingAgentGuidance) {
+                    WorkspaceAgentGuidanceView(store: store, workspaceName: snapshot.manifest.name)
+                }
             } else {
                 welcomeView
             }
@@ -435,6 +439,9 @@ struct ContentView: View {
             workspaceOption("New Workspace…", symbol: "plus", action: commandActions.create)
             workspaceOption("Refresh Workspace", symbol: "arrow.clockwise", action: session.refresh)
             if let url = session.workspaceURL {
+                workspaceOption("Agent Guidance…", symbol: "text.document") {
+                    showingAgentGuidance = true
+                }
                 workspaceOption("Rename Workspace…", symbol: "pencil") {
                     workspaceNameDraft = session.snapshot?.manifest.name ?? url.lastPathComponent
                     showingRenameWorkspace = true

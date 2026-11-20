@@ -74,7 +74,11 @@ public actor WorkspaceStore {
         }
         // The manifest is the workspace marker; never replace an existing file.
         try writeExclusively(encoder.encode(manifest), to: root.appendingPathComponent("workspace.json"))
-        installGuidance(at: root)
+        if root == rootURL {
+            try? withWorkspaceLock { installMissingGuidance(at: root) }
+        } else {
+            installMissingGuidance(at: root)
+        }
         return manifest
     }
 
@@ -118,7 +122,7 @@ public actor WorkspaceStore {
 
     public func load(installAgentGuidance: Bool = true) throws -> WorkspaceSnapshot {
         let manifest = try readManifest()
-        if installAgentGuidance { installGuidance(at: rootURL) }
+        if installAgentGuidance { try? withWorkspaceLock { installMissingGuidance(at: rootURL) } }
         var recordPaths: [String: [String: String]] = [:]
         var errors: [WorkspaceFileError] = []
         var opaque: [OpaqueWorkspaceRecord] = []
@@ -424,7 +428,7 @@ public actor WorkspaceStore {
         try write(encoder.encode(record), relativePath: relativePath, expectedRevision: expectedRevision)
     }
 
-    public func refresh() throws -> WorkspaceSnapshot { try load() }
+    public func refresh() throws -> WorkspaceSnapshot { try load(installAgentGuidance: false) }
 
     /// Internal deterministic fault hook for exercising rollback behavior in unit tests.
     func setWriteFailureInjectionForTesting(at relativePath: String?) {
@@ -624,18 +628,18 @@ public actor WorkspaceStore {
 
     /// Guidance is optional to workspace access. Each file is installed independently,
     /// with exclusive creation so existing or concurrently created instructions survive.
-    private func installGuidance(at root: URL) {
+    private func installMissingGuidance(at root: URL) {
         for (path, content) in WorkspaceGuidance.files {
             do {
-                let destination = try safeURL(path, inside: root)
-                if fileManager.fileExists(atPath: destination.path) {
-                    if root == rootURL, let priorRevisions = WorkspaceGuidance.priorCLIRevisions[path],
-                       destination.path == root.appendingPathComponent(path).path,
-                       let current = try? read(relativePath: path), priorRevisions.contains(current.revision) {
-                        _ = try? write(Data(content.utf8), relativePath: path, expectedRevision: current.revision)
-                    }
-                    continue
+                if path == WorkspaceGuidance.builtInSkillPath {
+                    let archivePath = "\(WorkspaceGuidance.archiveFolder)/\(WorkspaceGuidance.builtInSkill)"
+                    let archive = try safeURL(archivePath, inside: root)
+                    guard archive.path == root.appendingPathComponent(archivePath).path,
+                          !fileManager.fileExists(atPath: archive.path) else { continue }
                 }
+                let destination = try safeURL(path, inside: root)
+                guard destination.path == root.appendingPathComponent(path).path,
+                      !fileManager.fileExists(atPath: destination.path) else { continue }
                 try fileManager.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
                 guard try safeURL(path, inside: root).path == destination.path else { continue }
                 try writeExclusively(Data(content.utf8), to: destination)
@@ -644,14 +648,15 @@ public actor WorkspaceStore {
             }
         }
         // Keep older data-format references intact and install updates alongside them.
-        if let format = try? safeURL("docs/DATA_FORMAT.md", inside: root),
+        if let format = try? safeURL(WorkspaceGuidance.dataFormatPath, inside: root),
+           format.path == root.appendingPathComponent(WorkspaceGuidance.dataFormatPath).path,
            let text = try? String(contentsOf: format, encoding: .utf8),
            let range = text.range(of: #"<!-- Indie Dev Buddy guidance version: ([0-9]+) -->"#, options: .regularExpression),
            let version = Int(text[range].filter(\.isNumber)), version < WorkspaceGuidance.version,
-           let reference = WorkspaceGuidance.files.first(where: { $0.path == "docs/DATA_FORMAT.md" })?.contents,
-           let destination = try? safeURL("docs/DATA_FORMAT.v\(WorkspaceGuidance.version).md", inside: root),
+           let destination = try? safeURL(WorkspaceGuidance.versionedDataFormatPath, inside: root),
+           destination.path == root.appendingPathComponent(WorkspaceGuidance.versionedDataFormatPath).path,
            !fileManager.fileExists(atPath: destination.path) {
-            try? writeExclusively(Data(reference.utf8), to: destination)
+            try? writeExclusively(Data(WorkspaceGuidance.dataFormat.utf8), to: destination)
         }
     }
 }
