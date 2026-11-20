@@ -16,13 +16,19 @@ Download the signed Apple silicon build from [GitHub Releases](https://github.co
 
 On first launch, create a workspace or open an existing one. The workspace is a folder on your Mac containing app, website, identity, social account, and content records. Use a folder you can access and back up. Opening a workspace registers it with the app on this Mac.
 
-Add an app or website record to keep project links together. Add social accounts under **Websites & Social Accounts → Social Accounts**; account records hold editable profile details, while provider credentials are kept in the macOS Keychain.
+Add an app or website record to keep project links together. Add social accounts under **Social Accounts** in the sidebar; account records hold editable profile details, while provider credentials are kept in the macOS Keychain.
+
+Use **Agent Guidance…** in the workspace switcher to review instructions, add workspace-specific guidance, or manage skills. See [Manage workspace agent guidance]({{ '/cli-guide/#manage-workspace-agent-guidance' | relative_url }}).
 
 ## Draft content
 
 Create an article or social draft in the content area. A social post can have account-specific text and media while retaining its shared original. You can link a social draft to a source article and associate content with one or more apps. Use previews to inspect destination-specific text and media before copying or scheduling.
 
 For a manual post, choose **Manually Scheduled** to record a date. This does not send anything: copy the text, open the destination, publish there, then update its status in the app. To use API delivery, connect a supported account and choose **Scheduled on This Mac**. The app must be running and the Mac awake at the due time. See [Social connections]({{ '/social-connections/' | relative_url }}) for supported providers and delivery details.
+
+## Review published posts
+
+Open **Social → Inbox** to review sampled comments and replies for connected profiles. Open **Social → Performance** to compare available post counts and inspect individual posts. X and LinkedIn require a manual profile refresh. See [Inbox and Performance]({{ '/social-connections/#inbox-and-performance' | relative_url }}) for coverage and refresh behavior.
 
 ## Optional integrations
 

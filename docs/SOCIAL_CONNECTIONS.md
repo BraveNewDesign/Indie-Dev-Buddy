@@ -27,6 +27,8 @@ Open **Social → Inbox** for comments and replies on connected profiles. **Unkn
 
 Eligible profiles refresh automatically while Inbox or Performance is active. **X and LinkedIn require a manual refresh.** Choose one profile and click **Refresh Profile**. X reads may consume API credits. The selected profile shows its refresh policy, last successful update, and any access issue or retry time. Expand **Profile Refresh Status** to see these details for all visible profiles. Account Activity also requires an explicit refresh to load X and LinkedIn posts.
 
+For provider-specific coverage and implementation limits, see the [social API capabilities reference](https://github.com/BraveNewDesign/Indie-Dev-Buddy/blob/main/docs/SOCIAL_API_CAPABILITIES.md).
+
 ## Schedule and delivery
 
 In the composer, choose **Scheduled on This Mac** for local API delivery or **Manually Scheduled** for a date you plan to handle yourself. A manual schedule never sends. For API delivery, Indie Dev Buddy must be running and the Mac awake when a post is due. Before delivery, the app checks stored credentials and stops if it knows the connection needs authorization. It checks saved connections at launch, after wake, when the network returns, and periodically while the Mac is awake. Account settings show the last time a connection was available. Delivery history shows connection problems beside affected schedules.

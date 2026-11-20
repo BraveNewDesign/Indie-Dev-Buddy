@@ -6,6 +6,7 @@ on:
     paths:
       - "docs/**"
       - ".github/workflows/pages.yml"
+      - "scripts/check-doc-links.py"
   pull_request:
     branches: [main]
   workflow_dispatch:
@@ -34,6 +35,10 @@ jobs:
       - name: Build site
         run: bundle exec jekyll build --destination _site
         working-directory: docs
+      - name: Check rendered documentation links
+        run: |
+          baseurl=$(ruby -ryaml -e 'print YAML.load_file("docs/_config.yml").fetch("baseurl")')
+          python3 scripts/check-doc-links.py docs/_site "$baseurl"
       - name: Upload Pages artifact
         if: github.event_name != 'pull_request'
         uses: actions/upload-pages-artifact@v4

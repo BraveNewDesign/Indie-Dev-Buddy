@@ -34,7 +34,7 @@ Keep product naming consistent with **Indie Dev Buddy** in user-facing app surfa
 
 The product is **an app-development and marketing workspace**, **not** a general notes app, social analytics platform, project manager, CRM, or code editor. It supports per-account API scheduling where SocialKit and provider access are configured, alongside the existing manual posting workflow. Marketing workflows have priority over developer-project management.
 
-1. **Recognizable, explicit navigation.** Use plain labels such as **Apps**, **Marketing Content**, **Websites & Social Accounts**, and **Files**. Avoid unexplained labels such as “Profiles,” “Spaces,” “Nodes,” and “Destinations” in the UI. Every important section and action should be discoverable without hunting in contextual menus.
+1. **Recognizable, explicit navigation.** Use plain labels such as **Apps**, **Content**, **Social Accounts**, and **Files**. Avoid unexplained labels such as “Profiles,” “Spaces,” “Nodes,” and “Destinations” in the UI. Every important section and action should be discoverable without hunting in contextual menus.
 2. **One fact, one record.** Store every app, identity, website, and social account once. Show it in multiple relevant views through references; do not create duplicate copies for each app or post.
 3. **Apps are the center.** App pages collect website pages, App Store details, source-project locations, assets, and associated marketing. Global sections let users work across all apps.
 4. **One source, optional branches.** A blog article or post can generate related content. A social post can use the same original text for several accounts and selectively customize individual account versions. Changes to one custom version never overwrite the original or other versions.
@@ -45,7 +45,7 @@ The product is **an app-development and marketing workspace**, **not** a general
 
 ### Out of scope for v1
 
-Incoming social-mentions inboxes and social analytics, automatic website publishing, direct App Store Connect API integration, App Store metadata writes and submissions, full release/version tracking, Git operations outside drafting release notes from a known range, build/test automation, parsing Xcode projects, AI generation/summarization, custom workflows or schemas, graph canvas, kanban boards, collaboration/multi-user, sync server, rich-text/HTML website builder, subscriptions, advanced image editing, bulk migration from all third-party apps, and mobile counterparts. Outbound Bluesky mentions are supported when resolved to a DID and saved in the API schedule payload; other mention formats remain plain text. Social API publishing and account interactions are limited to providers, media types, permissions, and accounts supported by the configured SocialKit integration.
+Account-wide mentions and comprehensive social analytics, automatic website publishing, direct App Store Connect API integration, App Store metadata writes and submissions, full release/version tracking, Git operations outside drafting release notes from a known range, build/test automation, parsing Xcode projects, AI generation/summarization, custom workflows or schemas, graph canvas, kanban boards, collaboration/multi-user, sync server, rich-text/HTML website builder, subscriptions, advanced image editing, bulk migration from all third-party apps, and mobile counterparts. Outbound Bluesky mentions are supported when resolved to a DID and saved in the API schedule payload; other mention formats remain plain text. Social API publishing and account interactions are limited to providers, media types, permissions, and accounts supported by the configured SocialKit integration.
 
 ### Optional App Store Connect CLI
 
@@ -83,10 +83,10 @@ For each app, support multiple labeled website links across shared and dedicated
 
 **Main sidebar, always visible when window size permits:**
 
-1. **Apps** — expandable list of apps. Selecting Apps opens an overview/grid or clear list; selecting an app opens its details.
-2. **Marketing Content** — All Content, Blog Articles, Social Posts, Drafts, Ready, Published, **Ideas/Inbox**, and optional group-by-app view. These are filters on the *same* records, not duplicate folders.
-3. **Websites & Social Accounts** — identities/owners, websites, and enabled/disabled social accounts in one understandable place. Show the owner next to each account across all lists.
-4. **Files** — file browser for the workspace and shared marketing assets, with Reveal in Finder and ordinary file/folder operations.
+1. **Products** — **Apps** opens the app list or an app’s details. **Websites** opens website records.
+2. **Social** — **Inbox** shows sampled comments and replies for supported connected profiles. **Performance** shows available post counts, format comparisons, and on-demand post insights for supported connections. **Social Accounts** manages account records and connections. See [social connections]({{ '/social-connections/#inbox-and-performance' | relative_url }}) for refresh and access limits.
+3. **Workspace** — **Content** includes the calendar, board, all items, and content stages. These views share the same workspace records. **Files** browses workspace files and shared marketing assets.
+4. **Accounts** — **Identities** manages the people and businesses that own website and social account records.
 
 Top bar: discoverable **Search** and **+ Create** (App, Blog Article, Social Post, Idea, Website, Social Account). Specific views also show a clearly labeled primary Add/Create action. Use sensible empty states with direct creation actions.
 

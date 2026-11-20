@@ -21,7 +21,7 @@ bundle install
 bundle exec jekyll serve --baseurl ""
 ```
 
-Open the local URL printed by Jekyll. GitHub Actions builds the site for pull requests to `main`, so contributors and reviewers can catch Jekyll and theme build errors before merge.
+Open the local URL printed by Jekyll. GitHub Actions builds the site for pull requests to `main`, so contributors and reviewers can catch Jekyll build errors and broken internal page links before merge.
 
 If you do not have write access, fork the repository, create a branch, make your changes, and open a pull request against `main`. Describe what changed and link the issue or feature when relevant. Use **Suggest an edit on GitHub** on a documentation page to open the source file in GitHub's editor and start a change from a fork.
 
