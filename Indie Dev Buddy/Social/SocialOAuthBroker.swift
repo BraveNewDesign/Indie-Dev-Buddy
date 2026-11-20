@@ -9,6 +9,11 @@ actor SocialOAuthBroker: SessionBoundMetaOAuthExchange, CustomStringConvertible,
     private let endpoint: URL
     private let bearer: String
     private let send: SendRequest
+    private(set) var signInFailure: String?
+    private(set) var browserReturned = false
+
+    func noteBrowserReturn() { browserReturned = true }
+
     private var attempt: Attempt = .idle
 
     init(endpoint: URL, bearer: String, send: SendRequest? = nil) throws {
@@ -142,12 +147,27 @@ actor SocialOAuthBroker: SessionBoundMetaOAuthExchange, CustomStringConvertible,
             } else if isRegistration && !(200..<300).contains(response.statusCode) {
                 throw SocialError.httpStatus(response.statusCode)
             } else if !(200..<300).contains(response.statusCode) {
+                signInFailure = switch (operation, response.statusCode) {
+                case (_, 401): "The exchange service rejected the broker password. Enter the current broker password and try again."
+                case ("session", 400): "The exchange service rejected the app registration or callback. Check the Meta app ID and registered redirect URL."
+                case ("session", _): "The exchange service could not start sign-in (HTTP \(response.statusCode)). The browser has not been opened."
+                case ("exchange", 409): "The sign-in session expired or was already used. Start a new browser sign-in."
+                case ("exchange", _): "The exchange service received the callback but could not exchange the authorization code (HTTP \(response.statusCode)). Start a new browser sign-in. If it repeats, check the Meta app secret and redirect URL on the exchange service."
+                default: "The exchange service rejected the request (HTTP \(response.statusCode))."
+                }
                 throw SocialError.authorizationFailed
             }
             return try JSONDecoder().decode(Response.self, from: data)
         } catch {
             try Task.checkCancellation()
             if isRefresh || isRegistration { throw error as? SocialError ?? .transportFailure }
+            if signInFailure == nil {
+                if operation == "session" {
+                    signInFailure = "Indie Dev Buddy could not start a session with the exchange service."
+                } else if operation == "exchange" {
+                    signInFailure = "The callback returned, but Indie Dev Buddy could not read a token from the exchange service. Start a new browser sign-in."
+                }
+            }
             throw SocialError.authorizationFailed
         }
     }

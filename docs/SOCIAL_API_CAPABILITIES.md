@@ -35,6 +35,8 @@ The SDK uses Threads v1.0, Instagram Graph v27.0, LinkedIn Marketing version 202
 
 Sources: [HTTP API reference](https://docs.bsky.app/docs/api/app-bsky-feed-get-post-thread), [notifications](https://docs.bsky.app/docs/api/app-bsky-notification-list-notifications), [post records](https://docs.bsky.app/docs/advanced-guides/posts), [post-view lexicon](https://github.com/bluesky-social/atproto/blob/main/lexicons/app/bsky/feed/defs.json).
 
+The bulk Facebook connection flow uses the existing Pages and linked Instagram discovery paths with one Facebook user grant. It verifies and saves each selected credential separately. Existing workspace links match by provider identity. Users can explicitly link unconnected records. [Meta Page discovery](https://developers.facebook.com/docs/graph-api/reference/user/accounts/) · [Meta linked Instagram discovery](https://developers.facebook.com/documentation/instagram-platform/instagram-api-with-facebook-login/get-started)
+
 ### Facebook Pages
 
 - **Inbox.** Use Page-owned published posts, the post's comments edge, and comment replies where visible. Validate Page roles/tasks and the endpoint's requirements for `pages_read_engagement`, `pages_read_user_content`, and `pages_manage_engagement`. The Page `feed` webhook can deliver comment and reaction changes after app installation and subscription. Meta documents `pages_manage_metadata` and `pages_show_list` for that setup. A reachable, verified webhook endpoint is additional work.

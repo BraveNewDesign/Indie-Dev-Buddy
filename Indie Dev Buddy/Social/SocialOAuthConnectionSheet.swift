@@ -1,4 +1,5 @@
 import AppKit
+import CryptoKit
 import AuthenticationServices
 import Foundation
 import Security
@@ -11,7 +12,13 @@ struct SocialOAuthConnectionSheet: View {
     let platform: SocialPlatform
     var expected: ContentRecipientIdentity? = nil
     var recovery: SocialConnections.Recovery? = nil
+    var facebookBulk: FacebookBulkConnectionContext? = nil
     let onConnected: (SocialAccount) -> Void
+    @State private var facebookReview: SocialConnections.FacebookAccountReview?
+    @State private var selectedFacebookAccounts: Set<SocialAccount.ID> = []
+    @State private var facebookTargets: [SocialAccount.ID: String] = [:]
+    @State private var facebookOwner = ""
+    @State private var facebookResults: [String] = []
     @State private var registration = SocialOAuthRegistration()
     @State private var brokerCredential = ""
     @State private var rememberBroker = false
@@ -38,52 +45,62 @@ struct SocialOAuthConnectionSheet: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            Text(expected == nil ? "Connect \(platform.workspaceTitle)" : "Reconnect \(platform.workspaceTitle)")
+            Text(facebookBulk != nil ? "Connect Facebook & Instagram Accounts" : (expected == nil ? "Connect \(platform.workspaceTitle)" : "Reconnect \(platform.workspaceTitle)"))
                 .font(.title2.bold())
                 .accessibilityAddTraits(.isHeader)
                 .padding(20)
             Divider()
             Form {
-                if let recovery, recovery.needsAuthorization {
-                    Label(recovery.message, systemImage: "exclamationmark.circle")
-                        .foregroundStyle(.secondary)
-                    if isMetaPlatform && metaMethod == .accessToken {
-                        Text("Paste a current token for this same account. Indie Dev Buddy verifies it before updating Keychain.")
-                            .font(.caption).foregroundStyle(.secondary)
-                    }
-                }
-                if isMetaPlatform {
-                    Section("Connection method") {
-                        if associatedDomains.contains(where: { $0.hasPrefix("webcredentials:") }) {
-                            Picker("Connect using", selection: $metaMethod) {
-                                Text("Meta access token").tag(MetaConnectionMethod.accessToken)
-                                Text("Browser sign-in").tag(MetaConnectionMethod.oauth)
-                            }
-                            .pickerStyle(.segmented)
-                            .disabled(connectionTask != nil)
-                        } else {
-                            Label("Token import is available in this build", systemImage: "key")
-                            Text("Browser sign-in requires a build signed for the HTTPS callback domain.")
-                                .font(.caption).foregroundStyle(.secondary)
+                if !facebookResults.isEmpty {
+                    Section("Connection Results") {
+                        ForEach(Array(facebookResults.enumerated()), id: \.offset) { _, result in
+                            Text(result).textSelection(.enabled)
                         }
                     }
-                    if metaMethod == .accessToken {
-                        metaAccessTokenSection
-                    } else {
-                        if usingHostedMetaPreset {
-                            hostedMetaSection
-                        } else {
-                            providerRegistrationSection
-                            if platform.requiresBroker { exchangeServiceSection }
-                        }
-                        if !metaBrowserReady && connectionTask == nil {
-                            Text("Browser sign-in is unavailable until the registration, associated callback, and exchange service are configured.")
-                                .font(.caption).foregroundStyle(.secondary)
-                        }
-                    }
+                } else if let facebookReview, let facebookBulk {
+                    facebookReviewForm(facebookReview, context: facebookBulk)
                 } else {
-                    providerRegistrationSection
-                    if platform.requiresBroker { exchangeServiceSection }
+                    if let recovery, recovery.needsAuthorization {
+                        Label(recovery.message, systemImage: "exclamationmark.circle")
+                            .foregroundStyle(.secondary)
+                        if isMetaPlatform && metaMethod == .accessToken {
+                            Text("Paste a current token for this same account. Indie Dev Buddy verifies it before updating Keychain.")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                    }
+                    if isMetaPlatform {
+                        Section("Connection method") {
+                            if associatedDomains.contains(where: { $0.hasPrefix("webcredentials:") }) {
+                                Picker("Connect using", selection: $metaMethod) {
+                                    Text("Meta access token").tag(MetaConnectionMethod.accessToken)
+                                    Text("Browser sign-in").tag(MetaConnectionMethod.oauth)
+                                }
+                                .pickerStyle(.segmented)
+                                .disabled(connectionTask != nil)
+                            } else {
+                                Label("Token import is available in this build", systemImage: "key")
+                                Text("Browser sign-in requires a build signed for the HTTPS callback domain.")
+                                    .font(.caption).foregroundStyle(.secondary)
+                            }
+                        }
+                        if metaMethod == .accessToken {
+                            metaAccessTokenSection
+                        } else {
+                            if usingHostedMetaPreset {
+                                hostedMetaSection
+                            } else {
+                                providerRegistrationSection
+                                if platform.requiresBroker { exchangeServiceSection }
+                            }
+                            if !metaBrowserReady && connectionTask == nil {
+                                Text("Browser sign-in is unavailable until the registration, associated callback, and exchange service are configured.")
+                                    .font(.caption).foregroundStyle(.secondary)
+                            }
+                        }
+                    } else {
+                        providerRegistrationSection
+                        if platform.requiresBroker { exchangeServiceSection }
+                    }
                 }
                 if let message {
                     Text(message)
@@ -96,7 +113,8 @@ struct SocialOAuthConnectionSheet: View {
             .disabled(connectionTask != nil)
             Divider()
             HStack {
-                Button("Cancel") { dismiss() }.keyboardShortcut(.cancelAction)
+                Button(facebookResults.isEmpty ? "Cancel" : "Close") { dismiss() }.keyboardShortcut(.cancelAction)
+                    .disabled(connectionTask != nil && facebookReview != nil)
                 if platform == .mastodon {
                     Button("Test Keychain", action: testKeychain)
                         .disabled(connectionTask != nil)
@@ -106,8 +124,13 @@ struct SocialOAuthConnectionSheet: View {
                         .disabled(connectionTask != nil)
                 }
                 Spacer()
+                if facebookReview != nil && facebookResults.isEmpty {
+                    Button("Use Another Grant", action: resetFacebookReview).disabled(connectionTask != nil)
+                }
                 Button(actionTitle) {
-                    if let account = canFinishConnection { onConnected(account); dismiss() }
+                    if !facebookResults.isEmpty { dismiss() }
+                    else if facebookReview != nil { applyFacebookReview() }
+                    else if let account = canFinishConnection { onConnected(account); dismiss() }
                     else if isMetaPlatform && metaMethod == .accessToken { importAccessToken() }
                     else { beginConnection() }
                 }
@@ -118,7 +141,22 @@ struct SocialOAuthConnectionSheet: View {
             .padding(16)
         }
         .frame(width: 560, height: isMetaPlatform ? 510 : 420)
+        .task {
+            guard let source = facebookBulk?.source else { return }
+            connectionTask = Task {
+                defer { connectionTask = nil }
+                do {
+                    let review = try await runtime.connections.reviewSavedFacebookAccounts(source)
+                    setFacebookReview(review)
+                } catch is CancellationError {
+                    return
+                } catch {
+                    message = "The saved Facebook grant could not list accounts. \(error.localizedDescription) Sign in once to review the accounts available to that Facebook profile."
+                }
+            }
+        }
         .onAppear {
+            facebookOwner = facebookBulk?.defaultOwner ?? ""
             registration = .load(platform, identity: expected)
             if platform == .facebookPages, expected == nil { registration.accountTarget = "" }
 
@@ -186,6 +224,7 @@ struct SocialOAuthConnectionSheet: View {
             finishPageSelection(nil)
             loadedBroker = nil
             connectionTask?.cancel()
+            if let id = facebookReview?.id { Task { await runtime.connections.discardFacebookReview(id) } }
             if platform == .mastodon {
                 Task { await runtime.connections.discardPendingMastodonCredential() }
             }
@@ -245,7 +284,9 @@ struct SocialOAuthConnectionSheet: View {
 
     private var hostedMetaSection: some View {
         Section("Connect \(platform.workspaceTitle)") {
-            if platform == .facebookPages {
+            if facebookBulk != nil {
+                Text("Sign in once to review the Facebook Pages and linked Instagram accounts that this profile can manage.")
+            } else if platform == .facebookPages {
                 Text(expected == nil
                      ? "Sign in to Facebook, grant access, and choose a Page. If you authorize only one Page, it connects automatically."
                      : "Sign in to Facebook to restore access to this same Page.")
@@ -265,7 +306,7 @@ struct SocialOAuthConnectionSheet: View {
                 TextField("Meta app ID", text: $registration.clientID)
                 TextField("Registered callback URL", text: $registration.redirect)
                 TextField("HTTPS service base URL", text: $registration.brokerEndpoint)
-                if platform == .facebookPages, expected == nil {
+                if platform == .facebookPages, expected == nil, facebookBulk == nil {
                     TextField("Facebook Page ID (optional)", text: $registration.accountTarget)
                 }
             }
@@ -380,7 +421,102 @@ struct SocialOAuthConnectionSheet: View {
             ? "User grant expires" : "Token expires"
     }
 
+    private func setFacebookReview(_ review: SocialConnections.FacebookAccountReview) {
+        facebookReview = review
+        facebookTargets = [:]
+        selectedFacebookAccounts = []
+    }
+
+    private func resetFacebookReview() {
+        if let id = facebookReview?.id { Task { await runtime.connections.discardFacebookReview(id) } }
+        facebookReview = nil
+        selectedFacebookAccounts = []
+        message = nil
+        loadSavedBroker()
+    }
+
+    private func facebookReviewForm(_ review: SocialConnections.FacebookAccountReview,
+                                    context: FacebookBulkConnectionContext) -> some View {
+        Group {
+            Section("Accounts available through Facebook") {
+                ForEach(review.notices, id: \.self) { Text($0).font(.callout).foregroundStyle(.secondary) }
+                if review.accounts.isEmpty { Text("This Facebook grant returned no eligible accounts.") }
+                ForEach(review.accounts) { account in
+                    let existing = context.existing(for: account)
+                    let unlinked = context.records.filter {
+                        $0.providerIdentity == nil && SocialPlatform.workspacePlatform($0.platform) == account.platform
+                    }
+                    Toggle(isOn: Binding(
+                        get: { selectedFacebookAccounts.contains(account.id) },
+                        set: { selected in
+                            if selected { selectedFacebookAccounts.insert(account.id) }
+                            else { selectedFacebookAccounts.remove(account.id) }
+                        }
+                    )) {
+                        VStack(alignment: .leading) {
+                            Text(account.displayName ?? account.username)
+                            Text("\(account.platform.workspaceTitle) · \(existing == nil ? "Add or link account" : "Update connection")")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                    }
+                    if selectedFacebookAccounts.contains(account.id), existing == nil, !unlinked.isEmpty {
+                        Picker("Workspace record", selection: Binding(
+                            get: { facebookTargets[account.id, default: ""] },
+                            set: { facebookTargets[account.id] = $0 }
+                        )) {
+                            Text("Add new account").tag("")
+                            ForEach(unlinked) { record in
+                                Text(record.displayName ?? record.handle ?? record.platform).tag(record.id)
+                            }
+                        }
+                    }
+                }
+            }
+            Section("New Accounts") {
+                Picker("Workspace owner", selection: $facebookOwner) {
+                    Text("Choose owner").tag("")
+                    ForEach(context.owners) { owner in Text(owner.title).tag(owner.id) }
+                }
+            }
+        }
+    }
+
+    private func applyFacebookReview() {
+        guard let review = facebookReview, let context = facebookBulk else { return }
+        let selection = selectedFacebookAccounts
+        let targets = facebookTargets
+        let owner = context.owners.first { $0.id == facebookOwner }?.owner
+        message = nil
+        connectionTask = Task {
+            defer { connectionTask = nil }
+            do {
+                let updates = try await runtime.connections.applyFacebookReview(review.id, selected: selection)
+                for update in updates {
+                    let account = update.account
+                    let title = "\(account.platform.workspaceTitle) · \(account.displayName ?? account.username)"
+                    if let failure = update.failure {
+                        facebookResults.append("\(title) — \(failure)")
+                        continue
+                    }
+                    do {
+                        let action = try await context.store.linkFacebookBulkAccount(account, owner: owner, target: targets[account.id])
+                        runtime.updateCredentialStatus(for: account.id)
+                        facebookResults.append("\(title) — \(action)")
+                    } catch {
+                        facebookResults.append("\(title) — Credential saved. Workspace link failed: \(error.localizedDescription)")
+                    }
+                }
+                context.onChanged()
+            } catch {
+                resetFacebookReview()
+                message = "Account review is no longer available. Reopen the review to try again."
+            }
+        }
+    }
+
     private var actionTitle: String {
+        if !facebookResults.isEmpty { return connectionTask == nil ? "Done" : "Applying…" }
+        if facebookReview != nil { return connectionTask == nil ? "Apply Selected Accounts" : "Applying…" }
         if canFinishConnection != nil { return "Done" }
         guard connectionTask == nil else { return "Connecting…" }
         if isMetaPlatform && metaMethod == .accessToken {
@@ -393,6 +529,16 @@ struct SocialOAuthConnectionSheet: View {
     }
 
     private var canConnect: Bool {
+        if !facebookResults.isEmpty { return connectionTask == nil }
+        if let facebookReview, let facebookBulk {
+            let targets = selectedFacebookAccounts.compactMap { facebookTargets[$0] }.filter { !$0.isEmpty }
+            let needsOwner = facebookReview.accounts.contains {
+                selectedFacebookAccounts.contains($0.id) && facebookBulk.existing(for: $0) == nil &&
+                    facebookTargets[$0.id, default: ""].isEmpty
+            }
+            return connectionTask == nil && !selectedFacebookAccounts.isEmpty &&
+                Set(targets).count == targets.count && (!needsOwner || !facebookOwner.isEmpty)
+        }
         if canFinishConnection != nil { return true }
         guard connectionTask == nil else { return false }
         if isMetaPlatform && metaMethod == .accessToken {
@@ -498,6 +644,25 @@ struct SocialOAuthConnectionSheet: View {
                     }
                 }
                 guard let redirect = settings.callback(for: platform) else { throw SocialError.invalidConfiguration }
+                if facebookBulk != nil, let broker {
+                    let review = try await runtime.connections.authorizeFacebookAccounts(
+                        clientID: settings.clientID, redirectURI: redirect, broker: broker
+                    ) { url, callback in
+                        let returned = try await browser.authenticate(url, redirect: callback)
+                        await broker.noteBrowserReturn()
+                        return returned
+                    }
+                    settings.save(.facebookPages)
+                    if rememberBroker, rememberForHostedBroker, let endpoint = URL(string: settings.brokerEndpoint) {
+                        do {
+                            try SocialOAuthRegistration.saveExchangeCredential(bearer, for: Self.hostedBrokerIdentity, endpoint: endpoint)
+                        } catch {
+                            message = "Account review is ready. Keychain could not remember the broker password."
+                        }
+                    }
+                    setFacebookReview(review)
+                    return
+                }
                 let account = try await runtime.connections.connectOAuth(
                     platform: platform, clientID: settings.clientID, redirectURI: redirect,
                     accountTarget: accountTarget, instance: instance, exchange: broker,
@@ -505,7 +670,9 @@ struct SocialOAuthConnectionSheet: View {
                     instagramFacebookLogin: settings.browserInstagramFacebookLogin == true,
                     chooseFacebookPage: { pages in try await choosePage(pages) }, expected: expected
                 ) { authorizationURL, callbackURL in
-                    try await browser.authenticate(authorizationURL, redirect: callbackURL)
+                    let callback = try await browser.authenticate(authorizationURL, redirect: callbackURL)
+                    await broker?.noteBrowserReturn()
+                    return callback
                 }
                 try Task.checkCancellation()
                 let identity = SocialOAuthRegistration.identity(for: account)
@@ -536,7 +703,14 @@ struct SocialOAuthConnectionSheet: View {
                    case .credentialStorage = error {
                     canRetryCredentialSave = true
                 }
-                message = authorizationFailureMessage(for: error)
+                if let detail = await broker?.signInFailure {
+                    message = "Could not connect \(platform.workspaceTitle). \(detail)"
+                } else if let socialError = error as? SocialError, socialError == .authorizationFailed,
+                          let broker, !(await broker.browserReturned) {
+                    message = "The browser did not return a sign-in result. Check that the browser opened and completed Facebook or Meta sign-in."
+                } else {
+                    message = authorizationFailureMessage(for: error)
+                }
             }
         }
     }
@@ -621,6 +795,10 @@ struct SocialOAuthConnectionSheet: View {
         connectionTask = Task {
             defer { connectionTask = nil }
             do {
+                if facebookBulk != nil {
+                    setFacebookReview(try await runtime.connections.reviewFacebookAccounts(token))
+                    return
+                }
                 let account = try await runtime.connections.importMetaToken(
                     token, platform: platform,
                     pageID: platform == .facebookPages ? registration.accountTarget : nil,
@@ -830,5 +1008,52 @@ private final class SocialAuthorizationBrowser: NSObject, ASWebAuthenticationPre
         continuation = nil
         session = nil
         pending?.resume(with: result)
+    }
+}
+
+
+struct FacebookBulkConnectionContext {
+    let source: ContentRecipientIdentity?
+    let store: WorkspaceStore
+    let records: [SocialAccountRecord]
+    let owners: [OwnerChoice]
+    let defaultOwner: String?
+    let onChanged: () -> Void
+
+    func existing(for account: SocialAccount) -> SocialAccountRecord? {
+        let identity = SocialOAuthRegistration.identity(for: account)
+        return records.first { $0.providerIdentity == identity }
+    }
+}
+
+private extension WorkspaceStore {
+    func linkFacebookBulkAccount(_ account: SocialAccount, owner: RecordOwner?, target: String?) throws -> String {
+        let snapshot = try load(installAgentGuidance: false)
+        let identity = SocialOAuthRegistration.identity(for: account)
+        if snapshot.socialAccounts.contains(where: { $0.providerIdentity == identity }) { return "Connection updated" }
+        if let target, !target.isEmpty {
+            guard var record = snapshot.socialAccountsByID[target], record.providerIdentity == nil,
+                  SocialPlatform.workspacePlatform(record.platform) == account.platform,
+                  let path = snapshot.recordPaths["SocialAccounts"]?[target] else { throw SocialError.invalidInput }
+            let current = try read(relativePath: path)
+            guard try decoder.decode(SocialAccountRecord.self, from: current.data) == record else {
+                throw WorkspaceStoreError.conflict(path: path, currentRevision: current.revision)
+            }
+            record.providerIdentity = identity
+            try save(record, relativePath: path, expectedRevision: current.revision)
+            return "Linked to existing account"
+        }
+        guard let owner else { throw SocialError.invalidInput }
+        let ownerExists = switch owner.type {
+        case .app: snapshot.apps.contains { $0.id == owner.id }
+        case .identity: snapshot.identities.contains { $0.id == owner.id }
+        }
+        guard ownerExists else { throw SocialError.invalidInput }
+        let record = SocialAccountRecord(platform: account.platform.workspaceTitle, owner: owner, handle: account.username,
+                                         displayName: account.displayName, profileURL: account.profileURL, providerIdentity: identity)
+        let digest = SHA256.hash(data: Data(SocialOAuthRegistration.accountKey(identity).utf8))
+        let suffix = digest.prefix(12).map { String(format: "%02x", $0) }.joined()
+        try save(record, relativePath: "SocialAccounts/meta-\(suffix)/record.json")
+        return "Account added"
     }
 }

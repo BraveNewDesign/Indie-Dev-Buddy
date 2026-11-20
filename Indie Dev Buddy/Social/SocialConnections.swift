@@ -854,6 +854,95 @@ actor SocialConnections {
         try await store.remove(account.id)
     }
 
+    struct FacebookAccountReview: Sendable {
+        let id: UUID
+        let accounts: [SocialAccount]
+        let notices: [String]
+    }
+
+    struct FacebookAccountUpdate: Sendable {
+        let account: SocialAccount
+        let failure: String?
+    }
+
+    private struct FacebookReviewGrant {
+        let token: OAuthToken
+        let accounts: [SocialAccount]
+        let expires: Date
+    }
+
+    private var facebookReviews: [UUID: FacebookReviewGrant] = [:]
+
+    func reviewSavedFacebookAccounts(_ identity: ContentRecipientIdentity) async throws -> FacebookAccountReview {
+        let id = try accountID(for: identity)
+        guard let grant = try await store.credential(for: id)?.facebookPageSourceGrant,
+              grant.expiresAt.map({ $0 > .now }) ?? true else { throw SocialError.authenticationRequired }
+        return try await reviewFacebookAccounts(grant)
+    }
+
+    func authorizeFacebookAccounts(clientID: String, redirectURI: URL,
+                                   broker: any SessionBoundMetaOAuthExchange,
+                                   browser: @escaping OAuthBrowser) async throws -> FacebookAccountReview {
+        guard authorizingPlatforms.insert(.facebookPages).inserted else { throw SocialError.accountBusy }
+        defer { authorizingPlatforms.remove(.facebookPages) }
+        let scopes: Set<String> = [
+            "pages_show_list", "pages_manage_posts", "pages_read_engagement", "pages_manage_engagement",
+            "pages_read_user_content", "read_insights", "instagram_basic", "instagram_content_publish",
+            "instagram_manage_comments", "instagram_manage_insights"
+        ]
+        let grant = try await facebookUserGrant(clientID: clientID, redirectURI: redirectURI,
+                                                scopes: scopes, broker: broker, browser: browser)
+        return try await reviewFacebookAccounts(grant)
+    }
+
+    func reviewFacebookAccounts(_ token: OAuthToken) async throws -> FacebookAccountReview {
+        let pages = try await FacebookPagesAdapter(transport: verificationTransport).discoverPages(token)
+        var instagram: [SocialAccount] = []
+        var notices: [String] = []
+        if token.grantedScopes?.contains("instagram_basic") == false {
+            notices.append("This grant lacks Instagram access. Choose Authorize in Browser to include linked Instagram accounts.")
+        } else {
+            do {
+                instagram = try await linkedInstagramProfiles(token)
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch {
+                notices.append("Linked Instagram accounts could not be listed. Review the Instagram permissions or try browser sign-in again.")
+            }
+        }
+        let accounts = pages + instagram
+        try Task.checkCancellation()
+        let id = UUID()
+        facebookReviews = facebookReviews.filter { $0.value.expires > .now }
+        facebookReviews[id] = FacebookReviewGrant(token: token, accounts: accounts, expires: Date().addingTimeInterval(600))
+        return FacebookAccountReview(id: id, accounts: accounts, notices: notices)
+    }
+
+    func discardFacebookReview(_ id: UUID) { facebookReviews.removeValue(forKey: id) }
+
+    func applyFacebookReview(_ id: UUID, selected: Set<SocialAccount.ID>) async throws -> [FacebookAccountUpdate] {
+        guard let grant = facebookReviews.removeValue(forKey: id), grant.expires > .now else {
+            throw SocialError.authenticationRequired
+        }
+        var updates: [FacebookAccountUpdate] = []
+        for account in grant.accounts where selected.contains(account.id) {
+            try Task.checkCancellation()
+            do {
+                let verified = try await importMetaToken(
+                    grant.token, platform: account.platform, pageID: account.remoteID,
+                    instagramAccessMethod: .facebookLogin, instagramAccountID: account.remoteID,
+                    expected: SocialOAuthRegistration.identity(for: account)
+                )
+                updates.append(FacebookAccountUpdate(account: verified, failure: nil))
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch {
+                updates.append(FacebookAccountUpdate(account: account, failure: error.localizedDescription))
+            }
+        }
+        return updates
+    }
+
     private func facebookUserGrant(clientID: String, redirectURI: URL, scopes: Set<String>,
                                    broker: any SessionBoundMetaOAuthExchange, browser: @escaping OAuthBrowser) async throws -> OAuthToken {
         // SocialKit validates the callback and state before the one-time grant goes to discovery.

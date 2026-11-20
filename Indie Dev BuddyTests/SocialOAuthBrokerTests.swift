@@ -58,6 +58,29 @@ struct SocialOAuthBrokerTests {
         #expect(await fixture.requests.count == 2)
     }
 
+    @Test func bulkReviewReusesSavedGrantAndUpdatesMultiplePages() async throws {
+        let credentials = MemoryCredentialStore()
+        let connections = SocialConnections(credentialStore: credentials, metaTransport: FacebookDiscoveryFixture())
+        let server = try #require(URL(string: "https://graph.facebook.com"))
+        let original = SocialAccount(platform: .facebookPages, server: server, remoteID: "101", username: "First")
+        await credentials.save(SocialCredential(
+            account: original, accessToken: "existing-page-token",
+            facebookPageSourceGrant: OAuthToken(accessToken: "fixture-access", grantedScopes: ["pages_show_list"])
+        ))
+
+        let review = try await connections.reviewSavedFacebookAccounts(SocialOAuthRegistration.identity(for: original))
+        #expect(review.accounts.map(\.remoteID) == ["101", "102"])
+        #expect(await credentials.accounts().map(\.remoteID) == ["101"])
+
+        let updates = try await connections.applyFacebookReview(review.id, selected: Set(review.accounts.map(\.id)))
+        #expect(updates.count == 2)
+        #expect(updates.allSatisfy { $0.failure == nil })
+        #expect(Set(await credentials.accounts().map(\.remoteID)) == ["101", "102"])
+        await #expect(throws: SocialError.authenticationRequired) {
+            try await connections.applyFacebookReview(review.id, selected: [original.id])
+        }
+    }
+
     @Test func facebookTokenPickerSavesOnlyChosenPageAndCanBeCancelled() async throws {
         let credentials = MemoryCredentialStore()
         let connections = SocialConnections(credentialStore: credentials, metaTransport: FacebookDiscoveryFixture())
@@ -245,8 +268,13 @@ private nonisolated struct FacebookDiscoveryFixture: HTTPTransport {
                 ? #"{"data":[{"id":"101","name":"First","access_token":"page-one","tasks":["CREATE_CONTENT"]},{"id":"102","name":"Second","access_token":"page-two","tasks":["CREATE_CONTENT"]}]}"#
                 : #"{"data":[{"id":"101","name":"First"},{"id":"102","name":"Second"}]}"#
         case "/v27.0/me":
-            #expect(request.value(forHTTPHeaderField: "Authorization") == "Bearer page-two")
-            body = #"{"id":"102","name":"Second"}"#
+            switch request.value(forHTTPHeaderField: "Authorization") {
+            case "Bearer page-one": body = #"{"id":"101","name":"First"}"#
+            case "Bearer page-two": body = #"{"id":"102","name":"Second"}"#
+            default:
+                Issue.record("Unexpected Page credential")
+                return HTTPResponse(statusCode: 401)
+            }
         default:
             Issue.record("Unexpected Facebook endpoint")
             return HTTPResponse(statusCode: 404)

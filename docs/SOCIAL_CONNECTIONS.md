@@ -69,6 +69,10 @@ Attach one image and choose **Publish Now** on Instagram or Threads. Indie Dev B
 
 ## Meta token lifetime
 
+### Connect multiple Facebook and Instagram accounts
+
+In **Social Accounts**, choose **Connect Facebook & Instagram Accounts**. Select a connected Page first to review accounts covered by its saved Facebook grant. If you need a different profile or broader access, authorize once in the browser and approve the eligible assets. Select the Pages and linked Instagram professional accounts to update. Choose an unlinked workspace record or assign an owner to new accounts. The review shows the result for each selected account. Threads uses its own authorization.
+
 ### Facebook Pages
 
 1. Open **Social Accounts**, add **Facebook Pages**, and choose **Meta access token**. In [Graph API Explorer](https://developers.facebook.com/tools/explorer/), select your Meta developer app, choose **User Token**, and request `pages_show_list`. Add `pages_manage_posts` to publish text. Add `pages_read_engagement` for reading Page posts; add `pages_read_user_content` and `pages_manage_engagement` only for the comment actions you need. Generate a fresh token and approve access to the Page.

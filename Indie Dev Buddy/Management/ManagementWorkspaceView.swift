@@ -80,6 +80,7 @@ struct ManagementWorkspaceView: View {
     @State private var editorGeneration = 0
     @State private var confirmingDelete = false
     @State private var showingShowcase = false
+    @State private var showingFacebookBulk = false
 
     init(section: ManagementSection, snapshot: WorkspaceSnapshot, snapshotGeneration: Int, store: WorkspaceStore, onSnapshotChanged: @escaping () -> Void, onReloadSnapshot: @escaping () async -> Void = {}, onUnsavedEditsChanged: @escaping (Bool) -> Void = { _ in }, onOpenMarketingContent: @escaping (String) -> Void, onOpenRecord: @escaping (ManagementRecordSelection) -> Void = { _ in }, selectionRequest: ManagementRecordSelection? = nil, createRequest: ManagementCreateRequest? = nil, onExternalRequestHandled: @escaping () -> Void = {}, restoredAppID: String? = nil, onAppSelectionChange: @escaping (String?) -> Void = { _ in }) {
         _pinnedSocialAccountData = AppStorage(wrappedValue: Data(), "pinnedSocialAccounts.\(snapshot.manifest.id)")
@@ -158,6 +159,14 @@ struct ManagementWorkspaceView: View {
                     .disabled(snapshot.apps.isEmpty)
                 }
             }
+            if section == .socialAccounts {
+                ToolbarItem {
+                    Button("Connect Facebook & Instagram Accounts…", systemImage: "person.2.badge.plus") {
+                        showingFacebookBulk = true
+                    }
+                    .disabled(editorIsDirty || creating)
+                }
+            }
             ToolbarItem(placement: .primaryAction) {
                 Button("Add \(singularName)", systemImage: "plus", action: beginCreate)
                     .labelStyle(.iconOnly)
@@ -171,6 +180,19 @@ struct ManagementWorkspaceView: View {
                     .labelStyle(.iconOnly)
                 }
             }
+        }
+        .sheet(isPresented: $showingFacebookBulk) {
+            let current = selectedID.flatMap { snapshot.socialAccountsByID[$0] }
+            let identities = ([current].compactMap { $0 } + snapshot.socialAccounts).compactMap(\.providerIdentity)
+            let source = identities.first {
+                $0.platform == SocialPlatform.facebookPages.rawValue ||
+                    ($0.platform == SocialPlatform.instagram.rawValue && $0.server.host == "graph.facebook.com")
+            }
+            let context = FacebookBulkConnectionContext(
+                source: source, store: store, records: snapshot.socialAccounts, owners: ownerChoices,
+                defaultOwner: ownerChoices.first { $0.owner == current?.owner }?.id, onChanged: onSnapshotChanged
+            )
+            SocialOAuthConnectionSheet(platform: .facebookPages, facebookBulk: context, onConnected: { _ in })
         }
         .sheet(isPresented: $showingShowcase) {
             let apps = sortedApps
@@ -899,7 +921,7 @@ private struct ManagementRow: Identifiable {
     var socialPlatform: String? = nil
 }
 
-private struct OwnerChoice: Identifiable, Hashable {
+struct OwnerChoice: Identifiable, Hashable {
     let owner: RecordOwner
     let title: String
     let detail: String
